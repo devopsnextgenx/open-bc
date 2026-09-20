@@ -1,0 +1,17 @@
+[package]
+name = "openbc-vfs"
+version = "0.1.0"
+edition.workspace = true
+
+[features]
+default = ["local"]
+local = []
+sftp = ["dep:ssh2"]
+smb = []
+
+[dependencies]
+async-trait.workspace = true
+openbc-core = { path = "../openbc-core" }
+ssh2 = { version = "0.9", optional = true }
+thiserror.workspace = true
+tokio.workspace = true

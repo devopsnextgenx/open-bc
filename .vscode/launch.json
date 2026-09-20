@@ -1,0 +1,27 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug openbc-qt",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin",
+                    "openbc-qt"
+                ],
+                "filter": {
+                    "name": "openbc-qt",
+                    "kind": "bin"
+                }
+            },
+            "cwd": "${workspaceFolder}",
+            "args": [],
+            "stopOnEntry": false,
+            "sourceLanguages": [
+                "rust"
+            ]
+        }
+    ]
+}

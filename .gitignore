@@ -1,0 +1,23 @@
+# Rust build artifacts
+/target/
+
+# Local Rust tooling and editor files
+**/*.rs.bk
+.rustc_info.json
+
+# IDE and OS metadata
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Local logs and environment overrides
+*.log
+.env
+.env.*
+!.env.example
+
+# Keep repository configuration and automation checked in
+!.vscode/
+!.github/

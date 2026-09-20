@@ -1,0 +1,22 @@
+[package]
+name = "openbc-ui-qt"
+version = "0.1.0"
+edition.workspace = true
+
+[features]
+default = ["qt"]
+qt = ["dep:cxx-qt", "dep:cxx-qt-build"]
+
+[[bin]]
+name = "openbc-qt"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+cxx-qt = { workspace = true, optional = true }
+openbc-core = { path = "../openbc-core" }
+openbc-engine = { path = "../openbc-engine" }
+tokio.workspace = true
+
+[build-dependencies]
+cxx-qt-build = { version = "0.7.3", optional = true }

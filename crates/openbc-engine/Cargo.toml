@@ -1,0 +1,11 @@
+[package]
+name = "openbc-engine"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+openbc-compute = { path = "../openbc-compute" }
+openbc-core = { path = "../openbc-core" }
+openbc-vfs = { path = "../openbc-vfs" }
+thiserror.workspace = true
+tokio.workspace = true

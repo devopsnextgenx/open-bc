@@ -1,0 +1,59 @@
+//! Domain types and pure comparison contracts for OpenBC.
+
+use std::path::PathBuf;
+use std::time::SystemTime;
+
+/// A stable identifier for a VFS entry.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct EntryPath(pub PathBuf);
+
+/// Metadata needed for phase-one folder comparison.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntryMetadata {
+    /// Byte length of the entry when it is a regular file.
+    pub size: u64,
+    /// Last modification time, when the provider can supply it.
+    pub modified: Option<SystemTime>,
+    /// Whether this entry is a directory.
+    pub is_dir: bool,
+}
+
+/// A lazily discovered directory child.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectoryEntry {
+    /// Provider-relative path.
+    pub path: EntryPath,
+    /// Display name supplied by the provider.
+    pub name: String,
+    /// Phase-one metadata.
+    pub metadata: EntryMetadata,
+}
+
+/// Result of comparing two entries after metadata and optional content phases.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ComparisonStatus {
+    /// Both entries have equal metadata and content, when content was checked.
+    Equal,
+    /// The entries differ in size, timestamp, or content.
+    Different,
+    /// An entry exists on only one side.
+    Missing,
+    /// The comparison could not read one side.
+    Error(String),
+}
+
+/// A digest produced by a compute backend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContentDigest(pub Vec<u8>);
+
+/// Compare phase-one metadata without touching file contents.
+///
+/// ```
+/// use openbc_core::{compare_metadata, EntryMetadata};
+/// let left = EntryMetadata { size: 4, modified: None, is_dir: false };
+/// assert!(compare_metadata(&left, &left));
+/// ```
+#[must_use]
+pub fn compare_metadata(left: &EntryMetadata, right: &EntryMetadata) -> bool {
+    left.size == right.size && left.modified == right.modified && left.is_dir == right.is_dir
+}

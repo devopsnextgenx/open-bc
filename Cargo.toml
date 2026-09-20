@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/openbc-core",
+    "crates/openbc-vfs",
+    "crates/openbc-compute",
+    "crates/openbc-engine",
+    "crates/openbc-ui-qt",
+    "xtask",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/openbc/openbc"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+bytes = "1.7"
+cxx-qt = "0.7"
+rayon = "1.10"
+thiserror = "2.0"
+tokio = { version = "1.40", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync"] }
+tracing = "0.1"
+wgpu = "23.0"
