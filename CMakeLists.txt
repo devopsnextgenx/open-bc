@@ -9,7 +9,7 @@ set(CMAKE_AUTORCC ON)
 # 1. Find Qt6 Installation
 find_package(Qt6 COMPONENTS Core Gui Widgets REQUIRED)
 
-# 2. Integrate Rust Cargo via Corrosion (No MSBuild / .NET required)
+# 2. Integrate Rust Cargo via Corrosion
 include(FetchContent)
 FetchContent_Declare(
     Corrosion
@@ -18,13 +18,19 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Corrosion)
 
-# Import Cargo Workspace
-corrosion_import_crate(MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml")
+# Import ONLY the static library target, ignoring [[bin]] targets
+corrosion_import_crate(
+    MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/crates/openbc-ui-qt/Cargo.toml"
+    CRATE_TYPES staticlib
+)
 
 # 3. Create C++ Qt Application Entrypoint
 add_executable(OpenBC
-    src/main.cpp
-    src/qt_bridge.cpp
+    crates/openbc-ui-qt/src/qt_app.cpp
+)
+
+target_include_directories(OpenBC PRIVATE
+    crates/openbc-ui-qt/src
 )
 
 # 4. Link Rust static library & Qt6 modules
@@ -32,12 +38,12 @@ target_link_libraries(OpenBC PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
-    openbc-ui-qt # Static library generated from Cargo
+    openbc_ui_qt-static
 )
 
 # 5. Windows-Specific Linker Flags
 if(WIN32)
-    # Target GUI subsystem (prevents opening an unwanted CMD console on start)
+    target_compile_definitions(OpenBC PRIVATE OPENBC_BUILD_EXECUTABLE)
     set_target_properties(OpenBC PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(OpenBC PRIVATE ws2_32 userenv advapi32 ntdll)
 endif()

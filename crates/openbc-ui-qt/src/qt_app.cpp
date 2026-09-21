@@ -22,6 +22,7 @@
 #include <QRegularExpression>
 #include <QRunnable>
 #include <QScrollBar>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStorageInfo>
@@ -595,6 +596,27 @@ class CompareSession : public QWidget {
 public:
     std::function<void()> onTitleChanged;
 
+    // What a right-click landed on. Copied by value: the context menu runs a
+    // nested event loop and the rows may be rebuilt while it is open, so it
+    // must never hold on to QTreeWidgetItem pointers.
+    enum class Side { Left, Right };
+    struct NodeContext {
+        Side side = Side::Left;
+        bool isDir = false;
+        bool existsHere = false;  // false on the placeholder row of an orphan
+        QString path;             // node on the clicked side (empty if missing)
+        QString otherPath;        // its counterpart on the other side (may be empty)
+
+        QString displayPath() const { return existsHere ? path : otherPath; }
+    };
+
+    // Extension points for the "Open With" and "Explorer" submenus. Their real
+    // content comes from separate libraries: assign a provider that adds
+    // actions to the given submenu. While a provider is unset (or adds nothing)
+    // the submenu shows a single "Dummy Item".
+    std::function<void(QMenu*, const NodeContext&)> populateOpenWithMenu;
+    std::function<void(QMenu*, const NodeContext&)> populateExplorerMenu;
+
     explicit CompareSession(QWidget* parent = nullptr) : QWidget(parent) {
         createActions();
         buildUi();
@@ -785,6 +807,8 @@ private:
     // --------------------------------------------------------------------- UI
     struct Pane {
         QWidget* panel = nullptr;
+        QWidget* pathBar = nullptr;
+        QWidget* footer = nullptr;
         QComboBox* path = nullptr;
         QToolButton* browse = nullptr;
         QToolButton* up = nullptr;
@@ -841,7 +865,54 @@ private:
         layout->addWidget(pathBar);
         layout->addWidget(pane.tree, 1);
         layout->addWidget(footer);
+        pane.pathBar = pathBar;
+        pane.footer = footer;
         return pane;
+    }
+
+    // Blank column between the two panes (like Beyond Compare's centre strip).
+    // Its top row lines up with the path bars and holds the "both folders up"
+    // button; the rest is empty but matches the header / body / footer of the
+    // trees so the three columns read as one continuous view.
+    QWidget* makeGutter(const Pane& left, QWidget* parent) {
+        using icons::Glyph;
+        constexpr int kGutterWidth = 40;
+
+        auto* gutter = new QWidget(parent);
+        gutter->setFixedWidth(kGutterWidth);
+        auto* layout = new QVBoxLayout(gutter);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+
+        auto* top = new QFrame(gutter);
+        top->setObjectName("pathBar");  // same look as the path bars
+        top->setFixedHeight(left.pathBar->sizeHint().height());
+        auto* topLayout = new QHBoxLayout(top);
+        topLayout->setContentsMargins(0, 1, 0, 1);
+        topLayout->setSpacing(0);
+        bothUp_ = new QToolButton(top);
+        bothUp_->setIcon(icons::glyph(Glyph::FolderUp));
+        bothUp_->setToolTip("Go to parent folder on both sides");
+        topLayout->addStretch(1);
+        topLayout->addWidget(bothUp_);
+        topLayout->addStretch(1);
+
+        auto* header = new QFrame(gutter);
+        header->setObjectName("gutterHeader");
+        header->setFixedHeight(left.tree->header()->sizeHint().height());
+
+        auto* body = new QFrame(gutter);
+        body->setObjectName("gutterBody");
+
+        auto* footer = new QFrame(gutter);
+        footer->setObjectName("footer");
+        footer->setFixedHeight(left.footer->sizeHint().height());
+
+        layout->addWidget(top);
+        layout->addWidget(header);
+        layout->addWidget(body, 1);
+        layout->addWidget(footer);
+        return gutter;
     }
 
     void buildUi() {
@@ -904,8 +975,13 @@ private:
         auto* panes = new QSplitter(Qt::Horizontal, this);
         panes->setChildrenCollapsible(false);
         panes->addWidget(left.panel);
+        panes->addWidget(makeGutter(left, panes));
         panes->addWidget(right.panel);
-        panes->setSizes({550, 550});
+        panes->setStretchFactor(0, 1);
+        panes->setStretchFactor(1, 0);
+        panes->setStretchFactor(2, 1);
+        panes->setSizes({550, 40, 550});
+        panes->handle(2)->setEnabled(false);  // one draggable divider is enough
 
         console_ = new QPlainTextEdit(this);
         console_->setObjectName("console");
@@ -945,6 +1021,7 @@ private:
         connect(rightBrowse_, &QToolButton::clicked, this, [this]() { chooseFolder(rightPath_, "right"); });
         connect(leftUp_, &QToolButton::clicked, this, [this]() { goUp(leftPath_); });
         connect(rightUp_, &QToolButton::clicked, this, [this]() { goUp(rightPath_); });
+        connect(bothUp_, &QToolButton::clicked, this, [this]() { goUpBoth(); });
         connect(leftPath_->lineEdit(), &QLineEdit::returnPressed, this, [this]() { refresh(); });
         connect(rightPath_->lineEdit(), &QLineEdit::returnPressed, this, [this]() { refresh(); });
         connect(leftPath_, QOverload<int>::of(&QComboBox::activated), this, [this](int) { refresh(); });
@@ -1002,6 +1079,12 @@ private:
         connectTreePair(leftTree_, rightTree_, "left");
         connectTreePair(rightTree_, leftTree_, "right");
         connectScrollSync();
+
+        for (CompareTree* tree : {leftTree_, rightTree_}) {
+            tree->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(tree, &QWidget::customContextMenuRequested, this,
+                    [this, tree](const QPoint& pos) { showNodeMenu(tree, pos); });
+        }
     }
 
     // Expanding / collapsing / selecting a row on one side mirrors on the other.
@@ -1028,6 +1111,146 @@ private:
                         other->setCurrentItem(counterpart);
                     }
                 });
+    }
+
+    // ------------------------------------------------- node context menu
+    // Right-click on a file or folder row. Every entry only logs for now; the
+    // layout follows Beyond Compare (folders get a few extra entries, files get
+    // "File Compare Report...").
+    void showNodeMenu(CompareTree* tree, const QPoint& pos) {
+        QTreeWidgetItem* item = tree->itemAt(pos);
+        if (!item) {
+            return;  // empty area below the last row
+        }
+        const bool isLeft = tree == leftTree_;
+        QTreeWidgetItem* counterpart = pairedItem(item, isLeft ? rightTree_ : leftTree_);
+
+        NodeContext ctx;
+        ctx.side = isLeft ? Side::Left : Side::Right;
+        ctx.path = item->data(0, kPathRole).toString();
+        ctx.existsHere = !ctx.path.isEmpty();
+        ctx.otherPath = counterpart ? counterpart->data(0, kPathRole).toString() : QString();
+        // A placeholder row has no data of its own; its counterpart knows the kind.
+        ctx.isDir = item->data(0, kIsDirRole).toBool() ||
+                    (counterpart && counterpart->data(0, kIsDirRole).toBool());
+
+        tree->setCurrentItem(item);  // right-click selects the row, like a left-click
+
+        QMenu menu(tree);
+        buildNodeMenu(menu, ctx);
+        menu.exec(tree->viewport()->mapToGlobal(pos));
+    }
+
+    void buildNodeMenu(QMenu& menu, const NodeContext& ctx) {
+        namespace mi = icons::menuicons;
+        const bool toRight = ctx.side == Side::Left;  // "the other side"
+        const QString other = toRight ? "Right" : "Left";
+
+        // ---- open / navigate
+        QAction* open = addNodeAction(&menu, ctx, ctx.isDir ? "Open Folder" : "Open");
+        QFont defaultFont = open->font();
+        defaultFont.setBold(true);  // the default (double-click) action
+        open->setFont(defaultFont);
+        if (ctx.isDir) {
+            addNodeAction(&menu, ctx, "Open Subfolders");
+            addNodeAction(&menu, ctx, "Close Subfolders");
+            addNodeAction(&menu, ctx, "Set as Base Folder");
+            addNodeAction(&menu, ctx, "Set as Base on Other Side");
+            addNodeAction(&menu, ctx, "Open in New View");
+        }
+        QMenu* openWith = menu.addMenu("Open With");
+        openWith->menuAction()->setEnabled(ctx.existsHere);
+        fillProviderMenu(openWith, ctx, populateOpenWithMenu);
+        addNodeAction(&menu, ctx, "Compare To...", {}, "F7");
+        addNodeAction(&menu, ctx, "Align With...", {}, "F6");
+        menu.addSeparator();
+
+        // ---- operate on the node
+        addNodeAction(&menu, ctx, "Compare Contents...", mi::compareContents());
+        addNodeAction(&menu, ctx, "Copy to " + other + "...", mi::copyArrow(toRight),
+                      toRight ? "Ctrl+R" : "Ctrl+L");
+        addNodeAction(&menu, ctx, "Move to " + other + "...", mi::moveArrow(toRight));
+        addNodeAction(&menu, ctx, "Copy to Folder...", mi::copyToFolder());
+        addNodeAction(&menu, ctx, "Move to Folder...", mi::moveToFolder());
+        addNodeAction(&menu, ctx, "Delete...", mi::remove());
+        addNodeAction(&menu, ctx, "Rename", mi::rename(), "F2");
+        addNodeAction(&menu, ctx, "Attributes...");
+        addNodeAction(&menu, ctx, "Touch...", mi::touch());
+        addNodeAction(&menu, ctx, ctx.isDir ? "Exclude" : "Exclude...");
+        addNodeAction(&menu, ctx, "New Folder...", mi::newFolder(), "Ins", /*needsNode=*/false);
+        addNodeAction(&menu, ctx, "Copy Filename");
+
+        // "Ignored" shows a green tick while the node is ignored. The state is
+        // only remembered for the session so far; it does not affect the compare.
+        const bool ignored = ignoredPaths_.contains(ctx.path);
+        QAction* ignoredAction =
+            addNodeAction(&menu, ctx, "Ignored", ignored ? mi::check() : QIcon());
+        connect(ignoredAction, &QAction::triggered, this, [this, ctx]() {
+            const bool nowIgnored = !ignoredPaths_.remove(ctx.path);
+            if (nowIgnored) {
+                ignoredPaths_.insert(ctx.path);
+            }
+            log(QString("Ignored is now %1: %2")
+                    .arg(nowIgnored ? "on" : "off", QDir::toNativeSeparators(ctx.path)));
+        });
+
+        addNodeAction(&menu, ctx, "Refresh Selection", {}, "Shift+F5", /*needsNode=*/false);
+        if (!ctx.isDir) {
+            addNodeAction(&menu, ctx, "File Compare Report...", mi::report());
+        }
+        menu.addSeparator();
+
+        // ---- synchronize (acts on the whole comparison, not on this node)
+        QMenu* sync = menu.addMenu("Synchronize");
+        addNodeAction(sync, ctx, "Update Right...", mi::update(mi::SyncDir::Right), {}, false);
+        addNodeAction(sync, ctx, "Update Left...", mi::update(mi::SyncDir::Left), {}, false);
+        addNodeAction(sync, ctx, "Update Both...", mi::update(mi::SyncDir::Both), {}, false);
+        addNodeAction(sync, ctx, "Mirror to Right...", mi::mirror(mi::SyncDir::Right),
+                      "Shift+Ctrl+R", false);
+        addNodeAction(sync, ctx, "Mirror to Left...", mi::mirror(mi::SyncDir::Left),
+                      "Shift+Ctrl+L", false);
+        menu.addSeparator();
+
+        QMenu* explorer = menu.addMenu("Explorer");
+        explorer->menuAction()->setEnabled(ctx.existsHere);
+        fillProviderMenu(explorer, ctx, populateExplorerMenu);
+    }
+
+    // Adds one entry that logs when activated. Entries that work on the node
+    // itself (`needsNode`) are greyed out on the empty side of an orphan row.
+    // Inside a submenu the log line is prefixed with the submenu's title.
+    QAction* addNodeAction(QMenu* menu, const NodeContext& ctx, const QString& text,
+                           const QIcon& icon = QIcon(), const QString& shortcut = QString(),
+                           bool needsNode = true) {
+        QAction* action = menu->addAction(icon, text);
+        if (!shortcut.isEmpty()) {
+            // Shown right-aligned; the action is not attached to a widget, so it
+            // does not become a global shortcut.
+            action->setShortcut(QKeySequence(shortcut));
+            action->setShortcutVisibleInContextMenu(true);
+        }
+        action->setEnabled(ctx.existsHere || !needsNode);
+        const QString label = menu->title().isEmpty() ? text : menu->title() + " > " + text;
+        connect(action, &QAction::triggered, this, [this, ctx, label]() { logMenuAction(ctx, label); });
+        return action;
+    }
+
+    // Lets a provider fill a submenu, or falls back to a single dummy entry.
+    void fillProviderMenu(QMenu* submenu, const NodeContext& ctx,
+                          const std::function<void(QMenu*, const NodeContext&)>& provider) {
+        if (provider) {
+            provider(submenu, ctx);
+        }
+        if (submenu->isEmpty()) {
+            addNodeAction(submenu, ctx, "Dummy Item", QIcon(), QString(), /*needsNode=*/false);
+        }
+    }
+
+    void logMenuAction(const NodeContext& ctx, const QString& label) {
+        const QString side = ctx.side == Side::Left ? "left" : "right";
+        const QString kind = ctx.isDir ? "folder" : "file";
+        log(QString("Context menu \"%1\" on %2 %3: %4")
+                .arg(label, side, kind, QDir::toNativeSeparators(ctx.displayPath())));
     }
 
     void syncHorizontal(QScrollBar* source, QScrollBar* target) {
@@ -1122,6 +1345,22 @@ private:
         }
     }
 
+    // Move BOTH sides to their parent folder with a single refresh.
+    void goUpBoth() {
+        bool moved = false;
+        for (QComboBox* combo : {leftPath_, rightPath_}) {
+            QDir dir(pathText(combo));
+            if (!pathText(combo).isEmpty() && dir.cdUp()) {
+                setPath(combo, dir.absolutePath());
+                moved = true;
+            }
+        }
+        if (moved) {
+            refresh();
+            log("Both folders moved up to their parent folders");
+        }
+    }
+
     void updateTitle() {
         setToolTip(detailedTitle());
         if (onTitleChanged) {
@@ -1174,6 +1413,7 @@ private:
     QToolButton* rightBrowse_ = nullptr;
     QToolButton* leftUp_ = nullptr;
     QToolButton* rightUp_ = nullptr;
+    QToolButton* bothUp_ = nullptr;
     CompareTree* leftTree_ = nullptr;
     CompareTree* rightTree_ = nullptr;
     QLabel* leftCount_ = nullptr;
@@ -1204,6 +1444,7 @@ private:
 
     std::shared_ptr<ComparisonRun> run_;
     bool syncingScroll_ = false;
+    QSet<QString> ignoredPaths_;  // paths marked "Ignored" in the context menu
 };
 
 }  // namespace
@@ -1394,10 +1635,23 @@ extern "C" int openbc_run_gui() {
         updateWindowTitle();
     });
 
+    // if linux
+    #ifdef Q_OS_LINUX
     addSession("/home/kira/tmp/source", "/home/kira/tmp/target", true);
+    #endif
+    // if windows
+    #ifdef Q_OS_WINDOWS
+    addSession("D:/personal/github/devopsnextgenx/open-bc/test/source", "D:/personal/github/devopsnextgenx/open-bc/test/target", true);
+    #endif
     rebuildMenus();
     updateWindowTitle();
     window.show();
 
     return application.exec();
 }
+
+#ifdef OPENBC_BUILD_EXECUTABLE
+int main(int argc, char *argv[]) {
+    return openbc_run_gui();
+}
+#endif

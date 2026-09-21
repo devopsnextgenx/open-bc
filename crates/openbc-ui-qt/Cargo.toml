@@ -7,6 +7,10 @@ edition.workspace = true
 default = ["qt"]
 qt = ["dep:cxx-qt", "dep:cxx-qt-build"]
 
+[lib]
+crate-type = ["staticlib", "rlib"]
+path = "src/lib.rs"
+
 [[bin]]
 name = "openbc-qt"
 path = "src/main.rs"

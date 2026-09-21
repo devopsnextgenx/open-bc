@@ -225,6 +225,10 @@ inline QString applicationStyleSheet() {
         QFrame#footer { background: #3e3e3e; border: 0; border-top: 1px solid #505050; }
         QFrame#footer QLabel { background: transparent; padding: 3px 6px; }
         QFrame#footerDivider { background: #5a5a5a; max-width: 1px; }
+        QFrame#gutterHeader {
+            background: #363636; border: 0; border-bottom: 1px solid #505050;
+        }
+        QFrame#gutterBody { background: #262833; border: 0; }
 
         QTreeView, QTreeWidget {
             background: #262833; border: 0; outline: 0;
@@ -559,6 +563,164 @@ inline QIcon glyph(Glyph which) {
     }
     return QIcon();
 }
+
+
+// ---------------------------------------------------------------------------
+// Context-menu icons. Same 16x16 design space as the toolbar glyphs, drawn in
+// code so the menus need no image resources.
+// ---------------------------------------------------------------------------
+namespace menuicons {
+
+enum class SyncDir { Right, Left, Both };
+
+// Solid block arrow; `right` = false mirrors it.
+inline void paintArrow(QPainter& p, const QColor& fill, bool right) {
+    p.save();
+    if (!right) {
+        p.translate(16.0, 0.0);
+        p.scale(-1.0, 1.0);
+    }
+    p.setPen(Qt::NoPen);
+    p.setBrush(fill);
+    p.drawPolygon(QPolygonF({QPointF(1.5, 5.8), QPointF(8.2, 5.8), QPointF(8.2, 2.8),
+                             QPointF(14.5, 8.0), QPointF(8.2, 13.2), QPointF(8.2, 10.2),
+                             QPointF(1.5, 10.2)}));
+    p.restore();
+}
+
+// "Copy to ..." (yellow) and "Move to ..." (red) share the arrow shape.
+inline QIcon arrow(const QColor& fill, bool right) {
+    return make([fill, right](QPainter& p, QIcon::Mode, QIcon::State) { paintArrow(p, fill, right); });
+}
+inline QIcon copyArrow(bool right) { return arrow(QColor(0xf5, 0xc2, 0x3d), right); }
+inline QIcon moveArrow(bool right) { return arrow(QColor(0xe8, 0x4a, 0x4a), right); }
+
+// Folder with a small up-arrow badge (Copy to Folder / Move to Folder).
+inline QIcon folderWithArrow(const QColor& badge) {
+    const QIcon folder = folderIcon(color::folderYellow());
+    return make([folder, badge](QPainter& p, QIcon::Mode, QIcon::State) {
+        folder.paint(&p, QRect(0, 0, 16, 16), Qt::AlignCenter, QIcon::Normal, QIcon::Off);
+        p.setPen(QPen(QColor(0x1e, 0x1e, 0x1e), 0.7));
+        p.setBrush(badge);
+        p.drawPolygon(QPolygonF({QPointF(4.5, 6.0), QPointF(8.2, 10.0), QPointF(5.9, 10.0),
+                                 QPointF(5.9, 14.6), QPointF(3.1, 14.6), QPointF(3.1, 10.0),
+                                 QPointF(0.8, 10.0)}));
+    });
+}
+inline QIcon copyToFolder() { return folderWithArrow(QColor(0xf5, 0xc2, 0x3d)); }
+inline QIcon moveToFolder() { return folderWithArrow(QColor(0xe8, 0x4a, 0x4a)); }
+
+// Folder with a green "+" (New Folder).
+inline QIcon newFolder() {
+    const QIcon folder = folderIcon(color::folderYellow());
+    return make([folder](QPainter& p, QIcon::Mode, QIcon::State) {
+        folder.paint(&p, QRect(0, 0, 16, 16), Qt::AlignCenter, QIcon::Normal, QIcon::Off);
+        p.setPen(QPen(QColor(0x2f, 0xc4, 0x4f), 2.2, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(11.5, 8.5), QPointF(11.5, 14.5));
+        p.drawLine(QPointF(8.5, 11.5), QPointF(14.5, 11.5));
+    });
+}
+
+// "=?" (Compare Contents)
+inline QIcon compareContents() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(QPen(QColor(0xdd, 0xe0, 0xee), 1.5, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(1.5, 6.0), QPointF(7.0, 6.0));
+        p.drawLine(QPointF(1.5, 10.0), QPointF(7.0, 10.0));
+        QFont font;
+        font.setPixelSize(13);
+        font.setBold(true);
+        p.setFont(font);
+        p.setPen(QColor(0xf2, 0xc0, 0x4a));
+        p.drawText(QRectF(7.5, 0.5, 8.0, 15.0), Qt::AlignCenter, QStringLiteral("?"));
+    });
+}
+
+// Red cross (Delete)
+inline QIcon remove() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(QPen(QColor(0xe8, 0x3f, 0x3f), 2.0, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(3.5, 3.5), QPointF(12.5, 12.5));
+        p.drawLine(QPointF(12.5, 3.5), QPointF(3.5, 12.5));
+    });
+}
+
+// Text box with a caret (Rename)
+inline QIcon rename() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(QPen(QColor(0xdd, 0xe0, 0xee), 1.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(QRectF(1.5, 4.5, 13.0, 7.0), 1.0, 1.0);
+        p.setPen(QPen(QColor(0x5a, 0xa9, 0xff), 1.4, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(8.0, 2.5), QPointF(8.0, 13.5));
+    });
+}
+
+// Calendar + clock (Touch = change timestamp)
+inline QIcon touch() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        const QColor outline(0x1e, 0x1e, 0x1e);
+        p.setPen(QPen(outline, 0.7));
+        p.setBrush(QColor(0xe6, 0xe8, 0xf2));
+        p.drawRoundedRect(QRectF(1.5, 2.5, 10.0, 11.0), 1.0, 1.0);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x3b, 0x8e, 0xea));
+        p.drawRect(QRectF(2.0, 3.0, 9.0, 2.6));
+        p.setPen(QPen(outline, 0.8));
+        p.setBrush(Qt::white);
+        p.drawEllipse(QPointF(11.5, 11.5), 3.6, 3.6);
+        p.drawLine(QPointF(11.5, 11.5), QPointF(11.5, 9.3));
+        p.drawLine(QPointF(11.5, 11.5), QPointF(13.0, 12.3));
+    });
+}
+
+// Green tick (Ignored, when active)
+inline QIcon check() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(QPen(QColor(0x2f, 0xc4, 0x4f), 2.0, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(3.0, 8.6), QPointF(6.6, 12.2));
+        p.drawLine(QPointF(6.6, 12.2), QPointF(13.2, 4.6));
+    });
+}
+
+// Printer (File Compare Report)
+inline QIcon report() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        const QColor outline(0x1e, 0x1e, 0x1e);
+        p.setPen(QPen(outline, 0.7));
+        p.setBrush(Qt::white);
+        p.drawRect(QRectF(4.0, 1.8, 8.0, 5.0));    // paper in
+        p.setBrush(QColor(0x9a, 0xa0, 0xb8));
+        p.drawRoundedRect(QRectF(1.5, 6.0, 13.0, 6.0), 1.0, 1.0);  // body
+        p.setBrush(Qt::white);
+        p.drawRect(QRectF(4.0, 10.0, 8.0, 4.2));   // paper out
+        p.setPen(QPen(QColor(0x80, 0x84, 0x98), 0.7));
+        p.drawLine(QPointF(5.2, 11.8), QPointF(10.8, 11.8));
+        p.drawLine(QPointF(5.2, 13.2), QPointF(9.0, 13.2));
+    });
+}
+
+// Double arrowheads (Synchronize submenu). Green = update, red = mirror.
+inline QIcon chevrons(const QColor& fill, SyncDir dir) {
+    return make([fill, dir](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(fill);
+        auto head = [&p](double x, bool right) {  // 6 wide, 9 tall
+            const double tip = right ? x + 6.0 : x;
+            const double base = right ? x : x + 6.0;
+            p.drawPolygon(QPolygonF({QPointF(base, 3.5), QPointF(tip, 8.0), QPointF(base, 12.5)}));
+        };
+        switch (dir) {
+        case SyncDir::Right: head(1.5, true); head(8.0, true); break;
+        case SyncDir::Left: head(1.5, false); head(8.0, false); break;
+        case SyncDir::Both: head(1.5, false); head(8.5, true); break;
+        }
+    });
+}
+inline QIcon update(SyncDir dir) { return chevrons(QColor(0x3f, 0xe0, 0x4a), dir); }
+inline QIcon mirror(SyncDir dir) { return chevrons(QColor(0xf0, 0x50, 0x50), dir); }
+
+}  // namespace menuicons
 
 }  // namespace icons
 
