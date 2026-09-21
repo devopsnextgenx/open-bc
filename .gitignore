@@ -1,5 +1,6 @@
 # Rust build artifacts
 /target/
+/tmp/
 
 # Local Rust tooling and editor files
 **/*.rs.bk
