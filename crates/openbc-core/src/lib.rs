@@ -29,6 +29,45 @@ pub struct DirectoryEntry {
     pub metadata: EntryMetadata,
 }
 
+/// Basic metadata for a folder shown in a comparison header or status bar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderMetadata {
+    /// Provider path represented by this metadata.
+    pub path: EntryPath,
+    /// Number of immediate children discovered for the folder.
+    pub item_count: usize,
+    /// Sum of immediate child sizes reported by the provider.
+    pub size: u64,
+    /// Last modification time for the folder, when available.
+    pub modified: Option<SystemTime>,
+    /// Whether the provider allowed the folder to be read.
+    pub readable: bool,
+}
+
+/// A single row in a one-level folder comparison.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderEntryComparison {
+    /// Display name shared by the row.
+    pub name: String,
+    /// Entry from the left folder, when present.
+    pub left: Option<DirectoryEntry>,
+    /// Entry from the right folder, when present.
+    pub right: Option<DirectoryEntry>,
+    /// Metadata-level result for this row.
+    pub status: ComparisonStatus,
+}
+
+/// Metadata and rows for one lazily loaded folder level.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderComparison {
+    /// Metadata for the left folder.
+    pub left: FolderMetadata,
+    /// Metadata for the right folder.
+    pub right: FolderMetadata,
+    /// Name-aligned rows for the visible folder level.
+    pub entries: Vec<FolderEntryComparison>,
+}
+
 /// Result of comparing two entries after metadata and optional content phases.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComparisonStatus {
@@ -56,4 +95,39 @@ pub struct ContentDigest(pub Vec<u8>);
 #[must_use]
 pub fn compare_metadata(left: &EntryMetadata, right: &EntryMetadata) -> bool {
     left.size == right.size && left.modified == right.modified && left.is_dir == right.is_dir
+}
+
+/// Align two directory levels by name without recursively scanning children.
+#[must_use]
+pub fn compare_directory_entries(
+    left: &[DirectoryEntry],
+    right: &[DirectoryEntry],
+) -> Vec<FolderEntryComparison> {
+    let mut names = std::collections::BTreeSet::new();
+    names.extend(left.iter().map(|entry| entry.name.clone()));
+    names.extend(right.iter().map(|entry| entry.name.clone()));
+
+    names
+        .into_iter()
+        .map(|name| {
+            let left_entry = left.iter().find(|entry| entry.name == name).cloned();
+            let right_entry = right.iter().find(|entry| entry.name == name).cloned();
+            let status = match (&left_entry, &right_entry) {
+                (Some(left_entry), Some(right_entry)) => {
+                    if compare_metadata(&left_entry.metadata, &right_entry.metadata) {
+                        ComparisonStatus::Equal
+                    } else {
+                        ComparisonStatus::Different
+                    }
+                }
+                _ => ComparisonStatus::Missing,
+            };
+            FolderEntryComparison {
+                name,
+                left: left_entry,
+                right: right_entry,
+                status,
+            }
+        })
+        .collect()
 }

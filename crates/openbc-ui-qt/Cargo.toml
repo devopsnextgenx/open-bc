@@ -20,3 +20,4 @@ tokio.workspace = true
 
 [build-dependencies]
 cxx-qt-build = { version = "0.7.3", optional = true }
+pkg-config = "0.3"

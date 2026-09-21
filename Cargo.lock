@@ -926,6 +926,7 @@ dependencies = [
  "cxx-qt-build",
  "openbc-core",
  "openbc-engine",
+ "pkg-config",
  "tokio",
 ]
 

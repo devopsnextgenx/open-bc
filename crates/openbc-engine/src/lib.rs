@@ -1,8 +1,8 @@
 //! Non-blocking, level-at-a-time folder scanning orchestration.
 
 use openbc_compute::ComputeDispatcher;
-use openbc_core::{DirectoryEntry, EntryPath};
-use openbc_vfs::{AsyncVfs, VfsError};
+use openbc_core::{compare_directory_entries, DirectoryEntry, EntryPath, FolderComparison};
+use openbc_vfs::{read_folder_level, AsyncVfs, VfsError};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
@@ -36,6 +36,23 @@ pub enum ScanError {
     /// The receiver was dropped before the scan could publish an event.
     #[error("scan event receiver was dropped")]
     ReceiverClosed,
+}
+
+/// Compare one visible folder level from two providers.
+pub async fn compare_folder_level(
+    left_vfs: Arc<dyn AsyncVfs>,
+    left_path: EntryPath,
+    right_vfs: Arc<dyn AsyncVfs>,
+    right_path: EntryPath,
+) -> Result<FolderComparison, ScanError> {
+    let (left_metadata, left_entries) = read_folder_level(left_vfs.as_ref(), &left_path).await?;
+    let (right_metadata, right_entries) =
+        read_folder_level(right_vfs.as_ref(), &right_path).await?;
+    Ok(FolderComparison {
+        left: left_metadata,
+        right: right_metadata,
+        entries: compare_directory_entries(&left_entries, &right_entries),
+    })
 }
 
 /// Scan exactly one expanded directory level and schedule file hashing.

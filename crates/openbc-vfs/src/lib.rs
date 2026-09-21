@@ -1,7 +1,7 @@
 //! Lazy virtual filesystem contracts and the local filesystem adapter.
 
 use async_trait::async_trait;
-use openbc_core::{DirectoryEntry, EntryMetadata, EntryPath};
+use openbc_core::{DirectoryEntry, EntryMetadata, EntryPath, FolderMetadata};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -146,4 +146,21 @@ pub async fn read_small_file(vfs: &dyn AsyncVfs, path: &EntryPath) -> Result<Vec
             source,
         })?;
     Ok(bytes)
+}
+
+/// Read one folder level and return the metadata needed by a folder view.
+pub async fn read_folder_level(
+    vfs: &dyn AsyncVfs,
+    path: &EntryPath,
+) -> Result<(FolderMetadata, Vec<DirectoryEntry>), VfsError> {
+    let entries = vfs.read_dir(path).await?;
+    let metadata = vfs.stat(path).await?;
+    let folder_metadata = FolderMetadata {
+        path: path.clone(),
+        item_count: entries.len(),
+        size: entries.iter().map(|entry| entry.metadata.size).sum(),
+        modified: metadata.modified,
+        readable: true,
+    };
+    Ok((folder_metadata, entries))
 }
