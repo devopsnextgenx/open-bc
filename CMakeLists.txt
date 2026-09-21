@@ -6,6 +6,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
+# Corrosion cannot use rustup's proxy when it probes the compiler version.
+find_program(RUSTUP_EXECUTABLE rustup)
+set(RUSTUP_RESULT 1)
+if(RUSTUP_EXECUTABLE)
+    execute_process(
+        COMMAND "${RUSTUP_EXECUTABLE}" which rustc
+        OUTPUT_VARIABLE RUSTC_EXECUTABLE
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE RUSTUP_RESULT
+    )
+endif()
+if(NOT RUSTUP_RESULT EQUAL 0 OR NOT EXISTS "${RUSTC_EXECUTABLE}")
+    find_program(RUSTC_EXECUTABLE rustc REQUIRED)
+endif()
+set(Rust_COMPILER "${RUSTC_EXECUTABLE}" CACHE FILEPATH "Rust compiler used by Corrosion")
+
 # 1. Find Qt6 Installation
 find_package(Qt6 COMPONENTS Core Gui Widgets REQUIRED)
 
@@ -41,9 +57,10 @@ target_link_libraries(OpenBC PRIVATE
     openbc_ui_qt-static
 )
 
+target_compile_definitions(OpenBC PRIVATE OPENBC_BUILD_EXECUTABLE)
+
 # 5. Windows-Specific Linker Flags
 if(WIN32)
-    target_compile_definitions(OpenBC PRIVATE OPENBC_BUILD_EXECUTABLE)
     set_target_properties(OpenBC PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(OpenBC PRIVATE ws2_32 userenv advapi32 ntdll)
 endif()

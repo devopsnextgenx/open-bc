@@ -12,14 +12,27 @@ fn run(command: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+fn cmake_build() -> Result<()> {
+    run("cmake", &["-S", ".", "-B", "build", "-DCMAKE_BUILD_TYPE=Release"])?;
+    run("cmake", &["--build", "build", "--target", "OpenBC"])
+}
+
+fn cmake_executable() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "build/OpenBC.exe"
+    } else {
+        "build/OpenBC"
+    }
+}
+
 fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("setup") => {
             println!("Dependencies are installed by ./setup.sh; validating the workspace.");
             run("cargo", &["check", "--workspace"])
         }
-        Some("build") => run("cargo", &["build", "--workspace"]),
-        Some("run") => run("cargo", &["run", "-p", "openbc-ui-qt"]),
+        Some("build") => cmake_build(),
+        Some("run") => run(cmake_executable(), &[]),
         Some(command) => bail!("unknown xtask command: {command}; use setup, build, or run"),
         None => bail!("missing command; use setup, build, or run"),
     }
