@@ -1,5 +1,8 @@
 //! Domain types and pure comparison contracts for OpenBC.
 
+/// Pure text and log comparison algorithms.
+pub mod text;
+
 use std::path::PathBuf;
 use std::time::SystemTime;
 

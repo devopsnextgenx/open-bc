@@ -7,5 +7,6 @@ edition.workspace = true
 openbc-compute = { path = "../openbc-compute" }
 openbc-core = { path = "../openbc-core" }
 openbc-vfs = { path = "../openbc-vfs" }
+rayon.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

@@ -1,5 +1,7 @@
 //! Non-blocking, level-at-a-time folder scanning orchestration.
 
+pub mod text_runner;
+
 use openbc_compute::ComputeDispatcher;
 use openbc_core::{compare_directory_entries, DirectoryEntry, EntryPath, FolderComparison};
 use openbc_vfs::{read_folder_level, AsyncVfs, VfsError};

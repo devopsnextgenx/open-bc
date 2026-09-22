@@ -1,23 +1,28 @@
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
 #include <QMainWindow>
+#include <QMouseEvent>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMetaObject>
 #include <QPlainTextEdit>
+#include <QPainter>
 #include <QPointer>
 #include <QRegularExpression>
 #include <QRunnable>
@@ -30,11 +35,17 @@
 #include <QStyleFactory>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QThread>
 #include <QThreadPool>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QTextBlock>
+#include <QTextCursor>
+#include <QTextDocument>
+#include <QTextEdit>
+#include <QTextFormat>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <algorithm>
@@ -388,6 +399,946 @@ QTreeWidgetItem* pairedItem(QTreeWidgetItem* item, QTreeWidget* otherTree) {
     return counterpart;
 }
 
+struct TextDiffLine {
+    QString left;
+    QString right;
+    int leftNumber = 0;
+    int rightNumber = 0;
+    bool changed = false;
+    bool whitespaceOnly = false;
+};
+
+QString normalizedTextLine(const QString& line) {
+    QString normalized = line;
+    normalized.remove(' ');
+    normalized.remove('\t');
+    return normalized;
+}
+
+QVector<TextDiffLine> alignTextLines(const QStringList& left, const QStringList& right) {
+    QVector<TextDiffLine> result;
+    const int leftCount = left.size();
+    const int rightCount = right.size();
+    QVector<QVector<int>> common(leftCount + 1, QVector<int>(rightCount + 1));
+    for (int leftIndex = leftCount - 1; leftIndex >= 0; --leftIndex) {
+        for (int rightIndex = rightCount - 1; rightIndex >= 0; --rightIndex) {
+            common[leftIndex][rightIndex] =
+                left[leftIndex] == right[rightIndex]
+                    ? common[leftIndex + 1][rightIndex + 1] + 1
+                    : qMax(common[leftIndex + 1][rightIndex], common[leftIndex][rightIndex + 1]);
+        }
+    }
+
+    int leftIndex = 0;
+    int rightIndex = 0;
+    while (leftIndex < leftCount || rightIndex < rightCount) {
+        if (leftIndex < leftCount && rightIndex < rightCount &&
+            left[leftIndex] == right[rightIndex]) {
+            result.push_back({left[leftIndex], right[rightIndex], leftIndex + 1, rightIndex + 1,
+                              false, false});
+            ++leftIndex;
+            ++rightIndex;
+            continue;
+        }
+
+        // Find the next exact anchor and align the changed block before it as
+        // a pair of editor rows. This keeps insertions from shifting every
+        // later matching line onto the wrong row.
+        int anchorLeft = leftCount;
+        int anchorRight = rightCount;
+        for (int candidateLeft = leftIndex; candidateLeft < leftCount; ++candidateLeft) {
+            for (int candidateRight = rightIndex; candidateRight < rightCount; ++candidateRight) {
+                if (left[candidateLeft] == right[candidateRight] &&
+                    common[candidateLeft][candidateRight] == common[leftIndex][rightIndex]) {
+                    if (candidateLeft + candidateRight < anchorLeft + anchorRight) {
+                        anchorLeft = candidateLeft;
+                        anchorRight = candidateRight;
+                    }
+                }
+            }
+        }
+        const int blockLength = qMax(anchorLeft - leftIndex, anchorRight - rightIndex);
+        for (int offset = 0; offset < blockLength; ++offset) {
+            const bool hasLeft = leftIndex + offset < anchorLeft;
+            const bool hasRight = rightIndex + offset < anchorRight;
+            const QString leftText = hasLeft ? left[leftIndex + offset] : QString();
+            const QString rightText = hasRight ? right[rightIndex + offset] : QString();
+            const bool whitespaceOnly = hasLeft && hasRight &&
+                                        normalizedTextLine(leftText) == normalizedTextLine(rightText);
+            result.push_back({leftText, rightText, hasLeft ? leftIndex + offset + 1 : 0,
+                              hasRight ? rightIndex + offset + 1 : 0, true, whitespaceOnly});
+        }
+        leftIndex = anchorLeft;
+        rightIndex = anchorRight;
+    }
+    return result;
+}
+
+// A maximal run of contiguous changed rows that share the same
+// whitespace-only-ness. Each group gets exactly one copy arrow instead of
+// one per line, and "trivial" (blank/tab-only) runs are always their own
+// group so they never merge with a real content change next to them.
+struct DiffGroup {
+    int start = 0;
+    int end = 0;
+    bool whitespaceOnly = false;
+};
+
+QVector<DiffGroup> groupDiffRows(const QVector<TextDiffLine>& rows) {
+    QVector<DiffGroup> groups;
+    int i = 0;
+    while (i < rows.size()) {
+        if (!rows[i].changed) {
+            ++i;
+            continue;
+        }
+        const int start = i;
+        const bool whitespaceOnly = rows[i].whitespaceOnly;
+        while (i < rows.size() && rows[i].changed && rows[i].whitespaceOnly == whitespaceOnly) {
+            ++i;
+        }
+        groups.push_back({start, i - 1, whitespaceOnly});
+    }
+    return groups;
+}
+
+class LineNumberEditor : public QPlainTextEdit {
+public:
+    // Which margin a gutter widget lives in. Line numbers and the copy-arrow
+    // strip are configured independently so the right-hand editor can show
+    // its numbers on the outer (right) edge while still keeping its arrows
+    // on the inner edge next to the splitter.
+    enum class GutterSide { None, Left, Right };
+
+    explicit LineNumberEditor(GutterSide numberSide = GutterSide::Left,
+                              GutterSide arrowSide = GutterSide::None, QWidget* parent = nullptr)
+        : QPlainTextEdit(parent), numberSide_(numberSide), arrowSide_(arrowSide) {
+        setLineWrapMode(QPlainTextEdit::NoWrap);
+        setTabStopDistance(fontMetrics().horizontalAdvance(' ') * 4);
+        connect(this, &QPlainTextEdit::blockCountChanged, this,
+                [this](int) { updateMarginWidths(); });
+        connect(this, &QPlainTextEdit::updateRequest, this,
+                [this](const QRect& rect, int delta) {
+                    if (delta) {
+                        lineNumberArea_->scroll(0, delta);
+                        if (arrowArea_) arrowArea_->scroll(0, delta);
+                    } else {
+                        lineNumberArea_->update(0, rect.y(), lineNumberArea_->width(), rect.height());
+                        if (arrowArea_) arrowArea_->update(0, rect.y(), arrowArea_->width(), rect.height());
+                    }
+                    if (rect.contains(viewport()->rect())) updateMarginWidths();
+                });
+        connect(this, &QPlainTextEdit::cursorPositionChanged, this,
+                [this]() { lineNumberArea_->update(); });
+        lineNumberArea_ = new QWidget(this);
+        lineNumberArea_->setStyleSheet("background:#232323; color:#777b8f;");
+        lineNumberArea_->setCursor(Qt::ArrowCursor);
+        lineNumberArea_->installEventFilter(this);
+        if (arrowSide_ != GutterSide::None) {
+            arrowArea_ = new QWidget(this);
+            arrowArea_->setStyleSheet("background:#232323;");
+            arrowArea_->setCursor(Qt::PointingHandCursor);
+            arrowArea_->setToolTip(arrowSide_ == GutterSide::Right
+                                        ? "Copy this change to the right"
+                                        : "Copy this change to the left");
+            arrowArea_->installEventFilter(this);
+        }
+        updateMarginWidths();
+    }
+
+    void setLineNumbers(const QVector<int>& numbers) {
+        lineNumbers_ = numbers;
+        updateMarginWidths();
+        lineNumberArea_->update();
+    }
+
+    // Rows currently shown (same list on both editors) plus the grouping
+    // used to draw/hit-test one arrow per contiguous change. Call with two
+    // empty containers to hide all arrows, e.g. once free-form edits have
+    // made the row mapping stale until the next Reload.
+    void setDiffData(const QVector<TextDiffLine>& rows, const QVector<DiffGroup>& groups) {
+        diffRows_ = rows;
+        diffGroups_ = groups;
+        if (arrowArea_) arrowArea_->update();
+    }
+
+    // (start row, end row) of the group that was clicked, inclusive.
+    std::function<void(int, int)> onArrowClicked;
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == lineNumberArea_ && event->type() == QEvent::Paint) {
+            paintLineNumbers(static_cast<QPaintEvent*>(event));
+            return true;
+        }
+        if (arrowArea_ && watched == arrowArea_) {
+            if (event->type() == QEvent::Paint) {
+                paintArrows(static_cast<QPaintEvent*>(event));
+                return true;
+            }
+            if (event->type() == QEvent::MouseButtonPress) {
+                handleArrowClick(static_cast<QMouseEvent*>(event));
+                return true;
+            }
+        }
+        return QPlainTextEdit::eventFilter(watched, event);
+    }
+
+    void resizeEvent(QResizeEvent* event) override {
+        QPlainTextEdit::resizeEvent(event);
+        const QRect cr = contentsRect();
+        int left = cr.left();
+        int right = cr.right();
+        if (numberSide_ == GutterSide::Left) {
+            lineNumberArea_->setGeometry(left, cr.top(), lineNumberDigitsWidth(), cr.height());
+            left += lineNumberDigitsWidth();
+        }
+        if (arrowSide_ == GutterSide::Left) {
+            arrowArea_->setGeometry(left, cr.top(), kArrowWidth, cr.height());
+            left += kArrowWidth;
+        }
+        if (numberSide_ == GutterSide::Right) {
+            right -= lineNumberDigitsWidth();
+            lineNumberArea_->setGeometry(right, cr.top(), lineNumberDigitsWidth(), cr.height());
+        }
+        if (arrowSide_ == GutterSide::Right) {
+            right -= kArrowWidth;
+            arrowArea_->setGeometry(right, cr.top(), kArrowWidth, cr.height());
+        }
+    }
+
+private:
+    static constexpr int kArrowWidth = 18;
+
+    int lineNumberDigitsWidth() const {
+        return fontMetrics().horizontalAdvance(QString::number(qMax(1, lineNumbers_.size()))) + 16;
+    }
+
+    void updateMarginWidths() {
+        const int numbers = lineNumberDigitsWidth();
+        const int arrows = arrowSide_ != GutterSide::None ? kArrowWidth : 0;
+        int leftMargin = 0;
+        int rightMargin = 0;
+        if (numberSide_ == GutterSide::Left) leftMargin += numbers; else rightMargin += numbers;
+        if (arrowSide_ == GutterSide::Left) leftMargin += arrows;
+        else if (arrowSide_ == GutterSide::Right) rightMargin += arrows;
+        setViewportMargins(leftMargin, 0, rightMargin, 0);
+    }
+
+    void paintLineNumbers(QPaintEvent* event) {
+        QPainter painter(lineNumberArea_);
+        painter.fillRect(event->rect(), QColor("#232323"));
+        const int textMargin = numberSide_ == GutterSide::Left ? 8 : 6;
+        forEachVisibleBlock(event, [&](int blockNumber, int top, int bottom) {
+            const int number = blockNumber < lineNumbers_.size() ? lineNumbers_[blockNumber] : 0;
+            painter.setPen(number ? QColor("#a6adc8") : QColor("#555a6b"));
+            painter.drawText(0, top, lineNumberArea_->width() - textMargin, bottom - top,
+                             Qt::AlignRight, number ? QString::number(number) : QString());
+        });
+    }
+
+    // A group with more than one visible row gets a short bar spanning its
+    // full height in addition to the arrowhead, so a big change reads as one
+    // wide marker instead of a giant single triangle.
+    void paintArrows(QPaintEvent* event) {
+        QPainter painter(arrowArea_);
+        painter.fillRect(event->rect(), QColor("#232323"));
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        for (const DiffGroup& group : diffGroups_) {
+            if (!groupHasSource(group)) continue;
+            int top = -1;
+            int bottom = -1;
+            forEachVisibleBlock(event, [&](int blockNumber, int blockTop, int blockBottom) {
+                if (blockNumber < group.start || blockNumber > group.end) return;
+                if (top < 0) top = blockTop;
+                bottom = blockBottom;
+            });
+            if (top < 0) continue;
+            drawGroupArrow(painter, top, bottom, group.whitespaceOnly);
+        }
+    }
+
+    void drawGroupArrow(QPainter& painter, int top, int bottom, bool whitespaceOnly) {
+        const QColor color = whitespaceOnly ? QColor(0x4e, 0xa1, 0xff) : QColor(0xf2, 0xc0, 0x4a);
+        const int mid = (top + bottom) / 2;
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        if (bottom - top > fontMetrics().height() + 4) {
+            const int stripeX = arrowSide_ == GutterSide::Right ? 2 : kArrowWidth - 5;
+            painter.fillRect(QRectF(stripeX, top + 2, 3, bottom - top - 4), color);
+        }
+        QPolygonF arrow;
+        if (arrowSide_ == GutterSide::Right) {
+            arrow << QPointF(3, mid - 6) << QPointF(3, mid + 6) << QPointF(kArrowWidth - 4, mid);
+        } else {
+            arrow << QPointF(kArrowWidth - 3, mid - 6) << QPointF(kArrowWidth - 3, mid + 6)
+                  << QPointF(4, mid);
+        }
+        painter.drawPolygon(arrow);
+    }
+
+    bool groupHasSource(const DiffGroup& group) const {
+        for (int row = group.start; row <= group.end && row < diffRows_.size(); ++row) {
+            const bool has = arrowSide_ == GutterSide::Right ? diffRows_[row].leftNumber != 0
+                                                             : diffRows_[row].rightNumber != 0;
+            if (has) return true;
+        }
+        return false;
+    }
+
+    void handleArrowClick(QMouseEvent* event) {
+        const qreal y = event->position().y();
+        for (const DiffGroup& group : diffGroups_) {
+            if (!groupHasSource(group)) continue;
+            int top = -1;
+            int bottom = -1;
+            forEachVisibleBlock(nullptr, [&](int blockNumber, int blockTop, int blockBottom) {
+                if (blockNumber < group.start || blockNumber > group.end) return;
+                if (top < 0) top = blockTop;
+                bottom = blockBottom;
+            });
+            if (top < 0) continue;
+            if (y >= top && y < bottom && onArrowClicked) {
+                onArrowClicked(group.start, group.end);
+                return;
+            }
+        }
+    }
+
+    // Walks the blocks currently on screen, handing each one's row number and
+    // pixel top/bottom to `fn`. `event` narrows the walk to the repainted
+    // rect when painting; pass nullptr to cover the whole viewport (used for
+    // hit-testing on click).
+    template <typename Fn>
+    void forEachVisibleBlock(QPaintEvent* event, Fn&& fn) {
+        QTextBlock block = firstVisibleBlock();
+        int blockNumber = block.blockNumber();
+        int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
+        int bottom = top + qRound(blockBoundingRect(block).height());
+        const int limit = event ? event->rect().bottom() : viewport()->rect().bottom();
+        while (block.isValid() && top <= limit) {
+            if (block.isVisible() && bottom >= 0) {
+                fn(blockNumber, top, bottom);
+            }
+            block = block.next();
+            top = bottom;
+            if (!block.isValid()) break;
+            bottom = top + qRound(blockBoundingRect(block).height());
+            ++blockNumber;
+        }
+    }
+
+    QWidget* lineNumberArea_ = nullptr;
+    QWidget* arrowArea_ = nullptr;
+    GutterSide numberSide_ = GutterSide::Left;
+    GutterSide arrowSide_ = GutterSide::None;
+    QVector<int> lineNumbers_;
+    QVector<TextDiffLine> diffRows_;
+    QVector<DiffGroup> diffGroups_;
+
+    friend class TextCompareView;
+};
+
+class DifferenceOverview : public QFrame {
+public:
+    explicit DifferenceOverview(QWidget* parent = nullptr, bool vertical = false)
+        : QFrame(parent), vertical_(vertical) {
+        if (vertical_) {
+            setMinimumWidth(22);
+            setMaximumWidth(22);
+        } else {
+            setMinimumHeight(18);
+            setMaximumHeight(18);
+        }
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    void setRows(const QVector<TextDiffLine>& rows) {
+        rows_ = rows;
+        update();
+    }
+
+    void setCurrentRow(int row) {
+        currentRow_ = row;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.fillRect(rect(), QColor("#232323"));
+        if (rows_.isEmpty()) return;
+        const qreal extent = vertical_ ? height() : width();
+        // Cap how tall a single row's mark can get: with only a handful of
+        // lines in a tall panel, extent / rows_.size() alone would stretch
+        // one changed line into a huge block, which read as a rendering bug.
+        const qreal rowSize = vertical_ ? qMin(extent / rows_.size(), 10.0) : extent / rows_.size();
+        for (int index = 0; index < rows_.size(); ++index) {
+            if (rows_[index].changed) {
+                const QColor color = rows_[index].whitespaceOnly ? QColor("#4ea1ff")
+                                                                  : QColor("#ff5c5c");
+                if (vertical_) {
+                    painter.fillRect(QRectF(3, index * rowSize, width() - 6, qMax<qreal>(2, rowSize)),
+                                     color);
+                } else {
+                    painter.fillRect(QRectF(index * rowSize, 2, qMax<qreal>(2, rowSize), height() - 4),
+                                     color);
+                }
+            }
+            if (index == currentRow_) {
+                painter.fillRect(vertical_ ? QRectF(0, index * rowSize, width(), qMax<qreal>(1, rowSize))
+                                           : QRectF(index * rowSize, 0, qMax<qreal>(1, rowSize), height()),
+                                QColor("#f8f8f2"));
+            }
+        }
+    }
+
+    void mousePressEvent(QMouseEvent* event) override {
+        if (!rows_.isEmpty() && onRowClicked) {
+            const qreal position = vertical_ ? event->position().y() : event->position().x();
+            const qreal extent = vertical_ ? height() : width();
+            onRowClicked(qBound(0, static_cast<int>(position * rows_.size() / extent),
+                                rows_.size() - 1));
+        }
+    }
+
+public:
+    std::function<void(int)> onRowClicked;
+
+private:
+    QVector<TextDiffLine> rows_;
+    bool vertical_ = false;
+    int currentRow_ = -1;
+};
+
+// Bottom "console" strip: two monospace rows that always mirror whichever
+// line the caret is currently on - left file's text on top, right file's
+// text underneath - coloured the same way as the in-editor highlight (red
+// for a real difference, blue/grey for a whitespace-only one), like Beyond
+// Compare's line-preview bar under its diff panes.
+class DiffLinePreview : public QFrame {
+public:
+    explicit DiffLinePreview(QWidget* parent = nullptr) : QFrame(parent) {
+        setObjectName("diffLinePreview");
+        auto* layout = new QVBoxLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(1);
+        topLabel_ = new QLabel(this);
+        bottomLabel_ = new QLabel(this);
+        for (QLabel* label : {topLabel_, bottomLabel_}) {
+            label->setContentsMargins(8, 2, 8, 2);
+            label->setFixedHeight(20);
+            label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            label->setStyleSheet("background:transparent; color:#f8f8f2;");
+        }
+        layout->addWidget(topLabel_);
+        layout->addWidget(bottomLabel_);
+    }
+
+    void setRow(const TextDiffLine& row) {
+        const QString background = !row.changed         ? "transparent"
+                                    : row.whitespaceOnly ? "#2d5a87"
+                                                          : "#7a2d2d";
+        const QString style = QString("background:%1; color:#f8f8f2;").arg(background);
+        topLabel_->setStyleSheet(style);
+        bottomLabel_->setStyleSheet(style);
+        topLabel_->setText(row.leftNumber ? QString("%1:  %2").arg(row.leftNumber).arg(row.left)
+                                          : QString());
+        bottomLabel_->setText(row.rightNumber ? QString("%1:  %2").arg(row.rightNumber).arg(row.right)
+                                              : QString());
+    }
+
+    void clear() {
+        topLabel_->clear();
+        bottomLabel_->clear();
+    }
+
+private:
+    QLabel* topLabel_ = nullptr;
+    QLabel* bottomLabel_ = nullptr;
+};
+
+class TextCompareView : public QWidget {
+public:
+    TextCompareView(const QString& leftPath, const QString& rightPath,
+                    const QString& leftText, const QString& rightText, QWidget* parent = nullptr)
+        : QWidget(parent), leftPath_(leftPath), rightPath_(rightPath),
+          leftOriginal_(leftText.split('\n')), rightOriginal_(rightText.split('\n')) {
+        setObjectName("textCompareView");
+        buildUi();
+        connectSignals();
+        rebuild();
+    }
+
+    QString title() const {
+        return QFileInfo(leftPath_).fileName() + " <-> " + QFileInfo(rightPath_).fileName();
+    }
+
+    // Wired by main() so the toolbar's Home / Sessions buttons behave like
+    // Beyond Compare's: both return the user to the session (folder-compare)
+    // tab this text view was opened from.
+    std::function<void()> onHomeRequested;
+    std::function<void()> onSessionsRequested;
+    std::function<void()> onTitleChanged;
+
+private:
+    void buildUi() {
+        using icons::Glyph;
+        auto* root = new QVBoxLayout(this);
+        root->setContentsMargins(0, 0, 0, 0);
+        root->setSpacing(0);
+
+        // ---- toolbar: mirrors Beyond Compare's Text Compare toolbar ----
+        toolbar_ = new QToolBar(this);
+        toolbar_->setObjectName("textCompareToolbar");
+        toolbar_->setMovable(false);
+        toolbar_->setFloatable(false);
+        toolbar_->setIconSize(QSize(20, 20));
+        toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+
+        homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), "Home");
+        sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), "Sessions");
+        toolbar_->addSeparator();
+
+        auto* viewGroup = new QActionGroup(this);
+        viewGroup->setExclusive(true);
+        showAllAction_ = toolbar_->addAction(icons::glyph(Glyph::ShowAll), "All");
+        showDiffsAction_ = toolbar_->addAction(icons::glyph(Glyph::ShowDiffs), "Diffs");
+        contextAction_ = toolbar_->addAction(icons::glyph(Glyph::Context), "Context");
+        for (QAction* action : {showAllAction_, showDiffsAction_, contextAction_}) {
+            action->setCheckable(true);
+            viewGroup->addAction(action);
+        }
+        contextAction_->setChecked(true);
+        toolbar_->addSeparator();
+
+        minorAction_ = toolbar_->addAction(icons::glyph(Glyph::Minor), "Minor");
+        minorAction_->setCheckable(true);
+        minorAction_->setToolTip("Treat whitespace-only differences as unimportant");
+        rulesAction_ = toolbar_->addAction(icons::glyph(Glyph::Rules), "Rules");
+        rulesAction_->setCheckable(true);
+        formatAction_ = toolbar_->addAction(icons::glyph(Glyph::Format), "Format");
+        formatAction_->setCheckable(true);
+        formatAction_->setToolTip("Wrap long lines");
+        toolbar_->addSeparator();
+
+        copyAction_ = toolbar_->addAction(icons::glyph(Glyph::CopyLine), "Copy");
+        copyAction_->setToolTip("Copy the current change to the other side");
+        toolbar_->addSeparator();
+
+        nextSectionAction_ = toolbar_->addAction(icons::glyph(Glyph::NextSection), "Next Section");
+        prevSectionAction_ = toolbar_->addAction(icons::glyph(Glyph::PrevSection), "Prev Section");
+        toolbar_->addSeparator();
+
+        swapAction_ = toolbar_->addAction(icons::glyph(Glyph::Swap), "Swap");
+        reloadAction_ = toolbar_->addAction(icons::glyph(Glyph::Refresh), "Reload");
+        root->addWidget(toolbar_);
+
+        auto* header = new QHBoxLayout;
+        header->setContentsMargins(8, 5, 8, 5);
+        leftLabel_ = new QLabel(QFileInfo(leftPath_).fileName(), this);
+        rightLabel_ = new QLabel(QFileInfo(rightPath_).fileName(), this);
+        leftLabel_->setStyleSheet("font-weight:700; color:#f8f8f2;");
+        rightLabel_->setStyleSheet("font-weight:700; color:#f8f8f2;");
+        header->addWidget(leftLabel_, 1);
+        header->addWidget(rightLabel_, 1);
+        root->addLayout(header);
+
+        auto* editors = new QSplitter(Qt::Horizontal, this);
+        editors->setChildrenCollapsible(false);
+
+        auto* leftPane = new QWidget(editors);
+        auto* leftLayout = new QHBoxLayout(leftPane);
+        leftLayout->setContentsMargins(0, 0, 0, 0);
+        leftLayout->setSpacing(0);
+        miniMap_ = new DifferenceOverview(leftPane, true);
+        // Left editor: numbers on the outer (left) edge, arrows on the inner
+        // edge next to the splitter, pointing right toward the other file.
+        leftEditor_ = new LineNumberEditor(LineNumberEditor::GutterSide::Left,
+                                           LineNumberEditor::GutterSide::Right, leftPane);
+        leftLayout->addWidget(miniMap_);
+        leftLayout->addWidget(leftEditor_, 1);
+
+        auto* rightPane = new QWidget(editors);
+        auto* rightLayout = new QHBoxLayout(rightPane);
+        rightLayout->setContentsMargins(0, 0, 0, 0);
+        rightLayout->setSpacing(0);
+        // Right editor: numbers on the outer (right) edge, arrows on the
+        // inner edge next to the splitter, pointing left.
+        rightEditor_ = new LineNumberEditor(LineNumberEditor::GutterSide::Right,
+                                            LineNumberEditor::GutterSide::Left, rightPane);
+        rightLayout->addWidget(rightEditor_, 1);
+
+        editors->addWidget(leftPane);
+        editors->addWidget(rightPane);
+        editors->setStretchFactor(0, 1);
+        editors->setStretchFactor(1, 1);
+        root->addWidget(editors, 1);
+
+        preview_ = new DiffLinePreview(this);
+        root->addWidget(preview_);
+
+        status_ = new QLabel(this);
+        status_->setStyleSheet("background:#3e3e3e; border-top:1px solid #505050; padding:3px 8px;");
+        root->addWidget(status_);
+    }
+
+    void connectSignals() {
+        connect(leftEditor_->verticalScrollBar(), &QScrollBar::valueChanged, this,
+                [this](int value) {
+                    if (syncing_) return;
+                    syncing_ = true;
+                    rightEditor_->verticalScrollBar()->setValue(value);
+                    syncing_ = false;
+                });
+        connect(rightEditor_->verticalScrollBar(), &QScrollBar::valueChanged, this,
+                [this](int value) {
+                    if (syncing_) return;
+                    syncing_ = true;
+                    leftEditor_->verticalScrollBar()->setValue(value);
+                    syncing_ = false;
+                });
+        // Both editors' rows line up (filler blanks keep them aligned), so
+        // whichever side the caret moves in, mirror the same row number as
+        // the "current line" on both panes - VS Code style highlight, kept
+        // in sync across the split the way the minimap/preview already are.
+        const auto updateCurrentRow = [this](const QTextCursor& cursor) {
+            currentRow_ = cursor.blockNumber();
+            miniMap_->setCurrentRow(currentRow_);
+            if (currentRow_ >= 0 && currentRow_ < rows_.size()) {
+                preview_->setRow(rows_[currentRow_]);
+            }
+            updateExtraSelections();
+        };
+        connect(leftEditor_, &QPlainTextEdit::cursorPositionChanged, this,
+                [this, updateCurrentRow]() { updateCurrentRow(leftEditor_->textCursor()); });
+        connect(rightEditor_, &QPlainTextEdit::cursorPositionChanged, this,
+                [this, updateCurrentRow]() { updateCurrentRow(rightEditor_->textCursor()); });
+        miniMap_->onRowClicked = [this](int row) { jumpToRow(row); };
+        leftEditor_->onArrowClicked = [this](int start, int end) { copyGroup(start, end, true); };
+        rightEditor_->onArrowClicked = [this](int start, int end) { copyGroup(start, end, false); };
+
+        // Track structural edits (a newline typed or removed) separately per
+        // side: those change how many blocks exist, so the row <-> block
+        // mapping the diff arrows/highlights rely on is no longer valid
+        // until the next Reload. In-place edits that don't add or remove a
+        // line keep the mapping intact and stay fully interactive.
+        connect(leftEditor_->document(), &QTextDocument::blockCountChanged, this,
+                [this](int count) {
+                    if (applyingProgrammaticUpdate_ || count == rows_.size()) return;
+                    leftStructurallyEdited_ = true;
+                    leftEditor_->setDiffData({}, {});
+                });
+        connect(rightEditor_->document(), &QTextDocument::blockCountChanged, this,
+                [this](int count) {
+                    if (applyingProgrammaticUpdate_ || count == rows_.size()) return;
+                    rightStructurallyEdited_ = true;
+                    rightEditor_->setDiffData({}, {});
+                });
+
+        connect(homeAction_, &QAction::triggered, this,
+                [this]() { if (onHomeRequested) onHomeRequested(); });
+        connect(sessionsAction_, &QAction::triggered, this,
+                [this]() { if (onSessionsRequested) onSessionsRequested(); });
+        connect(showAllAction_, &QAction::triggered, this, [this]() { rebuild(); });
+        connect(showDiffsAction_, &QAction::triggered, this, [this]() { rebuild(); });
+        connect(contextAction_, &QAction::triggered, this, [this]() { rebuild(); });
+        connect(minorAction_, &QAction::toggled, this, [this](bool) { rebuild(); });
+        connect(formatAction_, &QAction::toggled, this, [this](bool checked) {
+            const auto mode = checked ? QPlainTextEdit::WidgetWidth : QPlainTextEdit::NoWrap;
+            leftEditor_->setLineWrapMode(mode);
+            rightEditor_->setLineWrapMode(mode);
+        });
+        connect(copyAction_, &QAction::triggered, this, [this]() {
+            const bool fromLeft = !rightEditor_->hasFocus();
+            const int row = (fromLeft ? leftEditor_ : rightEditor_)->textCursor().blockNumber();
+            const DiffGroup* group = groupContainingRow(row);
+            if (group) copyGroup(group->start, group->end, fromLeft);
+        });
+        connect(nextSectionAction_, &QAction::triggered, this, [this]() { jumpToSection(1); });
+        connect(prevSectionAction_, &QAction::triggered, this, [this]() { jumpToSection(-1); });
+        connect(swapAction_, &QAction::triggered, this, [this]() {
+            syncFromEditors();
+            std::swap(leftOriginal_, rightOriginal_);
+            std::swap(leftPath_, rightPath_);
+            leftLabel_->setText(QFileInfo(leftPath_).fileName());
+            rightLabel_->setText(QFileInfo(rightPath_).fileName());
+            if (onTitleChanged) onTitleChanged();
+            rebuild();
+        });
+        connect(reloadAction_, &QAction::triggered, this, [this]() {
+            syncFromEditors();
+            rebuild();
+        });
+    }
+
+    static QTextCursor cursorAtRow(QPlainTextEdit* editor, int row) {
+        return QTextCursor(editor->document()->findBlockByNumber(row));
+    }
+
+    void jumpToRow(int row) {
+        leftEditor_->setTextCursor(cursorAtRow(leftEditor_, row));
+        rightEditor_->setTextCursor(cursorAtRow(rightEditor_, row));
+    }
+
+    void jumpToSection(int direction) {
+        if (groups_.isEmpty()) return;
+        const int cursorRow = leftEditor_->textCursor().blockNumber();
+        if (direction > 0) {
+            for (const auto& group : groups_) {
+                if (group.start > cursorRow) {
+                    jumpToRow(group.start);
+                    return;
+                }
+            }
+        } else {
+            for (auto it = groups_.crbegin(); it != groups_.crend(); ++it) {
+                if (it->start < cursorRow) {
+                    jumpToRow(it->start);
+                    return;
+                }
+            }
+        }
+    }
+
+    const DiffGroup* groupContainingRow(int row) const {
+        for (const auto& group : groups_) {
+            if (row >= group.start && row <= group.end) return &group;
+        }
+        return nullptr;
+    }
+
+    // Pulls whatever the user has actually typed back into the plain
+    // left/right line arrays so Reload, Swap and group-copy all operate on
+    // current content rather than the text captured when the tab opened.
+    // Rows still in sync with the editors (no lines added/removed) are read
+    // back precisely, filler alignment rows included; once a side has had a
+    // structural edit (a newline typed or deleted) its row mapping can no
+    // longer be trusted, so that side falls back to the editor's raw text.
+    void syncFromEditors() {
+        if (!leftStructurallyEdited_) {
+            for (int i = 0; i < rows_.size() && i < leftEditor_->document()->blockCount(); ++i) {
+                rows_[i].left = leftEditor_->document()->findBlockByNumber(i).text();
+            }
+            leftOriginal_ = materializeSide(true);
+        } else {
+            leftOriginal_ = leftEditor_->toPlainText().split('\n');
+        }
+        if (!rightStructurallyEdited_) {
+            for (int i = 0; i < rows_.size() && i < rightEditor_->document()->blockCount(); ++i) {
+                rows_[i].right = rightEditor_->document()->findBlockByNumber(i).text();
+            }
+            rightOriginal_ = materializeSide(false);
+        } else {
+            rightOriginal_ = rightEditor_->toPlainText().split('\n');
+        }
+    }
+
+    // A row belongs in the real file if it was a real line to begin with, or
+    // if the user typed something into what used to be an alignment filler
+    // (which makes it a genuine new line). Untouched filler rows are dropped.
+    QStringList materializeSide(bool left) const {
+        QStringList result;
+        for (const auto& row : rows_) {
+            const int number = left ? row.leftNumber : row.rightNumber;
+            const QString& text = left ? row.left : row.right;
+            if (number > 0 || !text.isEmpty()) result << text;
+        }
+        return result;
+    }
+
+    // Copies every row in [startRow, endRow] to the other side in one shot.
+    // `row` indices are into rows_ (the currently displayed/filtered list);
+    // the edit itself targets the untouched original line arrays so a
+    // subsequent rebuild() re-diffs cleanly. `shift` accounts for lines this
+    // same call has already inserted earlier in the loop.
+    void copyGroup(int startRow, int endRow, bool leftToRight) {
+        syncFromEditors();
+        startRow = qMax(0, startRow);
+        endRow = qMin(rows_.size() - 1, endRow);
+        if (startRow > endRow) return;
+        int shift = 0;
+        for (int row = startRow; row <= endRow; ++row) {
+            const TextDiffLine& copied = rows_[row];
+            if (leftToRight) {
+                if (copied.leftNumber == 0) continue;
+                if (copied.rightNumber > 0) {
+                    rightOriginal_[copied.rightNumber - 1 + shift] = copied.left;
+                } else {
+                    rightOriginal_.insert(insertionIndex(row, /*forRight=*/true) + shift, copied.left);
+                    ++shift;
+                }
+            } else {
+                if (copied.rightNumber == 0) continue;
+                if (copied.leftNumber > 0) {
+                    leftOriginal_[copied.leftNumber - 1 + shift] = copied.right;
+                } else {
+                    leftOriginal_.insert(insertionIndex(row, /*forRight=*/false) + shift, copied.right);
+                    ++shift;
+                }
+            }
+        }
+        rebuild();
+    }
+
+    // Position to insert a brand-new line at, found by walking back to the
+    // closest earlier row that still has a real line number on that side.
+    int insertionIndex(int fromRow, bool forRight) const {
+        for (int i = fromRow - 1; i >= 0; --i) {
+            const int number = forRight ? rows_[i].rightNumber : rows_[i].leftNumber;
+            if (number > 0) return number;
+        }
+        return 0;
+    }
+
+    QVector<TextDiffLine> visibleRows(const QVector<TextDiffLine>& all) const {
+        if (showAllAction_->isChecked()) {
+            return all;
+        }
+        QVector<bool> keep(all.size(), false);
+        const int context = contextAction_->isChecked() ? 2 : 0;
+        for (int i = 0; i < all.size(); ++i) {
+            if (!all[i].changed) continue;
+            for (int j = qMax(0, i - context); j <= qMin(all.size() - 1, i + context); ++j) {
+                keep[j] = true;
+            }
+        }
+        QVector<TextDiffLine> result;
+        for (int i = 0; i < all.size(); ++i) {
+            if (keep[i]) result.push_back(all[i]);
+        }
+        return result;
+    }
+
+    void rebuild() {
+        QVector<TextDiffLine> all = alignTextLines(leftOriginal_, rightOriginal_);
+        if (minorAction_->isChecked()) {
+            for (auto& row : all) {
+                if (row.whitespaceOnly) row.changed = false;
+            }
+        }
+        rows_ = visibleRows(all);
+        groups_ = groupDiffRows(rows_);
+
+        QStringList leftLines;
+        QStringList rightLines;
+        QVector<int> leftNumbers;
+        QVector<int> rightNumbers;
+        int differenceCount = 0;
+        int sectionCount = 0;
+        bool inSection = false;
+        for (const auto& row : rows_) {
+            leftLines << row.left;
+            rightLines << row.right;
+            leftNumbers << row.leftNumber;
+            rightNumbers << row.rightNumber;
+            if (row.changed) {
+                ++differenceCount;
+                if (!inSection) ++sectionCount;
+                inSection = true;
+            } else {
+                inSection = false;
+            }
+        }
+
+        applyingProgrammaticUpdate_ = true;
+        leftEditor_->setPlainText(leftLines.join('\n'));
+        rightEditor_->setPlainText(rightLines.join('\n'));
+        applyingProgrammaticUpdate_ = false;
+        leftStructurallyEdited_ = false;
+        rightStructurallyEdited_ = false;
+
+        leftEditor_->setLineNumbers(leftNumbers);
+        rightEditor_->setLineNumbers(rightNumbers);
+        leftEditor_->setDiffData(rows_, groups_);
+        rightEditor_->setDiffData(rows_, groups_);
+        computeDiffSelections(rows_);
+        miniMap_->setRows(rows_);
+        preview_->clear();
+        currentRow_ = -1;
+        updateExtraSelections();
+        status_->setText(QString("%1 difference section(s)   |   %2 line(s)   |   %3 changed row(s)")
+                             .arg(sectionCount)
+                             .arg(rows_.size())
+                             .arg(differenceCount));
+    }
+
+    void computeDiffSelections(const QVector<TextDiffLine>& rows) {
+        leftDiffSelections_.clear();
+        rightDiffSelections_.clear();
+        for (int row = 0; row < rows.size(); ++row) {
+            if (!rows[row].changed) continue;
+            const QColor background = rows[row].whitespaceOnly ? QColor(45, 90, 135, 150)
+                                                                : QColor(150, 45, 45, 150);
+            for (auto* editor : {leftEditor_, rightEditor_}) {
+                QTextEdit::ExtraSelection selection;
+                selection.format.setBackground(background);
+                selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+                selection.cursor = cursorAtRow(editor, row);
+                (editor == leftEditor_ ? leftDiffSelections_ : rightDiffSelections_).append(selection);
+            }
+        }
+    }
+
+    // VS Code-style current-line highlight: a subtle overlay drawn on top of
+    // the diff colouring, kept on the same row in both editors regardless of
+    // which pane the caret or a mouse click actually landed in.
+    void updateExtraSelections() {
+        const auto withCurrentLine = [this](QPlainTextEdit* editor,
+                                            QVector<QTextEdit::ExtraSelection> selections) {
+            if (currentRow_ >= 0 && currentRow_ < editor->document()->blockCount()) {
+                QTextEdit::ExtraSelection current;
+                current.format.setBackground(QColor(255, 255, 255, 22));
+                current.format.setProperty(QTextFormat::FullWidthSelection, true);
+                current.cursor = cursorAtRow(editor, currentRow_);
+                selections.append(current);
+            }
+            return selections;
+        };
+        leftEditor_->setExtraSelections(withCurrentLine(leftEditor_, leftDiffSelections_));
+        rightEditor_->setExtraSelections(withCurrentLine(rightEditor_, rightDiffSelections_));
+    }
+
+    QString leftPath_;
+    QString rightPath_;
+    QStringList leftOriginal_;
+    QStringList rightOriginal_;
+    QVector<TextDiffLine> rows_;    // currently displayed rows (post All/Diffs/Context filter)
+    QVector<DiffGroup> groups_;     // contiguous change runs within rows_
+
+    QToolBar* toolbar_ = nullptr;
+    QAction* homeAction_ = nullptr;
+    QAction* sessionsAction_ = nullptr;
+    QAction* showAllAction_ = nullptr;
+    QAction* showDiffsAction_ = nullptr;
+    QAction* contextAction_ = nullptr;
+    QAction* minorAction_ = nullptr;
+    QAction* rulesAction_ = nullptr;
+    QAction* formatAction_ = nullptr;
+    QAction* copyAction_ = nullptr;
+    QAction* nextSectionAction_ = nullptr;
+    QAction* prevSectionAction_ = nullptr;
+    QAction* swapAction_ = nullptr;
+    QAction* reloadAction_ = nullptr;
+
+    QLabel* leftLabel_ = nullptr;
+    QLabel* rightLabel_ = nullptr;
+    LineNumberEditor* leftEditor_ = nullptr;
+    LineNumberEditor* rightEditor_ = nullptr;
+    DifferenceOverview* miniMap_ = nullptr;
+    DiffLinePreview* preview_ = nullptr;
+    QLabel* status_ = nullptr;
+    bool syncing_ = false;
+
+    int currentRow_ = -1;
+    QVector<QTextEdit::ExtraSelection> leftDiffSelections_;
+    QVector<QTextEdit::ExtraSelection> rightDiffSelections_;
+
+    bool applyingProgrammaticUpdate_ = false;
+    bool leftStructurallyEdited_ = false;
+    bool rightStructurallyEdited_ = false;
+};
+
 // ---------------------------------------------------------------------------
 // Comparison engine (one instance per refresh of one session)
 // ---------------------------------------------------------------------------
@@ -595,6 +1546,8 @@ std::shared_ptr<ComparisonRun> makeRun(QTreeWidget* left, QTreeWidget* right, Co
 class CompareSession : public QWidget {
 public:
     std::function<void()> onTitleChanged;
+    std::function<void(const QString&, const QString&, const QString&, const QString&)>
+        onTextCompare;
 
     // What a right-click landed on. Copied by value: the context menu runs a
     // nested event loop and the rows may be rebuilt while it is open, so it
@@ -1084,7 +2037,63 @@ private:
             tree->setContextMenuPolicy(Qt::CustomContextMenu);
             connect(tree, &QWidget::customContextMenuRequested, this,
                     [this, tree](const QPoint& pos) { showNodeMenu(tree, pos); });
+            connect(tree, &QTreeWidget::itemDoubleClicked, this,
+                    [this, tree](QTreeWidgetItem* item, int) { openTextCompare(tree, item); });
         }
+    }
+
+    void openTextCompare(QTreeWidget* tree, QTreeWidgetItem* item) {
+        if (!item || item->data(0, kIsDirRole).toBool()) {
+            return;
+        }
+        const bool isLeft = tree == leftTree_;
+        auto* otherTree = isLeft ? rightTree_ : leftTree_;
+        auto* counterpart = pairedItem(item, otherTree);
+        const QString leftPath = isLeft ? item->data(0, kPathRole).toString()
+                                        : counterpart ? counterpart->data(0, kPathRole).toString() : QString();
+        const QString rightPath = isLeft ? counterpart ? counterpart->data(0, kPathRole).toString() : QString()
+                                         : item->data(0, kPathRole).toString();
+        if (leftPath.isEmpty() || rightPath.isEmpty() || !QFileInfo(leftPath).isFile() ||
+            !QFileInfo(rightPath).isFile()) {
+            return;
+        }
+
+        QPointer<CompareSession> self(this);
+        auto* task = QRunnable::create([self, leftPath, rightPath]() {
+            QFile leftFile(leftPath);
+            QFile rightFile(rightPath);
+            QString leftText;
+            QString rightText;
+            QString error;
+            if (!leftFile.open(QIODevice::ReadOnly)) {
+                error = "Could not open left file: " + leftPath;
+            } else if (!rightFile.open(QIODevice::ReadOnly)) {
+                error = "Could not open right file: " + rightPath;
+            } else {
+                leftText = QString::fromUtf8(leftFile.readAll());
+                rightText = QString::fromUtf8(rightFile.readAll());
+            }
+            QMetaObject::invokeMethod(
+                qApp,
+                [self, leftPath, rightPath, leftText = std::move(leftText),
+                 rightText = std::move(rightText), error = std::move(error)]() {
+                    if (!self) {
+                        return;
+                    }
+                    if (!error.isEmpty()) {
+                        self->log(error);
+                        return;
+                    }
+                    if (self->onTextCompare) {
+                        self->onTextCompare(leftPath, rightPath, leftText, rightText);
+                    }
+                },
+                Qt::QueuedConnection);
+        });
+        task->setAutoDelete(true);
+        QThreadPool::globalInstance()->start(task);
+        log("Opening text comparison: " + QDir::toNativeSeparators(leftPath) + " <-> " +
+            QDir::toNativeSeparators(rightPath));
     }
 
     // Expanding / collapsing / selecting a row on one side mirrors on the other.
@@ -1478,7 +2487,7 @@ extern "C" int openbc_run_gui() {
     tabs->tabBar()->setDrawBase(false);
     window.setCentralWidget(tabs);
 
-    auto currentSession = [&]() { return static_cast<CompareSession*>(tabs->currentWidget()); };
+    auto currentSession = [&]() { return dynamic_cast<CompareSession*>(tabs->currentWidget()); };
 
     // The Actions / Edit / Search / View / Tools menus always show the actions
     // of the tab that is currently selected, so a command can only ever affect
@@ -1503,8 +2512,13 @@ extern "C" int openbc_run_gui() {
     };
     auto updateWindowTitle = [&]() {
         CompareSession* session = currentSession();
-        window.setWindowTitle(session ? session->title() + " - Folder Compare - OpenBC"
-                                      : QString("OpenBC - Folder Compare"));
+        if (session) {
+            window.setWindowTitle(session->title() + " - Folder Compare - OpenBC");
+        } else if (auto* textView = dynamic_cast<TextCompareView*>(tabs->currentWidget())) {
+            window.setWindowTitle(textView->title() + " - Text Compare - OpenBC");
+        } else {
+            window.setWindowTitle("OpenBC - Folder Compare");
+        }
     };
 
     std::function<CompareSession*(const QString&, const QString&, bool)> addSession;
@@ -1539,6 +2553,37 @@ extern "C" int openbc_run_gui() {
                 updateWindowTitle();
             }
         };
+        session->onTextCompare = [&](const QString& leftPath, const QString& rightPath,
+                                     const QString& leftText, const QString& rightText) {
+            auto* textView = new TextCompareView(leftPath, rightPath, leftText, rightText);
+            const int textIndex = tabs->addTab(
+                textView, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Compare),
+                textView->title());
+            tabs->setTabToolTip(textIndex, leftPath + " <-> " + rightPath);
+            auto* textClose = new QToolButton;
+            textClose->setObjectName("tabClose");
+            textClose->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Close));
+            textClose->setToolTip("Close tab (Ctrl+W)");
+            textClose->setFocusPolicy(Qt::NoFocus);
+            textClose->setAutoRaise(true);
+            tabs->tabBar()->setTabButton(textIndex, QTabBar::RightSide, textClose);
+            QObject::connect(textClose, &QToolButton::clicked, textView,
+                             [&, textView]() { closeTab(tabs->indexOf(textView)); });
+            // Home / Sessions both act like Beyond Compare: jump back to the
+            // folder-compare session tab this text view was opened from.
+            textView->onHomeRequested = [&, session]() {
+                const int sessionIndex = tabs->indexOf(session);
+                if (sessionIndex >= 0) tabs->setCurrentIndex(sessionIndex);
+            };
+            textView->onSessionsRequested = textView->onHomeRequested;
+            textView->onTitleChanged = [&, textView]() {
+                const int i = tabs->indexOf(textView);
+                if (i < 0) return;
+                tabs->setTabText(i, textView->title());
+                if (tabs->currentIndex() == i) updateWindowTitle();
+            };
+            tabs->setCurrentIndex(textIndex);
+        };
         tabs->setCurrentIndex(index);
         if (run) {
             session->refresh();
@@ -1550,10 +2595,12 @@ extern "C" int openbc_run_gui() {
         if (index < 0 || index >= tabs->count()) {
             return;
         }
-        auto* session = static_cast<CompareSession*>(tabs->widget(index));
-        session->cancelRun();
+        auto* widget = tabs->widget(index);
+        if (auto* session = dynamic_cast<CompareSession*>(widget)) {
+            session->cancelRun();
+        }
         tabs->removeTab(index);
-        session->deleteLater();
+        widget->deleteLater();
         if (tabs->count() == 0) {
             addSession(QString(), QString(), false);  // never leave the window empty
         }
@@ -1563,7 +2610,10 @@ extern "C" int openbc_run_gui() {
         if (index < 0 || index >= tabs->count()) {
             return;
         }
-        auto* source = static_cast<CompareSession*>(tabs->widget(index));
+        auto* source = dynamic_cast<CompareSession*>(tabs->widget(index));
+        if (!source) {
+            return;
+        }
         auto* copy = addSession(source->leftText(), source->rightText(), false);
         copy->copySettingsFrom(*source);
         copy->refresh();
