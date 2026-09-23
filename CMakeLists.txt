@@ -40,9 +40,25 @@ corrosion_import_crate(
     CRATE_TYPES staticlib
 )
 
+
+set(OPENBC_HEADERS
+    crates/openbc-ui-qt/src/qt_style.h
+    crates/openbc-ui-qt/src/folder_model.h
+    crates/openbc-ui-qt/src/diff_algorithms.h
+    crates/openbc-ui-qt/src/syntax_highlighter.h
+    crates/openbc-ui-qt/src/find_replace_bar.h
+    crates/openbc-ui-qt/src/line_number_editor.h
+    crates/openbc-ui-qt/src/minimap.h
+    crates/openbc-ui-qt/src/diff_line_preview.h
+    crates/openbc-ui-qt/src/text_compare_view.h
+    crates/openbc-ui-qt/src/compare_session.h
+    crates/openbc-ui-qt/src/main_window.h
+)
+
+
 # 3. Create C++ Qt Application Entrypoint
 add_executable(OpenBC
-    crates/openbc-ui-qt/src/qt_app.cpp
+    crates/openbc-ui-qt/src/qt_app.cpp ${OPENBC_HEADERS}
 )
 
 target_include_directories(OpenBC PRIVATE

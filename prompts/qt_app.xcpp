@@ -1,0 +1,3123 @@
+#include <QAction>
+#include <QActionGroup>
+#include <QApplication>
+#include <QClipboard>
+#include <QComboBox>
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QDialog>
+#include <QDir>
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFrame>
+#include <QGridLayout>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QLabel>
+#include <QLineEdit>
+#include <QLocale>
+#include <QMainWindow>
+#include <QMouseEvent>
+#include <QMenu>
+#include <QMenuBar>
+#include <QMetaObject>
+#include <QPlainTextEdit>
+#include <QPainter>
+#include <QPointer>
+#include <QRegularExpression>
+#include <QRunnable>
+#include <QScrollBar>
+#include <QSet>
+#include <QSignalBlocker>
+#include <QSplitter>
+#include <QStorageInfo>
+#include <QStringList>
+#include <QStyleFactory>
+#include <QTabBar>
+#include <QTabWidget>
+#include <QTableWidget>
+#include <QThread>
+#include <QThreadPool>
+#include <QToolBar>
+#include <QToolButton>
+#include <QTreeWidget>
+#include <QTextBlock>
+#include <QTextCursor>
+#include <QTextDocument>
+#include <QTextEdit>
+#include <QTextFormat>
+#include <QTextStream>
+#include <QVBoxLayout>
+#include <QWidget>
+#include <algorithm>
+#include <atomic>
+#include <functional>
+#include <memory>
+#include <utility>
+#include <vector>
+#include "qt_style.h"
+
+namespace {
+
+using openbc::ui::CompareTree;
+using openbc::ui::PairClass;
+using openbc::ui::RowStatus;
+using openbc::ui::kClassRole;
+using openbc::ui::kIsDirRole;
+using openbc::ui::kPairClassCount;
+using openbc::ui::kPathRole;
+using openbc::ui::kStatusRole;
+using openbc::ui::statusBit;
+namespace icons = openbc::ui::icons;
+namespace color = openbc::ui::color;
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+QString formatBytes(qint64 bytes) {
+    const QStringList units = {"B", "KB", "MB", "GB", "TB"};
+    double value = static_cast<double>(bytes);
+    int unit = 0;
+    while (value >= 1024.0 && unit < units.size() - 1) {
+        value /= 1024.0;
+        ++unit;
+    }
+    const int decimals = (unit == 0 || value >= 100.0) ? 0 : 1;
+    return QString::number(value, 'f', decimals) + " " + units[unit];
+}
+
+// Column text: exact bytes with thousands separators, GB above 1 GiB.
+QString formatSize(qint64 bytes) {
+    constexpr qint64 gib = 1024LL * 1024LL * 1024LL;
+    if (bytes >= gib) {
+        return QString::number(static_cast<double>(bytes) / static_cast<double>(gib), 'f', 2) + " GB";
+    }
+    return QLocale().toString(bytes);
+}
+
+QString freeSpaceText(const QString& path) {
+    const QStorageInfo storage(path);
+    if (!storage.isValid() || !storage.isReady()) {
+        return "-";
+    }
+    return formatBytes(storage.bytesAvailable()) + " free on " +
+           QDir::toNativeSeparators(storage.rootPath());
+}
+
+// ---------------------------------------------------------------------------
+// File-name filter: "*.cpp;*.h", "*.txt", or a plain substring like "foo".
+// Applies to files only; folders are always listed so their contents stay
+// reachable.
+// ---------------------------------------------------------------------------
+
+class NameFilter {
+public:
+    static NameFilter parse(const QString& text) {
+        NameFilter filter;
+        const QString trimmed = text.trimmed();
+        if (trimmed.isEmpty() || trimmed == "*" || trimmed == "*.*") {
+            return filter;
+        }
+        const QStringList tokens =
+            trimmed.split(QRegularExpression("[;,\\s]+"), Qt::SkipEmptyParts);
+        for (QString token : tokens) {
+            if (token == "*" || token == "*.*") {
+                return NameFilter();
+            }
+            if (!token.contains('*') && !token.contains('?')) {
+                token = "*" + token + "*";
+            }
+            filter.patterns_.emplace_back(QRegularExpression::wildcardToRegularExpression(token),
+                                          QRegularExpression::CaseInsensitiveOption);
+        }
+        filter.matchAll_ = filter.patterns_.empty();
+        return filter;
+    }
+
+    bool matches(const QString& name) const {
+        if (matchAll_) {
+            return true;
+        }
+        for (const auto& pattern : patterns_) {
+            if (pattern.match(name).hasMatch()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+private:
+    std::vector<QRegularExpression> patterns_;
+    bool matchAll_ = true;
+};
+
+struct CompareOptions {
+    bool checkContent = false;
+    bool ignoreTimestamps = false;
+    NameFilter filter;
+};
+
+// ---------------------------------------------------------------------------
+// Plain-data description of one side of a row. Everything that needs file I/O
+// is gathered on the worker thread so the GUI thread never touches the disk.
+// ---------------------------------------------------------------------------
+
+struct SideInfo {
+    bool exists = false;
+    bool isDir = false;
+    bool isLink = false;
+    QString name;
+    QString path;
+    QString ext;
+    QString attrs;
+    qint64 size = 0;
+    QDateTime modified;
+};
+
+SideInfo makeSide(const QFileInfo& info) {
+    SideInfo side;
+    side.exists = true;
+    side.isDir = info.isDir();
+    side.isLink = info.isSymLink();
+    side.name = info.fileName();
+    side.path = info.absoluteFilePath();
+    side.ext = side.isDir ? QString() : info.suffix();
+    side.size = side.isDir ? 0 : info.size();
+    side.modified = info.lastModified();
+    QString attrs;
+    if (side.isDir) attrs += 'D';
+    if (side.isLink) attrs += 'L';
+    if (info.isHidden()) attrs += 'H';
+    if (!info.isWritable()) attrs += 'R';
+    if (!side.isDir && info.isExecutable()) attrs += 'X';
+    side.attrs = attrs;
+    return side;
+}
+
+std::vector<SideInfo> listFolder(const QString& path, const NameFilter& filter) {
+    std::vector<SideInfo> result;
+    if (path.isEmpty()) {
+        return result;
+    }
+    const QDir directory(path);
+    const auto infos = directory.entryInfoList(
+        QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::Name);
+    for (const QFileInfo& info : infos) {
+        if (!info.isDir() && !filter.matches(info.fileName())) {
+            continue;
+        }
+        result.push_back(makeSide(info));
+    }
+    return result;
+}
+
+bool contentEqual(const QString& leftPath, const QString& rightPath,
+                  const std::atomic_bool& cancelled) {
+    QFile left(leftPath);
+    QFile right(rightPath);
+    if (!left.open(QIODevice::ReadOnly) || !right.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    constexpr qint64 chunkSize = 1024 * 1024;
+    while (!left.atEnd() && !right.atEnd()) {
+        if (cancelled.load()) {
+            return false;
+        }
+        if (left.read(chunkSize) != right.read(chunkSize)) {
+            return false;  // stop at the first difference
+        }
+    }
+    return left.atEnd() && right.atEnd();
+}
+
+struct EntryPair {
+    SideInfo left;
+    SideInfo right;
+    RowStatus leftStatus = RowStatus::Pending;
+    RowStatus rightStatus = RowStatus::Pending;
+    PairClass pairClass = PairClass::Pending;
+    bool recurse = false;
+};
+
+// Same scheme as Beyond Compare: green/orange = differing timestamps
+// (newer / older), red = same timestamp but different content, purple =
+// only on one side.
+void classifyEntry(EntryPair& e, const CompareOptions& options, const std::atomic_bool& cancelled) {
+    const SideInfo& l = e.left;
+    const SideInfo& r = e.right;
+    const bool leftRecurse = l.exists && l.isDir && !l.isLink;
+    const bool rightRecurse = r.exists && r.isDir && !r.isLink;
+    e.recurse = leftRecurse || rightRecurse;
+
+    if (!l.exists || !r.exists) {
+        e.leftStatus = e.rightStatus = RowStatus::Orphan;
+        e.pairClass = l.exists ? PairClass::OrphanLeft : PairClass::OrphanRight;
+        return;
+    }
+    if (l.isDir != r.isDir) {  // file vs folder
+        e.leftStatus = e.rightStatus = RowStatus::Different;
+        e.pairClass = PairClass::Different;
+        return;
+    }
+    if (l.isDir) {
+        if (e.recurse) {  // resolved once the children are known
+            e.leftStatus = e.rightStatus = RowStatus::Pending;
+            e.pairClass = PairClass::Pending;
+        } else {
+            const bool same = l.isLink == r.isLink;
+            e.leftStatus = e.rightStatus = same ? RowStatus::Equal : RowStatus::Different;
+            e.pairClass = same ? PairClass::Same : PairClass::Different;
+        }
+        return;
+    }
+
+    const bool sameSize = l.size == r.size;
+    const bool sameTime = options.ignoreTimestamps ||
+                          qAbs(l.modified.toMSecsSinceEpoch() - r.modified.toMSecsSinceEpoch()) <= 2000;
+    bool same = false;
+    if (sameSize) {
+        same = options.checkContent ? contentEqual(l.path, r.path, cancelled) : sameTime;
+    }
+    if (same) {
+        e.leftStatus = e.rightStatus = RowStatus::Equal;
+        e.pairClass = PairClass::Same;
+    } else if (!sameTime) {
+        const bool leftNewer = l.modified > r.modified;
+        e.leftStatus = leftNewer ? RowStatus::Newer : RowStatus::Older;
+        e.rightStatus = leftNewer ? RowStatus::Older : RowStatus::Newer;
+        e.pairClass = leftNewer ? PairClass::LeftNewer : PairClass::RightNewer;
+    } else {
+        e.leftStatus = e.rightStatus = RowStatus::Different;
+        e.pairClass = PairClass::Different;
+    }
+}
+
+QString pairKey(const QString& name) {
+#ifdef Q_OS_WIN
+    return name.toLower();
+#else
+    return name;
+#endif
+}
+
+std::vector<EntryPair> collectEntries(const QString& leftPath, const QString& rightPath,
+                                      const CompareOptions& options,
+                                      const std::atomic_bool& cancelled) {
+    std::vector<EntryPair> entries;
+    std::vector<std::pair<QString, size_t>> index;  // key -> position in `entries`
+    QHash<QString, size_t> positions;
+
+    for (auto& side : listFolder(leftPath, options.filter)) {
+        positions.insert(pairKey(side.name), entries.size());
+        EntryPair e;
+        e.left = std::move(side);
+        entries.push_back(std::move(e));
+    }
+    for (auto& side : listFolder(rightPath, options.filter)) {
+        const auto found = positions.constFind(pairKey(side.name));
+        if (found != positions.constEnd()) {
+            entries[*found].right = std::move(side);
+        } else {
+            EntryPair e;
+            e.right = std::move(side);
+            entries.push_back(std::move(e));
+        }
+    }
+
+    std::sort(entries.begin(), entries.end(), [](const EntryPair& a, const EntryPair& b) {
+        const bool aDir = (a.left.exists && a.left.isDir) || (a.right.exists && a.right.isDir);
+        const bool bDir = (b.left.exists && b.left.isDir) || (b.right.exists && b.right.isDir);
+        if (aDir != bDir) {
+            return aDir;  // folders first
+        }
+        const QString& an = a.left.exists ? a.left.name : a.right.name;
+        const QString& bn = b.left.exists ? b.left.name : b.right.name;
+        const int cmp = QString::compare(an, bn, Qt::CaseInsensitive);
+        return cmp != 0 ? cmp < 0 : an < bn;
+    });
+
+    for (auto& e : entries) {
+        if (cancelled.load()) {
+            break;
+        }
+        classifyEntry(e, options, cancelled);
+    }
+    return entries;
+}
+
+// ---------------------------------------------------------------------------
+// Rows
+// ---------------------------------------------------------------------------
+
+void applyRowStyle(QTreeWidgetItem* item, RowStatus status, bool isDir) {
+    // Folder names keep the normal text colour (the folder icon carries the
+    // status); their size/date/attribute columns are dimmed.
+    const QColor name = isDir ? color::text() : openbc::ui::statusTextColor(status);
+    const QColor rest = isDir ? color::dimText() : name;
+    item->setForeground(0, name);
+    for (int column = 1; column < item->columnCount(); ++column) {
+        item->setForeground(column, rest);
+    }
+}
+
+QTreeWidgetItem* addRow(QTreeWidget* tree, const SideInfo& side, RowStatus status,
+                        PairClass pairClass, QTreeWidgetItem* parent) {
+    auto* item = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(tree);
+    item->setData(0, kStatusRole, static_cast<int>(status));
+    item->setData(0, kClassRole, static_cast<int>(pairClass));
+    item->setData(0, kPathRole, side.exists ? side.path : QString());
+    item->setData(0, kIsDirRole, side.exists && side.isDir);
+    if (side.exists) {
+        item->setText(0, side.name);
+        item->setText(1, side.ext);
+        item->setText(2, side.isDir ? QString() : formatSize(side.size));
+        item->setText(3, side.modified.toString("yyyy-MM-dd HH:mm:ss"));
+        item->setText(4, side.attrs);
+        item->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
+        item->setIcon(0, side.isDir ? icons::folderIconForMask(0) : icons::markerIcon(status));
+        applyRowStyle(item, status, side.isDir);
+    }
+    return item;
+}
+
+QTreeWidgetItem* pairedItem(QTreeWidgetItem* item, QTreeWidget* otherTree) {
+    if (!item) {
+        return nullptr;
+    }
+    QList<int> rows;
+    for (auto* current = item; current; current = current->parent()) {
+        rows.prepend(current->parent() ? current->parent()->indexOfChild(current)
+                                       : item->treeWidget()->indexOfTopLevelItem(current));
+    }
+    QTreeWidgetItem* counterpart = otherTree->topLevelItem(rows.takeFirst());
+    for (const int row : rows) {
+        if (!counterpart || row >= counterpart->childCount()) {
+            return nullptr;
+        }
+        counterpart = counterpart->child(row);
+    }
+    return counterpart;
+}
+
+struct TextDiffLine {
+    QString left;
+    QString right;
+    int leftNumber = 0;
+    int rightNumber = 0;
+    bool changed = false;
+    bool whitespaceOnly = false;
+};
+
+QString normalizedTextLine(const QString& line) {
+    QString normalized = line;
+    normalized.remove(' ');
+    normalized.remove('\t');
+    return normalized;
+}
+
+QVector<TextDiffLine> alignTextLines(const QStringList& left, const QStringList& right) {
+    QVector<TextDiffLine> result;
+    const int leftCount = left.size();
+    const int rightCount = right.size();
+    QVector<QVector<int>> common(leftCount + 1, QVector<int>(rightCount + 1));
+    for (int leftIndex = leftCount - 1; leftIndex >= 0; --leftIndex) {
+        for (int rightIndex = rightCount - 1; rightIndex >= 0; --rightIndex) {
+            common[leftIndex][rightIndex] =
+                left[leftIndex] == right[rightIndex]
+                    ? common[leftIndex + 1][rightIndex + 1] + 1
+                    : qMax(common[leftIndex + 1][rightIndex], common[leftIndex][rightIndex + 1]);
+        }
+    }
+
+    int leftIndex = 0;
+    int rightIndex = 0;
+    while (leftIndex < leftCount || rightIndex < rightCount) {
+        if (leftIndex < leftCount && rightIndex < rightCount &&
+            left[leftIndex] == right[rightIndex]) {
+            result.push_back({left[leftIndex], right[rightIndex], leftIndex + 1, rightIndex + 1,
+                              false, false});
+            ++leftIndex;
+            ++rightIndex;
+            continue;
+        }
+
+        // Find the next exact anchor and align the changed block before it as
+        // a pair of editor rows. This keeps insertions from shifting every
+        // later matching line onto the wrong row.
+        int anchorLeft = leftCount;
+        int anchorRight = rightCount;
+        for (int candidateLeft = leftIndex; candidateLeft < leftCount; ++candidateLeft) {
+            for (int candidateRight = rightIndex; candidateRight < rightCount; ++candidateRight) {
+                if (left[candidateLeft] == right[candidateRight] &&
+                    common[candidateLeft][candidateRight] == common[leftIndex][rightIndex]) {
+                    if (candidateLeft + candidateRight < anchorLeft + anchorRight) {
+                        anchorLeft = candidateLeft;
+                        anchorRight = candidateRight;
+                    }
+                }
+            }
+        }
+        const int blockLength = qMax(anchorLeft - leftIndex, anchorRight - rightIndex);
+        for (int offset = 0; offset < blockLength; ++offset) {
+            const bool hasLeft = leftIndex + offset < anchorLeft;
+            const bool hasRight = rightIndex + offset < anchorRight;
+            const QString leftText = hasLeft ? left[leftIndex + offset] : QString();
+            const QString rightText = hasRight ? right[rightIndex + offset] : QString();
+            const bool whitespaceOnly = hasLeft && hasRight &&
+                                        normalizedTextLine(leftText) == normalizedTextLine(rightText);
+            result.push_back({leftText, rightText, hasLeft ? leftIndex + offset + 1 : 0,
+                              hasRight ? rightIndex + offset + 1 : 0, true, whitespaceOnly});
+        }
+        leftIndex = anchorLeft;
+        rightIndex = anchorRight;
+    }
+    return result;
+}
+
+// A maximal run of contiguous changed rows that share the same
+// whitespace-only-ness. Each group gets exactly one copy arrow instead of
+// one per line, and "trivial" (blank/tab-only) runs are always their own
+// group so they never merge with a real content change next to them.
+struct DiffGroup {
+    int start = 0;
+    int end = 0;
+    bool whitespaceOnly = false;
+};
+
+QVector<DiffGroup> groupDiffRows(const QVector<TextDiffLine>& rows) {
+    QVector<DiffGroup> groups;
+    int i = 0;
+    while (i < rows.size()) {
+        if (!rows[i].changed) {
+            ++i;
+            continue;
+        }
+        const int start = i;
+        const bool whitespaceOnly = rows[i].whitespaceOnly;
+        while (i < rows.size() && rows[i].changed && rows[i].whitespaceOnly == whitespaceOnly) {
+            ++i;
+        }
+        groups.push_back({start, i - 1, whitespaceOnly});
+    }
+    return groups;
+}
+
+class LineNumberEditor : public QPlainTextEdit {
+public:
+    // Which margin a gutter widget lives in. Line numbers and the copy-arrow
+    // strip are configured independently so the right-hand editor can show
+    // its numbers on the outer (right) edge while still keeping its arrows
+    // on the inner edge next to the splitter.
+    enum class GutterSide { None, Left, Right };
+
+    explicit LineNumberEditor(GutterSide numberSide = GutterSide::Left,
+                              GutterSide arrowSide = GutterSide::None, QWidget* parent = nullptr)
+        : QPlainTextEdit(parent), numberSide_(numberSide), arrowSide_(arrowSide) {
+        setLineWrapMode(QPlainTextEdit::NoWrap);
+        setTabStopDistance(fontMetrics().horizontalAdvance(' ') * 4);
+        connect(this, &QPlainTextEdit::blockCountChanged, this,
+                [this](int) { updateMarginWidths(); });
+        connect(this, &QPlainTextEdit::updateRequest, this,
+                [this](const QRect& rect, int delta) {
+                    if (delta) {
+                        lineNumberArea_->scroll(0, delta);
+                        if (arrowArea_) arrowArea_->scroll(0, delta);
+                    } else {
+                        lineNumberArea_->update(0, rect.y(), lineNumberArea_->width(), rect.height());
+                        if (arrowArea_) arrowArea_->update(0, rect.y(), arrowArea_->width(), rect.height());
+                    }
+                    if (rect.contains(viewport()->rect())) updateMarginWidths();
+                });
+        connect(this, &QPlainTextEdit::cursorPositionChanged, this,
+                [this]() { lineNumberArea_->update(); });
+        lineNumberArea_ = new QWidget(this);
+        lineNumberArea_->setStyleSheet("background:#232323; color:#777b8f;");
+        lineNumberArea_->setCursor(Qt::ArrowCursor);
+        lineNumberArea_->installEventFilter(this);
+        if (arrowSide_ != GutterSide::None) {
+            arrowArea_ = new QWidget(this);
+            arrowArea_->setStyleSheet("background:#232323;");
+            arrowArea_->setCursor(Qt::PointingHandCursor);
+            arrowArea_->setToolTip(arrowSide_ == GutterSide::Right
+                                        ? "Copy this change to the right"
+                                        : "Copy this change to the left");
+            arrowArea_->installEventFilter(this);
+        }
+        updateMarginWidths();
+    }
+
+    void setLineNumbers(const QVector<int>& numbers) {
+        lineNumbers_ = numbers;
+        updateMarginWidths();
+        lineNumberArea_->update();
+    }
+
+    // Rows currently shown (same list on both editors) plus the grouping
+    // used to draw/hit-test one arrow per contiguous change. Call with two
+    // empty containers to hide all arrows, e.g. once free-form edits have
+    // made the row mapping stale until the next Reload.
+    void setDiffData(const QVector<TextDiffLine>& rows, const QVector<DiffGroup>& groups) {
+        diffRows_ = rows;
+        diffGroups_ = groups;
+        if (arrowArea_) arrowArea_->update();
+    }
+
+    // Rows (by block number in the currently displayed document) that were
+    // just copied in from the other side and are not yet saved to disk. They
+    // get a green marker in the arrow gutter - green being "copied, needs
+    // saving" - which is independent of (and outlives) the yellow/red diff
+    // arrow, since once the copy lands both sides read the same and the
+    // ordinary diff group for that row disappears on the next Reload.
+    void setDirtyRows(const QSet<int>& rows) {
+        dirtyRows_ = rows;
+        if (arrowArea_) arrowArea_->update();
+    }
+
+    // (start row, end row) of the group that was clicked, inclusive.
+    std::function<void(int, int)> onArrowClicked;
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == lineNumberArea_ && event->type() == QEvent::Paint) {
+            paintLineNumbers(static_cast<QPaintEvent*>(event));
+            return true;
+        }
+        if (arrowArea_ && watched == arrowArea_) {
+            if (event->type() == QEvent::Paint) {
+                paintArrows(static_cast<QPaintEvent*>(event));
+                return true;
+            }
+            if (event->type() == QEvent::MouseButtonPress) {
+                handleArrowClick(static_cast<QMouseEvent*>(event));
+                return true;
+            }
+        }
+        return QPlainTextEdit::eventFilter(watched, event);
+    }
+
+    void resizeEvent(QResizeEvent* event) override {
+        QPlainTextEdit::resizeEvent(event);
+        const QRect cr = contentsRect();
+        int left = cr.left();
+        int right = cr.right();
+        if (numberSide_ == GutterSide::Left) {
+            lineNumberArea_->setGeometry(left, cr.top(), lineNumberDigitsWidth(), cr.height());
+            left += lineNumberDigitsWidth();
+        }
+        if (arrowSide_ == GutterSide::Left) {
+            arrowArea_->setGeometry(left, cr.top(), kArrowWidth, cr.height());
+            left += kArrowWidth;
+        }
+        if (numberSide_ == GutterSide::Right) {
+            right -= lineNumberDigitsWidth();
+            lineNumberArea_->setGeometry(right, cr.top(), lineNumberDigitsWidth(), cr.height());
+        }
+        if (arrowSide_ == GutterSide::Right) {
+            right -= kArrowWidth;
+            arrowArea_->setGeometry(right, cr.top(), kArrowWidth, cr.height());
+        }
+    }
+
+private:
+    static constexpr int kArrowWidth = 18;
+
+    int lineNumberDigitsWidth() const {
+        return fontMetrics().horizontalAdvance(QString::number(qMax(1, lineNumbers_.size()))) + 16;
+    }
+
+    void updateMarginWidths() {
+        const int numbers = lineNumberDigitsWidth();
+        const int arrows = arrowSide_ != GutterSide::None ? kArrowWidth : 0;
+        int leftMargin = 0;
+        int rightMargin = 0;
+        if (numberSide_ == GutterSide::Left) leftMargin += numbers; else rightMargin += numbers;
+        if (arrowSide_ == GutterSide::Left) leftMargin += arrows;
+        else if (arrowSide_ == GutterSide::Right) rightMargin += arrows;
+        setViewportMargins(leftMargin, 0, rightMargin, 0);
+    }
+
+    void paintLineNumbers(QPaintEvent* event) {
+        QPainter painter(lineNumberArea_);
+        painter.fillRect(event->rect(), QColor("#232323"));
+        const int textMargin = numberSide_ == GutterSide::Left ? 8 : 6;
+        forEachVisibleBlock(event, [&](int blockNumber, int top, int bottom) {
+            const int number = blockNumber < lineNumbers_.size() ? lineNumbers_[blockNumber] : 0;
+            painter.setPen(number ? QColor("#a6adc8") : QColor("#555a6b"));
+            painter.drawText(0, top, lineNumberArea_->width() - textMargin, bottom - top,
+                             Qt::AlignRight, number ? QString::number(number) : QString());
+        });
+    }
+
+    // A group with more than one visible row gets a short bar spanning its
+    // full height in addition to the arrowhead, so a big change reads as one
+    // wide marker instead of a giant single triangle.
+    void paintArrows(QPaintEvent* event) {
+        QPainter painter(arrowArea_);
+        painter.fillRect(event->rect(), QColor("#232323"));
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        for (const DiffGroup& group : diffGroups_) {
+            if (!groupHasSource(group)) continue;
+            int top = -1;
+            int bottom = -1;
+            forEachVisibleBlock(event, [&](int blockNumber, int blockTop, int blockBottom) {
+                if (blockNumber < group.start || blockNumber > group.end) return;
+                if (top < 0) top = blockTop;
+                bottom = blockBottom;
+            });
+            if (top < 0) continue;
+            drawGroupArrow(painter, top, bottom, group.whitespaceOnly);
+        }
+        if (!dirtyRows_.isEmpty()) {
+            forEachVisibleBlock(event, [&](int blockNumber, int top, int bottom) {
+                if (!dirtyRows_.contains(blockNumber)) return;
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(0x2e, 0xcc, 0x71));
+                painter.drawRoundedRect(QRectF(2, top + 2, kArrowWidth - 4, bottom - top - 4), 2, 2);
+            });
+        }
+    }
+
+    void drawGroupArrow(QPainter& painter, int top, int bottom, bool whitespaceOnly) {
+        const QColor color = whitespaceOnly ? QColor(0x4e, 0xa1, 0xff) : QColor(0xf2, 0xc0, 0x4a);
+        const int mid = (top + bottom) / 2;
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        if (bottom - top > fontMetrics().height() + 4) {
+            const int stripeX = arrowSide_ == GutterSide::Right ? 2 : kArrowWidth - 5;
+            painter.fillRect(QRectF(stripeX, top + 2, 3, bottom - top - 4), color);
+        }
+        QPolygonF arrow;
+        if (arrowSide_ == GutterSide::Right) {
+            arrow << QPointF(3, mid - 6) << QPointF(3, mid + 6) << QPointF(kArrowWidth - 4, mid);
+        } else {
+            arrow << QPointF(kArrowWidth - 3, mid - 6) << QPointF(kArrowWidth - 3, mid + 6)
+                  << QPointF(4, mid);
+        }
+        painter.drawPolygon(arrow);
+    }
+
+    bool groupHasSource(const DiffGroup& group) const {
+        for (int row = group.start; row <= group.end && row < diffRows_.size(); ++row) {
+            const bool has = arrowSide_ == GutterSide::Right ? diffRows_[row].leftNumber != 0
+                                                             : diffRows_[row].rightNumber != 0;
+            if (has) return true;
+        }
+        return false;
+    }
+
+    void handleArrowClick(QMouseEvent* event) {
+        const qreal y = event->position().y();
+        for (const DiffGroup& group : diffGroups_) {
+            if (!groupHasSource(group)) continue;
+            int top = -1;
+            int bottom = -1;
+            forEachVisibleBlock(nullptr, [&](int blockNumber, int blockTop, int blockBottom) {
+                if (blockNumber < group.start || blockNumber > group.end) return;
+                if (top < 0) top = blockTop;
+                bottom = blockBottom;
+            });
+            if (top < 0) continue;
+            if (y >= top && y < bottom && onArrowClicked) {
+                onArrowClicked(group.start, group.end);
+                return;
+            }
+        }
+    }
+
+    // Walks the blocks currently on screen, handing each one's row number and
+    // pixel top/bottom to `fn`. `event` narrows the walk to the repainted
+    // rect when painting; pass nullptr to cover the whole viewport (used for
+    // hit-testing on click).
+    template <typename Fn>
+    void forEachVisibleBlock(QPaintEvent* event, Fn&& fn) {
+        QTextBlock block = firstVisibleBlock();
+        int blockNumber = block.blockNumber();
+        int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
+        int bottom = top + qRound(blockBoundingRect(block).height());
+        const int limit = event ? event->rect().bottom() : viewport()->rect().bottom();
+        while (block.isValid() && top <= limit) {
+            if (block.isVisible() && bottom >= 0) {
+                fn(blockNumber, top, bottom);
+            }
+            block = block.next();
+            top = bottom;
+            if (!block.isValid()) break;
+            bottom = top + qRound(blockBoundingRect(block).height());
+            ++blockNumber;
+        }
+    }
+
+    QWidget* lineNumberArea_ = nullptr;
+    QWidget* arrowArea_ = nullptr;
+    GutterSide numberSide_ = GutterSide::Left;
+    GutterSide arrowSide_ = GutterSide::None;
+    QVector<int> lineNumbers_;
+    QVector<TextDiffLine> diffRows_;
+    QVector<DiffGroup> diffGroups_;
+    QSet<int> dirtyRows_;
+
+    friend class TextCompareView;
+};
+
+// Vertical mini-map: a thin strip that represents the WHOLE file, top to
+// bottom, the way an IDE minimap or Beyond Compare's overview bar does. Each
+// contiguous diff block is drawn as one red (or blue, for whitespace-only)
+// line whose thickness is proportional to how many lines that block spans
+// relative to the whole file, so a big change reads as a thick bar and a
+// one-line tweak reads as a hairline. A black-bordered rectangle shows which
+// slice of the file the editor's viewport currently covers, and drags/clicks
+// on the strip jump the editors to that position - exactly like clicking in
+// an IDE minimap.
+class DifferenceOverview : public QFrame {
+public:
+    explicit DifferenceOverview(QWidget* parent = nullptr, bool vertical = false)
+        : QFrame(parent), vertical_(vertical) {
+        if (vertical_) {
+            setMinimumWidth(22);
+            setMaximumWidth(22);
+        } else {
+            setMinimumHeight(18);
+            setMaximumHeight(18);
+        }
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    void setRows(const QVector<TextDiffLine>& rows) {
+        rows_ = rows;
+        blocks_ = groupDiffRows(rows_);
+        update();
+    }
+
+    void setCurrentRow(int row) {
+        currentRow_ = row;
+        update();
+    }
+
+    // `firstFraction`/`spanFraction` are both in [0, 1] and describe, as a
+    // fraction of the whole file's height, where the editor's viewport
+    // currently starts and how tall it is. Called whenever the editor
+    // scrolls or resizes so the black rectangle always matches what is on
+    // screen.
+    void setViewport(qreal firstFraction, qreal spanFraction) {
+        viewportStart_ = qBound<qreal>(0.0, firstFraction, 1.0);
+        viewportSpan_ = qBound<qreal>(0.0, spanFraction, 1.0);
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        painter.fillRect(rect(), QColor("#232323"));
+        if (rows_.isEmpty()) return;
+        const qreal extent = vertical_ ? height() : width();
+        const qreal rowSize = extent / rows_.size();
+
+        // One bar per contiguous diff block; its thickness is the block's
+        // own line count times rowSize, i.e. proportional to how much of the
+        // whole file that block occupies - not capped, so a large change
+        // really does look larger than a small one.
+        for (const DiffGroup& block : blocks_) {
+            const qreal start = block.start * rowSize;
+            const qreal thickness = qMax<qreal>(2.0, (block.end - block.start + 1) * rowSize);
+            const QColor color = block.whitespaceOnly ? QColor("#4ea1ff") : QColor("#ff5c5c");
+            if (vertical_) {
+                painter.fillRect(QRectF(3, start, width() - 6, thickness), color);
+            } else {
+                painter.fillRect(QRectF(start, 2, thickness, height() - 4), color);
+            }
+        }
+
+        if (currentRow_ >= 0 && currentRow_ < rows_.size()) {
+            const qreal at = currentRow_ * rowSize;
+            painter.fillRect(vertical_ ? QRectF(0, at, width(), qMax<qreal>(1, rowSize))
+                                       : QRectF(at, 0, qMax<qreal>(1, rowSize), height()),
+                            QColor("#f8f8f2"));
+        }
+
+        // The viewport rectangle: a hollow black-bordered box, sized and
+        // positioned from the fractions the editor last reported, showing
+        // exactly which portion of the full file height is on screen.
+        if (vertical_ && viewportSpan_ > 0.0) {
+            const int top = qRound(viewportStart_ * height());
+            const int h = qMax(3, qRound(viewportSpan_ * height()));
+            QPen pen(QColor(0, 0, 0));
+            pen.setWidth(1);
+            painter.setPen(pen);
+            painter.setBrush(QColor(255, 255, 255, 28));
+            painter.drawRect(QRect(0, top, width() - 1, h - 1));
+        }
+    }
+
+    void mousePressEvent(QMouseEvent* event) override {
+        jumpFromPosition(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (event->buttons() & Qt::LeftButton) {
+            jumpFromPosition(event);
+        }
+    }
+
+public:
+    std::function<void(int)> onRowClicked;
+
+private:
+    void jumpFromPosition(QMouseEvent* event) {
+        if (rows_.isEmpty() || !onRowClicked) return;
+        const qreal position = vertical_ ? event->position().y() : event->position().x();
+        const qreal extent = vertical_ ? height() : width();
+        onRowClicked(qBound(0, static_cast<int>(position * rows_.size() / extent), rows_.size() - 1));
+    }
+
+    QVector<TextDiffLine> rows_;
+    QVector<DiffGroup> blocks_;
+    bool vertical_ = false;
+    int currentRow_ = -1;
+    qreal viewportStart_ = 0.0;
+    qreal viewportSpan_ = 0.0;
+};
+
+// Bottom "console" strip, now editable in place: double-clicking the top row
+// (the left file's current line) lets you type a replacement that is written
+// straight back into the left editor's current line; double-clicking the
+// bottom row edits the right editor's current line the same way. Single
+// click / normal display stays a plain read-only line, same coloring as
+// before, so this only changes behaviour once the user explicitly asks to
+// edit by double-clicking.
+class DiffLinePreview : public QFrame {
+public:
+    explicit DiffLinePreview(QWidget* parent = nullptr) : QFrame(parent) {
+        setObjectName("diffLinePreview");
+        auto* layout = new QVBoxLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(1);
+        topEdit_ = new QLineEdit(this);
+        bottomEdit_ = new QLineEdit(this);
+        for (QLineEdit* edit : {topEdit_, bottomEdit_}) {
+            edit->setFrame(false);
+            edit->setReadOnly(true);
+            edit->setFixedHeight(20);
+            edit->setTextMargins(8, 0, 8, 0);
+            edit->installEventFilter(this);
+            connect(edit, &QLineEdit::returnPressed, this, [this, edit]() { commitEdit(edit); });
+        }
+        layout->addWidget(topEdit_);
+        layout->addWidget(bottomEdit_);
+        applyStyle(topEdit_);
+        applyStyle(bottomEdit_);
+    }
+
+    void setRow(const TextDiffLine& row) {
+        row_ = row;
+        background_ = !row.changed          ? "transparent"
+                      : row.whitespaceOnly   ? "#2d5a87"
+                                             : "#7a2d2d";
+        topEdit_->setText(row.leftNumber ? QString("%1:  %2").arg(row.leftNumber).arg(row.left)
+                                         : QString());
+        bottomEdit_->setText(row.rightNumber ? QString("%1:  %2").arg(row.rightNumber).arg(row.right)
+                                             : QString());
+        leftPrefixLength_ = row.leftNumber ? QString("%1:  ").arg(row.leftNumber).length() : 0;
+        rightPrefixLength_ = row.rightNumber ? QString("%1:  ").arg(row.rightNumber).length() : 0;
+        applyStyle(topEdit_);
+        applyStyle(bottomEdit_);
+    }
+
+    void clear() {
+        row_ = TextDiffLine();
+        background_ = "transparent";
+        topEdit_->clear();
+        bottomEdit_->clear();
+        applyStyle(topEdit_);
+        applyStyle(bottomEdit_);
+    }
+
+    // Fired once the user finishes editing (Enter, or clicking away). The
+    // text passed back has the "N:  " line-number prefix already stripped.
+    std::function<void(QString)> onLeftEdited;
+    std::function<void(QString)> onRightEdited;
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        auto* edit = qobject_cast<QLineEdit*>(watched);
+        if (!edit) return QFrame::eventFilter(watched, event);
+        if (event->type() == QEvent::MouseButtonDblClick && edit->isReadOnly() &&
+            !edit->text().isEmpty()) {
+            edit->setReadOnly(false);
+            edit->setStyleSheet(edit->styleSheet() + "border:1px solid #6f9fdb;");
+            edit->setFocus();
+            edit->selectAll();
+            return true;
+        }
+        if (event->type() == QEvent::FocusOut && !edit->isReadOnly()) {
+            commitEdit(edit);
+        }
+        return QFrame::eventFilter(watched, event);
+    }
+
+private:
+    void applyStyle(QLineEdit* edit) {
+        edit->setStyleSheet(
+            QString("background:%1; color:#f8f8f2; border:1px solid transparent;").arg(background_));
+    }
+
+    void commitEdit(QLineEdit* edit) {
+        if (edit->isReadOnly()) return;
+        edit->setReadOnly(true);
+        applyStyle(edit);
+        const int prefixLength = edit == topEdit_ ? leftPrefixLength_ : rightPrefixLength_;
+        const QString newText = edit->text().mid(prefixLength);
+        if (edit == topEdit_ && onLeftEdited) {
+            onLeftEdited(newText);
+        } else if (edit == bottomEdit_ && onRightEdited) {
+            onRightEdited(newText);
+        }
+    }
+
+    QLineEdit* topEdit_ = nullptr;
+    QLineEdit* bottomEdit_ = nullptr;
+    TextDiffLine row_;
+    QString background_ = "transparent";
+    int leftPrefixLength_ = 0;
+    int rightPrefixLength_ = 0;
+};
+
+class TextCompareView : public QWidget {
+public:
+    TextCompareView(const QString& leftPath, const QString& rightPath,
+                    const QString& leftText, const QString& rightText, QWidget* parent = nullptr)
+        : QWidget(parent), leftPath_(leftPath), rightPath_(rightPath),
+          leftOriginal_(leftText.split('\n')), rightOriginal_(rightText.split('\n')) {
+        setObjectName("textCompareView");
+        buildUi();
+        connectSignals();
+        rebuild();
+    }
+
+    QString title() const {
+        return QFileInfo(leftPath_).fileName() + " <-> " + QFileInfo(rightPath_).fileName();
+    }
+
+    // Wired by main() so the toolbar's Home / Sessions buttons behave like
+    // Beyond Compare's: both return the user to the session (folder-compare)
+    // tab this text view was opened from.
+    std::function<void()> onHomeRequested;
+    std::function<void()> onSessionsRequested;
+    std::function<void()> onTitleChanged;
+
+private:
+    void buildUi() {
+        using icons::Glyph;
+        auto* root = new QVBoxLayout(this);
+        root->setContentsMargins(0, 0, 0, 0);
+        root->setSpacing(0);
+
+        // ---- toolbar: mirrors Beyond Compare's Text Compare toolbar ----
+        toolbar_ = new QToolBar(this);
+        toolbar_->setObjectName("textCompareToolbar");
+        toolbar_->setMovable(false);
+        toolbar_->setFloatable(false);
+        toolbar_->setIconSize(QSize(20, 20));
+        toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+
+        homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), "Home");
+        sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), "Sessions");
+        toolbar_->addSeparator();
+
+        auto* viewGroup = new QActionGroup(this);
+        viewGroup->setExclusive(true);
+        showAllAction_ = toolbar_->addAction(icons::glyph(Glyph::ShowAll), "All");
+        showDiffsAction_ = toolbar_->addAction(icons::glyph(Glyph::ShowDiffs), "Diffs");
+        contextAction_ = toolbar_->addAction(icons::glyph(Glyph::Context), "Context");
+        for (QAction* action : {showAllAction_, showDiffsAction_, contextAction_}) {
+            action->setCheckable(true);
+            viewGroup->addAction(action);
+        }
+        contextAction_->setChecked(true);
+        toolbar_->addSeparator();
+
+        minorAction_ = toolbar_->addAction(icons::glyph(Glyph::Minor), "Minor");
+        minorAction_->setCheckable(true);
+        minorAction_->setToolTip("Treat whitespace-only differences as unimportant");
+        rulesAction_ = toolbar_->addAction(icons::glyph(Glyph::Rules), "Rules");
+        rulesAction_->setCheckable(true);
+        formatAction_ = toolbar_->addAction(icons::glyph(Glyph::Format), "Format");
+        formatAction_->setCheckable(true);
+        formatAction_->setToolTip("Wrap long lines");
+        toolbar_->addSeparator();
+
+        copyAction_ = toolbar_->addAction(icons::glyph(Glyph::CopyLine), "Copy");
+        copyAction_->setToolTip("Copy the current change to the other side");
+        toolbar_->addSeparator();
+
+        nextSectionAction_ = toolbar_->addAction(icons::glyph(Glyph::NextSection), "Next Section");
+        prevSectionAction_ = toolbar_->addAction(icons::glyph(Glyph::PrevSection), "Prev Section");
+        toolbar_->addSeparator();
+
+        swapAction_ = toolbar_->addAction(icons::glyph(Glyph::Swap), "Swap");
+        reloadAction_ = toolbar_->addAction(icons::glyph(Glyph::Refresh), "Reload");
+        root->addWidget(toolbar_);
+
+        auto* header = new QHBoxLayout;
+        header->setContentsMargins(8, 5, 8, 5);
+        leftLabel_ = new QLabel(QFileInfo(leftPath_).fileName(), this);
+        rightLabel_ = new QLabel(QFileInfo(rightPath_).fileName(), this);
+        leftLabel_->setStyleSheet("font-weight:700; color:#f8f8f2;");
+        rightLabel_->setStyleSheet("font-weight:700; color:#f8f8f2;");
+        header->addWidget(leftLabel_, 1);
+        header->addWidget(rightLabel_, 1);
+        root->addLayout(header);
+
+        auto* editors = new QSplitter(Qt::Horizontal, this);
+        editors->setChildrenCollapsible(false);
+
+        auto* leftPane = new QWidget(editors);
+        auto* leftLayout = new QHBoxLayout(leftPane);
+        leftLayout->setContentsMargins(0, 0, 0, 0);
+        leftLayout->setSpacing(0);
+        miniMap_ = new DifferenceOverview(leftPane, true);
+        // Left editor: numbers on the outer (left) edge, arrows on the inner
+        // edge next to the splitter, pointing right toward the other file.
+        leftEditor_ = new LineNumberEditor(LineNumberEditor::GutterSide::Left,
+                                           LineNumberEditor::GutterSide::Right, leftPane);
+        leftLayout->addWidget(miniMap_);
+        leftLayout->addWidget(leftEditor_, 1);
+
+        auto* rightPane = new QWidget(editors);
+        auto* rightLayout = new QHBoxLayout(rightPane);
+        rightLayout->setContentsMargins(0, 0, 0, 0);
+        rightLayout->setSpacing(0);
+        // Right editor: numbers on the outer (right) edge, arrows on the
+        // inner edge next to the splitter, pointing left.
+        rightEditor_ = new LineNumberEditor(LineNumberEditor::GutterSide::Right,
+                                            LineNumberEditor::GutterSide::Left, rightPane);
+        rightLayout->addWidget(rightEditor_, 1);
+
+        editors->addWidget(leftPane);
+        editors->addWidget(rightPane);
+        editors->setStretchFactor(0, 1);
+        editors->setStretchFactor(1, 1);
+        root->addWidget(editors, 1);
+
+        preview_ = new DiffLinePreview(this);
+        root->addWidget(preview_);
+
+        status_ = new QLabel(this);
+        status_->setStyleSheet("background:#3e3e3e; border-top:1px solid #505050; padding:3px 8px;");
+        root->addWidget(status_);
+
+        // Right-click context menu on each editor pane (Align Manually,
+        // Isolate, Copy to Other Side, Edit Line, indent, Compare to
+        // Clipboard, plus the usual clipboard/Open With actions).
+        leftEditor_->setContextMenuPolicy(Qt::CustomContextMenu);
+        rightEditor_->setContextMenuPolicy(Qt::CustomContextMenu);
+
+        // Ctrl+S saves whichever editor pane currently has keyboard focus,
+        // to its own file on disk - not both sides at once, so the user
+        // always saves the side they are actually looking at/editing.
+        saveAction_ = new QAction(this);
+        saveAction_->setShortcut(QKeySequence::Save);
+        saveAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        addAction(saveAction_);
+    }
+
+    void connectSignals() {
+        connect(leftEditor_->verticalScrollBar(), &QScrollBar::valueChanged, this,
+                [this](int value) {
+                    if (!syncing_) {
+                        syncing_ = true;
+                        rightEditor_->verticalScrollBar()->setValue(value);
+                        syncing_ = false;
+                    }
+                    updateMinimapViewport();
+                });
+        connect(rightEditor_->verticalScrollBar(), &QScrollBar::valueChanged, this,
+                [this](int value) {
+                    if (!syncing_) {
+                        syncing_ = true;
+                        leftEditor_->verticalScrollBar()->setValue(value);
+                        syncing_ = false;
+                    }
+                    updateMinimapViewport();
+                });
+        // Both editors' rows line up (filler blanks keep them aligned), so
+        // whichever side the caret moves in, mirror the same row number as
+        // the "current line" on both panes - VS Code style highlight, kept
+        // in sync across the split the way the minimap/preview already are.
+        const auto updateCurrentRow = [this](const QTextCursor& cursor) {
+            currentRow_ = cursor.blockNumber();
+            miniMap_->setCurrentRow(currentRow_);
+            if (currentRow_ >= 0 && currentRow_ < rows_.size()) {
+                preview_->setRow(rows_[currentRow_]);
+            }
+            updateExtraSelections();
+        };
+        connect(leftEditor_, &QPlainTextEdit::cursorPositionChanged, this,
+                [this, updateCurrentRow]() { updateCurrentRow(leftEditor_->textCursor()); });
+        connect(rightEditor_, &QPlainTextEdit::cursorPositionChanged, this,
+                [this, updateCurrentRow]() { updateCurrentRow(rightEditor_->textCursor()); });
+        miniMap_->onRowClicked = [this](int row) { jumpToRow(row); };
+        leftEditor_->onArrowClicked = [this](int start, int end) { copyGroup(start, end, true); };
+        rightEditor_->onArrowClicked = [this](int start, int end) { copyGroup(start, end, false); };
+
+        // Track structural edits (a newline typed or removed) separately per
+        // side: those change how many blocks exist, so the row <-> block
+        // mapping the diff arrows/highlights rely on is no longer valid
+        // until the next Reload. In-place edits that don't add or remove a
+        // line keep the mapping intact and stay fully interactive.
+        connect(leftEditor_->document(), &QTextDocument::blockCountChanged, this,
+                [this](int count) {
+                    if (applyingProgrammaticUpdate_ || count == rows_.size()) return;
+                    leftStructurallyEdited_ = true;
+                    leftEditor_->setDiffData({}, {});
+                });
+        connect(rightEditor_->document(), &QTextDocument::blockCountChanged, this,
+                [this](int count) {
+                    if (applyingProgrammaticUpdate_ || count == rows_.size()) return;
+                    rightStructurallyEdited_ = true;
+                    rightEditor_->setDiffData({}, {});
+                });
+
+        connect(homeAction_, &QAction::triggered, this,
+                [this]() { if (onHomeRequested) onHomeRequested(); });
+        connect(sessionsAction_, &QAction::triggered, this,
+                [this]() { if (onSessionsRequested) onSessionsRequested(); });
+        connect(showAllAction_, &QAction::triggered, this, [this]() { rebuild(); });
+        connect(showDiffsAction_, &QAction::triggered, this, [this]() { rebuild(); });
+        connect(contextAction_, &QAction::triggered, this, [this]() { rebuild(); });
+        connect(minorAction_, &QAction::toggled, this, [this](bool) { rebuild(); });
+        connect(formatAction_, &QAction::toggled, this, [this](bool checked) {
+            const auto mode = checked ? QPlainTextEdit::WidgetWidth : QPlainTextEdit::NoWrap;
+            leftEditor_->setLineWrapMode(mode);
+            rightEditor_->setLineWrapMode(mode);
+        });
+        connect(copyAction_, &QAction::triggered, this, [this]() {
+            const bool fromLeft = !rightEditor_->hasFocus();
+            const int row = (fromLeft ? leftEditor_ : rightEditor_)->textCursor().blockNumber();
+            const DiffGroup* group = groupContainingRow(row);
+            if (group) copyGroup(group->start, group->end, fromLeft);
+        });
+        connect(nextSectionAction_, &QAction::triggered, this, [this]() { jumpToSection(1); });
+        connect(prevSectionAction_, &QAction::triggered, this, [this]() { jumpToSection(-1); });
+        connect(swapAction_, &QAction::triggered, this, [this]() {
+            syncFromEditors();
+            std::swap(leftOriginal_, rightOriginal_);
+            std::swap(leftPath_, rightPath_);
+            std::swap(leftDirtyLines_, rightDirtyLines_);
+            leftLabel_->setText(QFileInfo(leftPath_).fileName());
+            rightLabel_->setText(QFileInfo(rightPath_).fileName());
+            if (onTitleChanged) onTitleChanged();
+            rebuild();
+        });
+        connect(reloadAction_, &QAction::triggered, this, [this]() {
+            syncFromEditors();
+            rebuild();
+        });
+
+        connect(leftEditor_, &QWidget::customContextMenuRequested, this,
+                [this](const QPoint& pos) { showEditorContextMenu(leftEditor_, pos, true); });
+        connect(rightEditor_, &QWidget::customContextMenuRequested, this,
+                [this](const QPoint& pos) { showEditorContextMenu(rightEditor_, pos, false); });
+        connect(saveAction_, &QAction::triggered, this, [this]() { saveFocusedSide(); });
+
+        // Bottom preview strip: top row edits the left editor's current
+        // line, bottom row edits the right editor's - wired straight
+        // through to whichever row the caret is currently on.
+        preview_->onLeftEdited = [this](const QString& text) { applyPreviewEdit(true, text); };
+        preview_->onRightEdited = [this](const QString& text) { applyPreviewEdit(false, text); };
+    }
+
+    static QTextCursor cursorAtRow(QPlainTextEdit* editor, int row) {
+        return QTextCursor(editor->document()->findBlockByNumber(row));
+    }
+
+    void jumpToRow(int row) {
+        leftEditor_->setTextCursor(cursorAtRow(leftEditor_, row));
+        rightEditor_->setTextCursor(cursorAtRow(rightEditor_, row));
+    }
+
+    void jumpToSection(int direction) {
+        if (groups_.isEmpty()) return;
+        const int cursorRow = leftEditor_->textCursor().blockNumber();
+        if (direction > 0) {
+            for (const auto& group : groups_) {
+                if (group.start > cursorRow) {
+                    jumpToRow(group.start);
+                    return;
+                }
+            }
+        } else {
+            for (auto it = groups_.crbegin(); it != groups_.crend(); ++it) {
+                if (it->start < cursorRow) {
+                    jumpToRow(it->start);
+                    return;
+                }
+            }
+        }
+    }
+
+    const DiffGroup* groupContainingRow(int row) const {
+        for (const auto& group : groups_) {
+            if (row >= group.start && row <= group.end) return &group;
+        }
+        return nullptr;
+    }
+
+    // Right-click menu for an editor pane, matching Beyond Compare's text
+    // compare context menu: alignment/section actions on top, line-editing
+    // actions in the middle, then the usual clipboard actions and Open With.
+    void showEditorContextMenu(LineNumberEditor* editor, const QPoint& pos, bool isLeft) {
+        // `pos` arrives in the editor widget's own coordinates (that is what
+        // customContextMenuRequested delivers); cursorForPosition and the
+        // global-position lookup both need viewport coordinates instead,
+        // since the gutters shift the viewport away from (0, 0).
+        const QPoint viewportPos = editor->viewport()->mapFrom(editor, pos);
+        const int row = editor->cursorForPosition(viewportPos).blockNumber();
+        const DiffGroup* group = groupContainingRow(row);
+
+        QMenu menu(this);
+        QAction* alignManually = menu.addAction("Align Manually");
+        QAction* isolate = menu.addAction("Isolate");
+        QAction* copyToOther = menu.addAction(isLeft ? "Copy to Right" : "Copy to Left");
+        copyToOther->setEnabled(group != nullptr);
+        menu.addSeparator();
+        QAction* editLine = menu.addAction("Edit Line");
+        QAction* insertBlank = menu.addAction("Insert Blank Line");
+        QAction* increaseIndent = menu.addAction("Increase Indent");
+        QAction* decreaseIndent = menu.addAction("Decrease Indent");
+        menu.addSeparator();
+        QAction* compareClipboard = menu.addAction("Compare to Clipboard");
+        menu.addSeparator();
+        QAction* cutAction = menu.addAction("Cut");
+        QAction* copyAction = menu.addAction("Copy");
+        QAction* pasteAction = menu.addAction("Paste");
+        QAction* deleteAction = menu.addAction("Delete");
+        const bool hasSelection = editor->textCursor().hasSelection();
+        cutAction->setEnabled(hasSelection);
+        copyAction->setEnabled(hasSelection);
+        deleteAction->setEnabled(hasSelection);
+        menu.addSeparator();
+        QMenu* openWith = menu.addMenu("Open With");
+        QAction* openDefault = openWith->addAction("Default Application");
+        QAction* openChoose = openWith->addAction("Choose Program...");
+
+        QAction* chosen = menu.exec(editor->viewport()->mapToGlobal(viewportPos));
+        if (!chosen) return;
+
+        if (chosen == alignManually) {
+            status_->setText("Align Manually: pick the matching line on the other side.");
+        } else if (chosen == isolate) {
+            status_->setText("Isolate: showing only this difference section.");
+            if (!showDiffsAction_->isChecked() && !contextAction_->isChecked()) {
+                showDiffsAction_->setChecked(true);
+            } else {
+                contextAction_->setChecked(true);
+            }
+            rebuild();
+        } else if (chosen == copyToOther && group) {
+            copyGroup(group->start, group->end, isLeft);
+        } else if (chosen == editLine) {
+            editor->setTextCursor(cursorAtRow(editor, row));
+            editor->setFocus();
+        } else if (chosen == insertBlank) {
+            QTextCursor cursor = cursorAtRow(editor, row);
+            cursor.movePosition(QTextCursor::StartOfBlock);
+            cursor.insertBlock();
+        } else if (chosen == increaseIndent) {
+            indentRow(editor, row, true);
+        } else if (chosen == decreaseIndent) {
+            indentRow(editor, row, false);
+        } else if (chosen == compareClipboard) {
+            compareToClipboard(isLeft);
+        } else if (chosen == cutAction) {
+            editor->cut();
+        } else if (chosen == copyAction) {
+            editor->copy();
+        } else if (chosen == pasteAction) {
+            editor->paste();
+        } else if (chosen == deleteAction) {
+            QTextCursor cursor = editor->textCursor();
+            if (cursor.hasSelection()) cursor.removeSelectedText();
+        } else if (chosen == openDefault || chosen == openChoose) {
+            status_->setText("Open With: " + (isLeft ? leftPath_ : rightPath_));
+        }
+    }
+
+    static void indentRow(LineNumberEditor* editor, int row, bool increase) {
+        QTextCursor cursor = cursorAtRow(editor, row);
+        cursor.movePosition(QTextCursor::StartOfBlock);
+        if (increase) {
+            cursor.insertText("    ");
+            return;
+        }
+        for (int i = 0; i < 4; ++i) {
+            QTextCursor probe = cursorAtRow(editor, row);
+            probe.movePosition(QTextCursor::StartOfBlock);
+            probe.movePosition(QTextCursor::Right, QTextCursor::KeepAnchor, 1);
+            if (probe.selectedText() == " " || probe.selectedText() == "\t") {
+                probe.removeSelectedText();
+            } else {
+                break;
+            }
+        }
+    }
+
+    void compareToClipboard(bool isLeft) {
+        const QString clipboard = QApplication::clipboard()->text();
+        if (clipboard.isEmpty()) {
+            status_->setText("Clipboard is empty - nothing to compare.");
+            return;
+        }
+        const QStringList clipboardLines = clipboard.split('\n');
+        const QStringList& fileLines = isLeft ? leftOriginal_ : rightOriginal_;
+        const QVector<TextDiffLine> comparison = alignTextLines(fileLines, clipboardLines);
+        int differences = 0;
+        for (const auto& line : comparison) {
+            if (line.changed) ++differences;
+        }
+        status_->setText(QString("Compare to Clipboard: %1 differing line(s) against the %2 pane.")
+                             .arg(differences)
+                             .arg(isLeft ? "left" : "right"));
+    }
+
+    // Pulls whatever the user has actually typed back into the plain
+    // left/right line arrays so Reload, Swap and group-copy all operate on
+    // current content rather than the text captured when the tab opened.
+    // Rows still in sync with the editors (no lines added/removed) are read
+    // back precisely, filler alignment rows included; once a side has had a
+    // structural edit (a newline typed or deleted) its row mapping can no
+    // longer be trusted, so that side falls back to the editor's raw text.
+    void syncFromEditors() {
+        if (!leftStructurallyEdited_) {
+            for (int i = 0; i < rows_.size() && i < leftEditor_->document()->blockCount(); ++i) {
+                rows_[i].left = leftEditor_->document()->findBlockByNumber(i).text();
+            }
+            leftOriginal_ = materializeSide(true);
+        } else {
+            leftOriginal_ = leftEditor_->toPlainText().split('\n');
+        }
+        if (!rightStructurallyEdited_) {
+            for (int i = 0; i < rows_.size() && i < rightEditor_->document()->blockCount(); ++i) {
+                rows_[i].right = rightEditor_->document()->findBlockByNumber(i).text();
+            }
+            rightOriginal_ = materializeSide(false);
+        } else {
+            rightOriginal_ = rightEditor_->toPlainText().split('\n');
+        }
+    }
+
+    // A row belongs in the real file if it was a real line to begin with, or
+    // if the user typed something into what used to be an alignment filler
+    // (which makes it a genuine new line). Untouched filler rows are dropped.
+    QStringList materializeSide(bool left) const {
+        QStringList result;
+        for (const auto& row : rows_) {
+            const int number = left ? row.leftNumber : row.rightNumber;
+            const QString& text = left ? row.left : row.right;
+            if (number > 0 || !text.isEmpty()) result << text;
+        }
+        return result;
+    }
+
+    // Copies every row in [startRow, endRow] to the other side in one shot.
+    // `row` indices are into rows_ (the currently displayed/filtered list);
+    // the edit itself targets the untouched original line arrays so a
+    // subsequent rebuild() re-diffs cleanly. `shift` accounts for lines this
+    // same call has already inserted earlier in the loop. Every line the
+    // copy lands on is marked dirty on the destination side (a "needs
+    // saving" flag independent of the diff itself) so it can be picked out
+    // with a green highlight until that side is saved with Ctrl+S.
+    void copyGroup(int startRow, int endRow, bool leftToRight) {
+        syncFromEditors();
+        startRow = qMax(0, startRow);
+        endRow = qMin(rows_.size() - 1, endRow);
+        if (startRow > endRow) return;
+        int shift = 0;
+        for (int row = startRow; row <= endRow; ++row) {
+            const TextDiffLine& copied = rows_[row];
+            if (leftToRight) {
+                if (copied.leftNumber == 0) continue;
+                if (copied.rightNumber > 0) {
+                    const int lineNumber = copied.rightNumber + shift;
+                    rightOriginal_[lineNumber - 1] = copied.left;
+                    rightDirtyLines_.insert(lineNumber);
+                } else {
+                    const int insertAt = insertionIndex(row, /*forRight=*/true) + shift;
+                    rightOriginal_.insert(insertAt, copied.left);
+                    markDirtyForInsert(rightDirtyLines_, insertAt + 1);
+                    ++shift;
+                }
+            } else {
+                if (copied.rightNumber == 0) continue;
+                if (copied.leftNumber > 0) {
+                    const int lineNumber = copied.leftNumber + shift;
+                    leftOriginal_[lineNumber - 1] = copied.right;
+                    leftDirtyLines_.insert(lineNumber);
+                } else {
+                    const int insertAt = insertionIndex(row, /*forRight=*/false) + shift;
+                    leftOriginal_.insert(insertAt, copied.right);
+                    markDirtyForInsert(leftDirtyLines_, insertAt + 1);
+                    ++shift;
+                }
+            }
+        }
+        rebuild();
+    }
+
+    // Shifts every previously-recorded dirty (1-based) line number at or
+    // after `insertedAt1Based` up by one to account for a freshly-inserted
+    // line, then marks the new line itself dirty too.
+    static void markDirtyForInsert(QSet<int>& dirty, int insertedAt1Based) {
+        QSet<int> shifted;
+        for (int number : dirty) {
+            shifted.insert(number >= insertedAt1Based ? number + 1 : number);
+        }
+        shifted.insert(insertedAt1Based);
+        dirty = shifted;
+    }
+
+    // Position to insert a brand-new line at, found by walking back to the
+    // closest earlier row that still has a real line number on that side.
+    int insertionIndex(int fromRow, bool forRight) const {
+        for (int i = fromRow - 1; i >= 0; --i) {
+            const int number = forRight ? rows_[i].rightNumber : rows_[i].leftNumber;
+            if (number > 0) return number;
+        }
+        return 0;
+    }
+
+    QVector<TextDiffLine> visibleRows(const QVector<TextDiffLine>& all) const {
+        if (showAllAction_->isChecked()) {
+            return all;
+        }
+        QVector<bool> keep(all.size(), false);
+        const int context = contextAction_->isChecked() ? 2 : 0;
+        for (int i = 0; i < all.size(); ++i) {
+            if (!all[i].changed) continue;
+            for (int j = qMax(0, i - context); j <= qMin(all.size() - 1, i + context); ++j) {
+                keep[j] = true;
+            }
+        }
+        QVector<TextDiffLine> result;
+        for (int i = 0; i < all.size(); ++i) {
+            if (keep[i]) result.push_back(all[i]);
+        }
+        return result;
+    }
+
+    void rebuild() {
+        QVector<TextDiffLine> all = alignTextLines(leftOriginal_, rightOriginal_);
+        if (minorAction_->isChecked()) {
+            for (auto& row : all) {
+                if (row.whitespaceOnly) row.changed = false;
+            }
+        }
+        rows_ = visibleRows(all);
+        groups_ = groupDiffRows(rows_);
+
+        QStringList leftLines;
+        QStringList rightLines;
+        QVector<int> leftNumbers;
+        QVector<int> rightNumbers;
+        int differenceCount = 0;
+        int sectionCount = 0;
+        bool inSection = false;
+        for (const auto& row : rows_) {
+            leftLines << row.left;
+            rightLines << row.right;
+            leftNumbers << row.leftNumber;
+            rightNumbers << row.rightNumber;
+            if (row.changed) {
+                ++differenceCount;
+                if (!inSection) ++sectionCount;
+                inSection = true;
+            } else {
+                inSection = false;
+            }
+        }
+
+        applyingProgrammaticUpdate_ = true;
+        leftEditor_->setPlainText(leftLines.join('\n'));
+        rightEditor_->setPlainText(rightLines.join('\n'));
+        applyingProgrammaticUpdate_ = false;
+        leftStructurallyEdited_ = false;
+        rightStructurallyEdited_ = false;
+
+        leftEditor_->setLineNumbers(leftNumbers);
+        rightEditor_->setLineNumbers(rightNumbers);
+        leftEditor_->setDiffData(rows_, groups_);
+        rightEditor_->setDiffData(rows_, groups_);
+        computeDiffSelections(rows_);
+        miniMap_->setRows(rows_);
+        preview_->clear();
+        currentRow_ = -1;
+        refreshDirtyIndicators();
+        updateMinimapViewport();
+        status_->setText(QString("%1 difference section(s)   |   %2 line(s)   |   %3 changed row(s)")
+                             .arg(sectionCount)
+                             .arg(rows_.size())
+                             .arg(differenceCount));
+    }
+
+    // Colours each changed row to say what actually happened to it, matching
+    // Beyond Compare's convention: green on the side a line was added to,
+    // red/pink on the side a line was removed from, amber where the same
+    // line exists on both sides but its text differs, blue for a
+    // whitespace-only difference, and a diagonal hatch on whichever side has
+    // no counterpart at all (a pure filler/alignment row).
+    void computeDiffSelections(const QVector<TextDiffLine>& rows) {
+        leftDiffSelections_.clear();
+        rightDiffSelections_.clear();
+        const auto addSelection = [this](LineNumberEditor* editor, int row, const QBrush& brush) {
+            QTextEdit::ExtraSelection selection;
+            selection.format.setBackground(brush);
+            selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+            selection.cursor = cursorAtRow(editor, row);
+            (editor == leftEditor_ ? leftDiffSelections_ : rightDiffSelections_).append(selection);
+        };
+        static const QBrush kHatch(QColor(0x50, 0x50, 0x50, 130), Qt::BDiagPattern);
+        for (int row = 0; row < rows.size(); ++row) {
+            const TextDiffLine& line = rows[row];
+            if (!line.changed) continue;
+            if (line.whitespaceOnly) {
+                addSelection(leftEditor_, row, QColor(45, 90, 135, 150));
+                addSelection(rightEditor_, row, QColor(45, 90, 135, 150));
+            } else if (line.leftNumber > 0 && line.rightNumber > 0) {
+                addSelection(leftEditor_, row, QColor(150, 120, 30, 150));
+                addSelection(rightEditor_, row, QColor(150, 120, 30, 150));
+            } else if (line.leftNumber > 0) {
+                addSelection(leftEditor_, row, QColor(40, 140, 70, 150));
+                addSelection(rightEditor_, row, kHatch);
+            } else if (line.rightNumber > 0) {
+                addSelection(rightEditor_, row, QColor(150, 45, 45, 150));
+                addSelection(leftEditor_, row, kHatch);
+            }
+        }
+    }
+
+    // Row(s), by index into rows_, that a side's copied-but-unsaved lines
+    // land on right now.
+    QSet<int> dirtyRowIndices(bool left) const {
+        const QSet<int>& dirty = left ? leftDirtyLines_ : rightDirtyLines_;
+        QSet<int> result;
+        if (dirty.isEmpty()) return result;
+        for (int row = 0; row < rows_.size(); ++row) {
+            const int number = left ? rows_[row].leftNumber : rows_[row].rightNumber;
+            if (number > 0 && dirty.contains(number)) result.insert(row);
+        }
+        return result;
+    }
+
+    // Recomputes the green "copied, not yet saved" overlay from
+    // left/rightDirtyLines_ and pushes it both into the editors' extra
+    // selections (full-row highlight) and into the arrow-gutter marker.
+    void refreshDirtyIndicators() {
+        leftDirtyRows_ = dirtyRowIndices(true);
+        rightDirtyRows_ = dirtyRowIndices(false);
+        updateExtraSelections();
+        leftEditor_->setDirtyRows(leftDirtyRows_);
+        rightEditor_->setDirtyRows(rightDirtyRows_);
+    }
+
+    // VS Code-style current-line highlight, plus the green "needs saving"
+    // overlay for copied lines - both drawn on top of the base diff
+    // colouring, kept on the same row in both editors regardless of which
+    // pane the caret or a mouse click actually landed in.
+    void updateExtraSelections() {
+        const auto withOverlays = [this](LineNumberEditor* editor,
+                                         QVector<QTextEdit::ExtraSelection> selections,
+                                         const QSet<int>& dirtyRows) {
+            static const QColor kDirty(40, 170, 90, 170);
+            for (int row : dirtyRows) {
+                if (row < 0 || row >= editor->document()->blockCount()) continue;
+                QTextEdit::ExtraSelection dirty;
+                dirty.format.setBackground(kDirty);
+                dirty.format.setProperty(QTextFormat::FullWidthSelection, true);
+                dirty.cursor = cursorAtRow(editor, row);
+                selections.append(dirty);
+            }
+            if (currentRow_ >= 0 && currentRow_ < editor->document()->blockCount()) {
+                QTextEdit::ExtraSelection current;
+                current.format.setBackground(QColor(255, 255, 255, 22));
+                current.format.setProperty(QTextFormat::FullWidthSelection, true);
+                current.cursor = cursorAtRow(editor, currentRow_);
+                selections.append(current);
+            }
+            return selections;
+        };
+        leftEditor_->setExtraSelections(withOverlays(leftEditor_, leftDiffSelections_, leftDirtyRows_));
+        rightEditor_->setExtraSelections(
+            withOverlays(rightEditor_, rightDiffSelections_, rightDirtyRows_));
+    }
+
+    // Maps the editor's current vertical-scrollbar position onto the
+    // fraction-of-whole-file the mini-map needs, so its black viewport
+    // rectangle always matches what is actually on screen.
+    void updateMinimapViewport() {
+        const int total = qMax(1, rows_.size());
+        const QScrollBar* bar = leftEditor_->verticalScrollBar();
+        const qreal start = static_cast<qreal>(bar->value()) / total;
+        const qreal span = qMax(1, bar->pageStep()) / static_cast<qreal>(total);
+        miniMap_->setViewport(start, span);
+    }
+
+    // Writes whichever editor currently has focus back to its file on disk.
+    void saveFocusedSide() {
+        syncFromEditors();
+        if (leftEditor_->hasFocus()) {
+            saveSide(true);
+        } else if (rightEditor_->hasFocus()) {
+            saveSide(false);
+        } else {
+            status_->setText("Click into a pane first, then Ctrl+S saves that side.");
+        }
+    }
+
+    void saveSide(bool left) {
+        const QString& path = left ? leftPath_ : rightPath_;
+        QFile file(path);
+        if (path.isEmpty() || !file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            status_->setText("Could not save " + (path.isEmpty() ? QString("(no file)") : path));
+            return;
+        }
+        QTextStream out(&file);
+        out << (left ? leftOriginal_ : rightOriginal_).join('\n');
+        file.close();
+        (left ? leftDirtyLines_ : rightDirtyLines_).clear();
+        refreshDirtyIndicators();
+        status_->setText(QFileInfo(path).fileName() + " saved.");
+    }
+
+    // Applies an edit made in the bottom preview strip straight back into
+    // the corresponding editor's current line (in place - this never adds
+    // or removes a line, so the row <-> block mapping stays valid).
+    void applyPreviewEdit(bool left, const QString& text) {
+        if (currentRow_ < 0 || currentRow_ >= rows_.size()) return;
+        LineNumberEditor* editor = left ? leftEditor_ : rightEditor_;
+        const int number = left ? rows_[currentRow_].leftNumber : rows_[currentRow_].rightNumber;
+        if (number == 0) return;  // filler row on this side - nothing to edit
+        QTextCursor cursor = cursorAtRow(editor, currentRow_);
+        cursor.select(QTextCursor::LineUnderCursor);
+        cursor.insertText(text);
+        editor->setFocus();
+    }
+
+    QString leftPath_;
+    QString rightPath_;
+    QStringList leftOriginal_;
+    QStringList rightOriginal_;
+    QVector<TextDiffLine> rows_;    // currently displayed rows (post All/Diffs/Context filter)
+    QVector<DiffGroup> groups_;     // contiguous change runs within rows_
+
+    QToolBar* toolbar_ = nullptr;
+    QAction* homeAction_ = nullptr;
+    QAction* sessionsAction_ = nullptr;
+    QAction* showAllAction_ = nullptr;
+    QAction* showDiffsAction_ = nullptr;
+    QAction* contextAction_ = nullptr;
+    QAction* minorAction_ = nullptr;
+    QAction* rulesAction_ = nullptr;
+    QAction* formatAction_ = nullptr;
+    QAction* copyAction_ = nullptr;
+    QAction* nextSectionAction_ = nullptr;
+    QAction* prevSectionAction_ = nullptr;
+    QAction* swapAction_ = nullptr;
+    QAction* reloadAction_ = nullptr;
+
+    QLabel* leftLabel_ = nullptr;
+    QLabel* rightLabel_ = nullptr;
+    LineNumberEditor* leftEditor_ = nullptr;
+    LineNumberEditor* rightEditor_ = nullptr;
+    DifferenceOverview* miniMap_ = nullptr;
+    DiffLinePreview* preview_ = nullptr;
+    QLabel* status_ = nullptr;
+    bool syncing_ = false;
+
+    int currentRow_ = -1;
+    QVector<QTextEdit::ExtraSelection> leftDiffSelections_;
+    QVector<QTextEdit::ExtraSelection> rightDiffSelections_;
+
+    bool applyingProgrammaticUpdate_ = false;
+    bool leftStructurallyEdited_ = false;
+    bool rightStructurallyEdited_ = false;
+
+    // 1-based line numbers (into leftOriginal_/rightOriginal_) that were
+    // written by a copy-to-other-side action and have not been saved since.
+    QSet<int> leftDirtyLines_;
+    QSet<int> rightDirtyLines_;
+    // Same information translated into row indices (into rows_) for the
+    // currently displayed/filtered document - what actually gets painted.
+    QSet<int> leftDirtyRows_;
+    QSet<int> rightDirtyRows_;
+
+    QAction* saveAction_ = nullptr;
+};
+
+// ---------------------------------------------------------------------------
+// Comparison engine (one instance per refresh of one session)
+// ---------------------------------------------------------------------------
+
+struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
+    // Bookkeeping for one folder level while its children are being compared.
+    struct NodeState {
+        QTreeWidgetItem* leftItem = nullptr;
+        QTreeWidgetItem* rightItem = nullptr;
+        std::shared_ptr<NodeState> parent;
+        int pendingChildren = 0;
+        bool different = false;
+        bool leftMissing = false;
+        bool rightMissing = false;
+        bool mismatched = false;  // file on one side, folder on the other
+        quint32 leftMask = 0;     // which kinds of status occur below (folder icon)
+        quint32 rightMask = 0;
+        qint64 leftBytes = 0;
+        qint64 rightBytes = 0;
+    };
+
+    QPointer<QTreeWidget> leftTree;
+    QPointer<QTreeWidget> rightTree;
+    QThreadPool pool;
+    std::atomic_bool cancelled{false};
+    CompareOptions options;
+    std::function<void()> onProgress;
+    std::function<void()> onComplete;
+
+    // Totals shown in the pane footers (GUI thread only).
+    int leftFiles = 0;
+    int rightFiles = 0;
+    qint64 leftBytes = 0;
+    qint64 rightBytes = 0;
+
+    ComparisonRun(QTreeWidget* left, QTreeWidget* right, CompareOptions opts)
+        : leftTree(left), rightTree(right), options(std::move(opts)) {
+        pool.setMaxThreadCount(5);
+    }
+
+    void start(const QString& leftPath, const QString& rightPath) {
+        scheduleFolder(leftPath, rightPath, nullptr, nullptr, nullptr, false);
+    }
+
+    void scheduleFolder(QString leftPath, QString rightPath, QTreeWidgetItem* leftParent,
+                        QTreeWidgetItem* rightParent, std::shared_ptr<NodeState> parent,
+                        bool mismatched) {
+        auto run = shared_from_this();
+        auto* task = QRunnable::create([run, leftPath = std::move(leftPath),
+                                        rightPath = std::move(rightPath), leftParent, rightParent,
+                                        parent = std::move(parent), mismatched]() {
+            if (run->cancelled.load()) {
+                return;
+            }
+            auto entries = collectEntries(leftPath, rightPath, run->options, run->cancelled);
+            if (run->cancelled.load()) {
+                return;
+            }
+            const bool leftMissing = leftPath.isEmpty();
+            const bool rightMissing = rightPath.isEmpty();
+            // qApp is always a valid context, and the lambda re-checks
+            // `cancelled` and the QPointers on the GUI thread, so a closed tab
+            // can never be touched.
+            QMetaObject::invokeMethod(
+                qApp,
+                [run, entries = std::move(entries), leftParent, rightParent, parent, leftMissing,
+                 rightMissing, mismatched]() {
+                    run->populate(entries, leftParent, rightParent, parent, leftMissing,
+                                  rightMissing, mismatched);
+                },
+                Qt::QueuedConnection);
+        });
+        task->setAutoDelete(true);
+        pool.start(task);
+    }
+
+    void populate(const std::vector<EntryPair>& entries, QTreeWidgetItem* leftParent,
+                  QTreeWidgetItem* rightParent, const std::shared_ptr<NodeState>& parent,
+                  bool leftMissing, bool rightMissing, bool mismatched) {
+        if (cancelled.load() || !leftTree || !rightTree) {
+            return;
+        }
+        auto state = std::make_shared<NodeState>();
+        state->leftItem = leftParent;
+        state->rightItem = rightParent;
+        state->parent = parent;
+        state->leftMissing = leftMissing;
+        state->rightMissing = rightMissing;
+        state->mismatched = mismatched;
+
+        for (const auto& entry : entries) {
+            auto* leftItem = addRow(leftTree, entry.left, entry.leftStatus, entry.pairClass, leftParent);
+            auto* rightItem = addRow(rightTree, entry.right, entry.rightStatus, entry.pairClass, rightParent);
+
+            if (entry.left.exists && !entry.left.isDir) {
+                ++leftFiles;
+                leftBytes += entry.left.size;
+                state->leftBytes += entry.left.size;
+            }
+            if (entry.right.exists && !entry.right.isDir) {
+                ++rightFiles;
+                rightBytes += entry.right.size;
+                state->rightBytes += entry.right.size;
+            }
+
+            if (entry.recurse) {
+                ++state->pendingChildren;
+                const bool leftReal = entry.left.exists && entry.left.isDir && !entry.left.isLink;
+                const bool rightReal = entry.right.exists && entry.right.isDir && !entry.right.isLink;
+                scheduleFolder(leftReal ? entry.left.path : QString(),
+                               rightReal ? entry.right.path : QString(), leftItem, rightItem, state,
+                               entry.left.exists && entry.right.exists &&
+                                   entry.left.isDir != entry.right.isDir);
+            } else {
+                if (entry.pairClass != PairClass::Same) {
+                    state->different = true;
+                }
+                if (entry.left.exists) state->leftMask |= statusBit(entry.leftStatus);
+                if (entry.right.exists) state->rightMask |= statusBit(entry.rightStatus);
+            }
+        }
+        if (onProgress) {
+            onProgress();
+        }
+        // Only complete once every sub-folder below has completed too.
+        if (state->pendingChildren == 0) {
+            finishNode(state);
+        }
+    }
+
+    static void finishFolderItem(QTreeWidgetItem* item, quint32 mask, qint64 bytes) {
+        if (!item || !item->data(0, kIsDirRole).toBool()) {
+            return;
+        }
+        item->setIcon(0, icons::folderIconForMask(mask));
+        item->setText(2, formatSize(bytes));
+    }
+
+    void finishNode(const std::shared_ptr<NodeState>& state) {
+        if (cancelled.load()) {
+            return;
+        }
+        const bool orphan = !state->mismatched && (state->leftMissing || state->rightMissing);
+        if (state->leftMissing && !state->mismatched) state->rightMask |= statusBit(RowStatus::Orphan);
+        if (state->rightMissing && !state->mismatched) state->leftMask |= statusBit(RowStatus::Orphan);
+        const bool different = state->different || orphan || state->mismatched;
+
+        if (state->leftItem || state->rightItem) {
+            if (!state->mismatched) {
+                RowStatus status = RowStatus::Equal;
+                PairClass pairClass = PairClass::Same;
+                if (orphan) {
+                    status = RowStatus::Orphan;
+                    pairClass = state->leftMissing ? PairClass::OrphanRight : PairClass::OrphanLeft;
+                } else if (state->different) {
+                    status = RowStatus::Different;
+                    pairClass = PairClass::Different;
+                }
+                for (auto* item : {state->leftItem, state->rightItem}) {
+                    if (item) {
+                        item->setData(0, kStatusRole, static_cast<int>(status));
+                        item->setData(0, kClassRole, static_cast<int>(pairClass));
+                    }
+                }
+            }
+            finishFolderItem(state->leftItem, state->leftMask, state->leftBytes);
+            finishFolderItem(state->rightItem, state->rightMask, state->rightBytes);
+        }
+
+        if (state->parent) {
+            auto parent = state->parent;
+            parent->different = parent->different || different;
+            parent->leftMask |= state->leftMask;
+            parent->rightMask |= state->rightMask;
+            parent->leftBytes += state->leftBytes;
+            parent->rightBytes += state->rightBytes;
+            if (--parent->pendingChildren == 0) {
+                finishNode(parent);
+            }
+        } else if (onComplete) {
+            onComplete();
+        }
+    }
+};
+
+// A run may be released by a worker thread (its tasks hold references). Its
+// QThreadPool must never be destroyed from one of its own threads, so the
+// final delete is always bounced to the GUI thread.
+std::shared_ptr<ComparisonRun> makeRun(QTreeWidget* left, QTreeWidget* right, CompareOptions options) {
+    return std::shared_ptr<ComparisonRun>(
+        new ComparisonRun(left, right, std::move(options)), [](ComparisonRun* run) {
+            if (QThread::currentThread() == QCoreApplication::instance()->thread()) {
+                delete run;
+            } else {
+                QMetaObject::invokeMethod(qApp, [run]() { delete run; }, Qt::QueuedConnection);
+            }
+        });
+}
+
+// ---------------------------------------------------------------------------
+// One tab = one independent folder comparison. All of its commands, options,
+// filters and log live inside the tab, so nothing leaks across sessions.
+// ---------------------------------------------------------------------------
+
+class CompareSession : public QWidget {
+public:
+    std::function<void()> onTitleChanged;
+    std::function<void(const QString&, const QString&, const QString&, const QString&)>
+        onTextCompare;
+
+    // What a right-click landed on. Copied by value: the context menu runs a
+    // nested event loop and the rows may be rebuilt while it is open, so it
+    // must never hold on to QTreeWidgetItem pointers.
+    enum class Side { Left, Right };
+    struct NodeContext {
+        Side side = Side::Left;
+        bool isDir = false;
+        bool existsHere = false;  // false on the placeholder row of an orphan
+        QString path;             // node on the clicked side (empty if missing)
+        QString otherPath;        // its counterpart on the other side (may be empty)
+
+        QString displayPath() const { return existsHere ? path : otherPath; }
+    };
+
+    // Extension points for the "Open With" and "Explorer" submenus. Their real
+    // content comes from separate libraries: assign a provider that adds
+    // actions to the given submenu. While a provider is unset (or adds nothing)
+    // the submenu shows a single "Dummy Item".
+    std::function<void(QMenu*, const NodeContext&)> populateOpenWithMenu;
+    std::function<void(QMenu*, const NodeContext&)> populateExplorerMenu;
+
+    explicit CompareSession(QWidget* parent = nullptr) : QWidget(parent) {
+        createActions();
+        buildUi();
+        connectSignals();
+        for (auto* action : findChildren<QAction*>()) {
+            action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+            addAction(action);
+        }
+    }
+
+    ~CompareSession() override { cancelRun(); }
+
+    // ---- menu integration (the main window shows the *current* tab's actions)
+    QList<QAction*> actionsMenuItems() const {
+        return {compareAction_, refreshAction_, swapAction_, nullptr, selectLeftAction_,
+                selectRightAction_, nullptr, contentsAction_, timestampsAction_, nullptr,
+                filterApplyAction_, filterClearAction_};
+    }
+    QList<QAction*> editMenuItems() const { return {editSelectionAction_}; }
+    QList<QAction*> searchMenuItems() const { return {findAction_}; }
+    QList<QAction*> viewMenuItems() const {
+        QList<QAction*> items;
+        for (auto* action : showActions_) items << action;
+        items << nullptr << expandAllAction_ << collapseAllAction_ << nullptr << consoleAction_;
+        return items;
+    }
+    QList<QAction*> toolsMenuItems() const { return {optionsAction_}; }
+
+    // ---- state
+    QString leftText() const { return pathText(leftPath_); }
+    QString rightText() const { return pathText(rightPath_); }
+
+    void setPaths(const QString& left, const QString& right) {
+        setPath(leftPath_, left);
+        setPath(rightPath_, right);
+        updateTitle();
+    }
+
+    QString title() const {
+        const QString l = folderLabel(leftText());
+        const QString r = folderLabel(rightText());
+        if (l.isEmpty() && r.isEmpty()) {
+            return "New Folder Compare";
+        }
+        return (l.isEmpty() ? QString("...") : l) + " \u2194 " + (r.isEmpty() ? QString("...") : r);
+    }
+
+    QString detailedTitle() const {
+        return QDir::toNativeSeparators(leftText()) + "  <->  " + QDir::toNativeSeparators(rightText());
+    }
+
+    void copySettingsFrom(const CompareSession& other) {
+        modeCombo_->setCurrentIndex(other.modeCombo_->currentIndex());
+        contentsAction_->setChecked(other.contentsAction_->isChecked());
+        timestampsAction_->setChecked(other.timestampsAction_->isChecked());
+        filterCombo_->setEditText(other.filterCombo_->currentText());
+        for (int i = 0; i < kPairClassCount; ++i) {
+            showActions_[i]->setChecked(other.showActions_[i]->isChecked());
+        }
+    }
+
+    void log(const QString& message) {
+        console_->appendPlainText(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") +
+                                  "  " + message);
+    }
+
+    void cancelRun() {
+        if (run_) {
+            run_->cancelled.store(true);
+            run_.reset();
+        }
+    }
+
+    void refresh() {
+        cancelRun();
+        leftTree_->clear();
+        rightTree_->clear();
+
+        const QString left = leftText();
+        const QString right = rightText();
+        remember(leftPath_, left);
+        remember(rightPath_, right);
+        remember(filterCombo_, filterCombo_->currentText().trimmed());
+        updateTitle();
+        updateFooter();
+
+        if (left.isEmpty() || right.isEmpty()) {
+            log("Select two folders to compare");
+            return;
+        }
+        if (!QFileInfo(left).isDir()) {
+            log("Left folder not found: " + QDir::toNativeSeparators(left));
+            return;
+        }
+        if (!QFileInfo(right).isDir()) {
+            log("Right folder not found: " + QDir::toNativeSeparators(right));
+            return;
+        }
+
+        leftFree_->setText(freeSpaceText(left));
+        rightFree_->setText(freeSpaceText(right));
+
+        CompareOptions options;
+        options.checkContent = contentsAction_->isChecked();
+        options.ignoreTimestamps = timestampsAction_->isChecked();
+        options.filter = NameFilter::parse(filterCombo_->currentText());
+
+        run_ = makeRun(leftTree_, rightTree_, std::move(options));
+        const ComparisonRun* expected = run_.get();
+        run_->onProgress = [this, expected]() {
+            if (run_.get() == expected) updateFooter();
+        };
+        run_->onComplete = [this, expected]() {
+            if (run_.get() != expected) return;
+            updateFooter();
+            applyViewFilter();
+            log("Folder comparison completed");
+        };
+        log("Load comparison: " + QDir::toNativeSeparators(left) + " <-> " +
+            QDir::toNativeSeparators(right));
+        log(contentsAction_->isChecked() ? "Comparing folder contents (byte-for-byte)..."
+                                         : "Comparing folder structure (size and timestamp)...");
+        run_->start(left, right);
+    }
+
+private:
+    // ---------------------------------------------------------------- actions
+    void createActions() {
+        using icons::Glyph;
+        compareAction_ = new QAction(icons::glyph(Glyph::Compare), "Compare", this);
+        compareAction_->setToolTip("Compare the two folders again (recursive)");
+        refreshAction_ = new QAction(icons::glyph(Glyph::Refresh), "Refresh", this);
+        refreshAction_->setShortcut(QKeySequence(Qt::Key_F5));
+        refreshAction_->setToolTip("Refresh (F5)");
+        swapAction_ = new QAction(icons::glyph(Glyph::Swap), "Swap sides", this);
+        swapAction_->setToolTip("Swap left and right folders");
+        selectLeftAction_ = new QAction(icons::glyph(Glyph::FolderOpen), "Select left folder...", this);
+        selectRightAction_ = new QAction(icons::glyph(Glyph::FolderOpen), "Select right folder...", this);
+
+        struct Toggle {
+            const char* text;
+            const char* tip;
+            QColor left;
+            QColor right;
+        };
+        const Toggle toggles[kPairClassCount] = {
+            {"Show identical", "Show items that are the same on both sides", color::same(), color::same()},
+            {"Show left orphans", "Show items that exist only on the left", color::orphan(), QColor()},
+            {"Show right orphans", "Show items that exist only on the right", QColor(), color::orphan()},
+            {"Show left newer", "Show items that are newer on the left", color::newer(), color::older()},
+            {"Show right newer", "Show items that are newer on the right", color::older(), color::newer()},
+            {"Show different", "Show items with the same timestamp but different content", color::different(), color::different()},
+        };
+        for (int i = 0; i < kPairClassCount; ++i) {
+            auto* action = new QAction(icons::dashIcon(toggles[i].left, toggles[i].right),
+                                       toggles[i].text, this);
+            action->setToolTip(toggles[i].tip);
+            action->setCheckable(true);
+            action->setChecked(true);
+            showActions_[i] = action;
+        }
+
+        expandAllAction_ = new QAction(icons::glyph(Glyph::ExpandAll), "Expand all", this);
+        expandAllAction_->setToolTip("Expand all folders");
+        collapseAllAction_ = new QAction(icons::glyph(Glyph::CollapseAll), "Collapse all", this);
+        collapseAllAction_->setToolTip("Collapse all folders");
+
+        contentsAction_ = new QAction(icons::glyph(Glyph::Contents), "Compare contents", this);
+        contentsAction_->setCheckable(true);
+        contentsAction_->setToolTip("Compare file contents byte-for-byte instead of size + timestamp");
+        timestampsAction_ = new QAction(icons::glyph(Glyph::Timestamps), "Ignore timestamps", this);
+        timestampsAction_->setCheckable(true);
+        timestampsAction_->setToolTip("Ignore modification times when comparing");
+
+        filterApplyAction_ = new QAction(icons::glyph(Glyph::Filter), "Apply filter", this);
+        filterApplyAction_->setToolTip("Apply the file filter");
+        filterClearAction_ = new QAction(icons::glyph(Glyph::FilterClear), "Clear filter", this);
+        filterClearAction_->setToolTip("Show all files");
+
+        consoleAction_ = new QAction("Toggle console", this);
+        consoleAction_->setCheckable(true);
+        consoleAction_->setChecked(true);
+        editSelectionAction_ = new QAction("Edit selection", this);
+        findAction_ = new QAction("Find", this);
+        optionsAction_ = new QAction("Comparison options", this);
+    }
+
+    // --------------------------------------------------------------------- UI
+    struct Pane {
+        QWidget* panel = nullptr;
+        QWidget* pathBar = nullptr;
+        QWidget* footer = nullptr;
+        QComboBox* path = nullptr;
+        QToolButton* browse = nullptr;
+        QToolButton* up = nullptr;
+        CompareTree* tree = nullptr;
+        QLabel* count = nullptr;
+        QLabel* free = nullptr;
+    };
+
+    Pane makePane(const QString& side, QWidget* parent) {
+        using icons::Glyph;
+        Pane pane;
+        pane.panel = new QWidget(parent);
+        auto* layout = new QVBoxLayout(pane.panel);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+
+        auto* pathBar = new QFrame(pane.panel);
+        pathBar->setObjectName("pathBar");
+        auto* pathLayout = new QHBoxLayout(pathBar);
+        pathLayout->setContentsMargins(0, 1, 2, 1);
+        pathLayout->setSpacing(0);
+        pane.path = new QComboBox(pathBar);
+        pane.path->setEditable(true);
+        pane.path->setInsertPolicy(QComboBox::NoInsert);
+        pane.path->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        pane.path->setMinimumContentsLength(10);
+        pane.path->lineEdit()->setPlaceholderText(side + " folder path");
+        pane.browse = new QToolButton(pathBar);
+        pane.browse->setIcon(icons::glyph(Glyph::FolderOpen));
+        pane.browse->setToolTip("Select " + side.toLower() + " folder");
+        pane.up = new QToolButton(pathBar);
+        pane.up->setIcon(icons::glyph(Glyph::FolderUp));
+        pane.up->setToolTip("Go to parent folder");
+        pathLayout->addWidget(pane.path, 1);
+        pathLayout->addWidget(pane.browse);
+        pathLayout->addWidget(pane.up);
+
+        pane.tree = new CompareTree(pane.panel);
+
+        auto* footer = new QFrame(pane.panel);
+        footer->setObjectName("footer");
+        auto* footerLayout = new QHBoxLayout(footer);
+        footerLayout->setContentsMargins(0, 0, 0, 0);
+        footerLayout->setSpacing(0);
+        pane.count = new QLabel(footer);
+        pane.free = new QLabel(footer);
+        auto* divider = new QFrame(footer);
+        divider->setObjectName("footerDivider");
+        divider->setFixedWidth(1);
+        footerLayout->addWidget(pane.count, 1);
+        footerLayout->addWidget(divider);
+        footerLayout->addWidget(pane.free, 1);
+
+        layout->addWidget(pathBar);
+        layout->addWidget(pane.tree, 1);
+        layout->addWidget(footer);
+        pane.pathBar = pathBar;
+        pane.footer = footer;
+        return pane;
+    }
+
+    // Blank column between the two panes (like Beyond Compare's centre strip).
+    // Its top row lines up with the path bars and holds the "both folders up"
+    // button; the rest is empty but matches the header / body / footer of the
+    // trees so the three columns read as one continuous view.
+    QWidget* makeGutter(const Pane& left, QWidget* parent) {
+        using icons::Glyph;
+        constexpr int kGutterWidth = 40;
+
+        auto* gutter = new QWidget(parent);
+        gutter->setFixedWidth(kGutterWidth);
+        auto* layout = new QVBoxLayout(gutter);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+
+        auto* top = new QFrame(gutter);
+        top->setObjectName("pathBar");  // same look as the path bars
+        top->setFixedHeight(left.pathBar->sizeHint().height());
+        auto* topLayout = new QHBoxLayout(top);
+        topLayout->setContentsMargins(0, 1, 0, 1);
+        topLayout->setSpacing(0);
+        bothUp_ = new QToolButton(top);
+        bothUp_->setIcon(icons::glyph(Glyph::FolderUp));
+        bothUp_->setToolTip("Go to parent folder on both sides");
+        topLayout->addStretch(1);
+        topLayout->addWidget(bothUp_);
+        topLayout->addStretch(1);
+
+        auto* header = new QFrame(gutter);
+        header->setObjectName("gutterHeader");
+        header->setFixedHeight(left.tree->header()->sizeHint().height());
+
+        auto* body = new QFrame(gutter);
+        body->setObjectName("gutterBody");
+
+        auto* footer = new QFrame(gutter);
+        footer->setObjectName("footer");
+        footer->setFixedHeight(left.footer->sizeHint().height());
+
+        layout->addWidget(top);
+        layout->addWidget(header);
+        layout->addWidget(body, 1);
+        layout->addWidget(footer);
+        return gutter;
+    }
+
+    void buildUi() {
+        auto* root = new QVBoxLayout(this);
+        root->setContentsMargins(0, 0, 0, 0);
+        root->setSpacing(0);
+
+        // Toolbar directly under the tab strip: everything here acts on THIS tab.
+        toolbar_ = new QToolBar(this);
+        toolbar_->setMovable(false);
+        toolbar_->setFloatable(false);
+        toolbar_->setIconSize(QSize(20, 20));
+        toolbar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        toolbar_->addAction(compareAction_);
+        toolbar_->addAction(refreshAction_);
+        toolbar_->addAction(swapAction_);
+        toolbar_->addSeparator();
+        for (auto* action : showActions_) toolbar_->addAction(action);
+        toolbar_->addSeparator();
+        toolbar_->addAction(expandAllAction_);
+        toolbar_->addAction(collapseAllAction_);
+        toolbar_->addSeparator();
+        toolbar_->addAction(contentsAction_);
+        toolbar_->addAction(timestampsAction_);
+        toolbar_->addSeparator();
+        toolbar_->addWidget(new QLabel("Compare:", toolbar_));
+        modeCombo_ = new QComboBox(toolbar_);
+        modeCombo_->addItems({"Folder structure", "Folder contents", "Text compare", "Binary compare"});
+        modeCombo_->setMinimumWidth(150);
+        toolbar_->addWidget(modeCombo_);
+        toolbar_->addSeparator();
+        toolbar_->addWidget(new QLabel("Filters:", toolbar_));
+        filterCombo_ = new QComboBox(toolbar_);
+        filterCombo_->setEditable(true);
+        filterCombo_->setInsertPolicy(QComboBox::NoInsert);
+        filterCombo_->setMinimumWidth(190);
+        filterCombo_->addItem("*.*");
+        filterCombo_->setToolTip("File filter, e.g. *.cpp;*.h  or just part of a name.\n"
+                                 "Folders are always shown.");
+        toolbar_->addWidget(filterCombo_);
+        toolbar_->addAction(filterApplyAction_);
+        toolbar_->addAction(filterClearAction_);
+        root->addWidget(toolbar_);
+
+        Pane left = makePane("Left", nullptr);
+        Pane right = makePane("Right", nullptr);
+        leftPath_ = left.path;
+        rightPath_ = right.path;
+        leftBrowse_ = left.browse;
+        rightBrowse_ = right.browse;
+        leftUp_ = left.up;
+        rightUp_ = right.up;
+        leftTree_ = left.tree;
+        rightTree_ = right.tree;
+        leftCount_ = left.count;
+        rightCount_ = right.count;
+        leftFree_ = left.free;
+        rightFree_ = right.free;
+
+        auto* panes = new QSplitter(Qt::Horizontal, this);
+        panes->setChildrenCollapsible(false);
+        panes->addWidget(left.panel);
+        panes->addWidget(makeGutter(left, panes));
+        panes->addWidget(right.panel);
+        panes->setStretchFactor(0, 1);
+        panes->setStretchFactor(1, 0);
+        panes->setStretchFactor(2, 1);
+        panes->setSizes({550, 40, 550});
+        panes->handle(2)->setEnabled(false);  // one draggable divider is enough
+
+        console_ = new QPlainTextEdit(this);
+        console_->setObjectName("console");
+        console_->setReadOnly(true);
+        console_->setMaximumBlockCount(500);
+        console_->setPlaceholderText("Activity log");
+        console_->setMinimumHeight(60);
+
+        splitter_ = new QSplitter(Qt::Vertical, this);
+        splitter_->setChildrenCollapsible(false);
+        splitter_->addWidget(panes);
+        splitter_->addWidget(console_);
+        splitter_->setStretchFactor(0, 1);
+        splitter_->setStretchFactor(1, 0);
+        splitter_->setSizes({640, 130});
+        root->addWidget(splitter_, 1);
+    }
+
+    // ---------------------------------------------------------------- signals
+    void connectSignals() {
+        using QAct = QAction;
+        connect(compareAction_, &QAct::triggered, this, [this]() {
+            log("Comparing folder contents recursively");
+            refresh();
+        });
+        connect(refreshAction_, &QAct::triggered, this, [this]() { refresh(); });
+        connect(swapAction_, &QAct::triggered, this, [this]() {
+            const QString oldLeft = leftText();
+            setPath(leftPath_, rightText());
+            setPath(rightPath_, oldLeft);
+            refresh();
+            log("Left and right resources swapped");
+        });
+        connect(selectLeftAction_, &QAct::triggered, this, [this]() { chooseFolder(leftPath_, "left"); });
+        connect(selectRightAction_, &QAct::triggered, this, [this]() { chooseFolder(rightPath_, "right"); });
+        connect(leftBrowse_, &QToolButton::clicked, this, [this]() { chooseFolder(leftPath_, "left"); });
+        connect(rightBrowse_, &QToolButton::clicked, this, [this]() { chooseFolder(rightPath_, "right"); });
+        connect(leftUp_, &QToolButton::clicked, this, [this]() { goUp(leftPath_); });
+        connect(rightUp_, &QToolButton::clicked, this, [this]() { goUp(rightPath_); });
+        connect(bothUp_, &QToolButton::clicked, this, [this]() { goUpBoth(); });
+        connect(leftPath_->lineEdit(), &QLineEdit::returnPressed, this, [this]() { refresh(); });
+        connect(rightPath_->lineEdit(), &QLineEdit::returnPressed, this, [this]() { refresh(); });
+        connect(leftPath_, QOverload<int>::of(&QComboBox::activated), this, [this](int) { refresh(); });
+        connect(rightPath_, QOverload<int>::of(&QComboBox::activated), this, [this](int) { refresh(); });
+
+        // Compare mode <-> "compare contents" toggle stay in sync (per tab).
+        connect(modeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+            const QSignalBlocker blocker(contentsAction_);
+            contentsAction_->setChecked(index != 0);
+            log("Compare mode: " + modeCombo_->itemText(index));
+            refresh();
+        });
+        connect(contentsAction_, &QAct::toggled, this, [this](bool checked) {
+            const QSignalBlocker blocker(modeCombo_);
+            if (checked && modeCombo_->currentIndex() == 0) {
+                modeCombo_->setCurrentIndex(1);
+            } else if (!checked) {
+                modeCombo_->setCurrentIndex(0);
+            }
+            refresh();
+        });
+        connect(timestampsAction_, &QAct::toggled, this, [this](bool checked) {
+            log(checked ? "Ignoring timestamps" : "Timestamps are compared");
+            refresh();
+        });
+
+        connect(filterApplyAction_, &QAct::triggered, this, [this]() {
+            log("Applied filter: " + filterCombo_->currentText());
+            refresh();
+        });
+        connect(filterClearAction_, &QAct::triggered, this, [this]() {
+            filterCombo_->setEditText("*.*");
+            log("Filter cleared");
+            refresh();
+        });
+        connect(filterCombo_->lineEdit(), &QLineEdit::returnPressed, this, [this]() { refresh(); });
+        connect(filterCombo_, QOverload<int>::of(&QComboBox::activated), this, [this](int) { refresh(); });
+
+        for (auto* action : showActions_) {
+            connect(action, &QAct::toggled, this, [this](bool) { applyViewFilter(); });
+        }
+        connect(expandAllAction_, &QAct::triggered, this, [this]() {
+            leftTree_->expandAll();
+            rightTree_->expandAll();
+        });
+        connect(collapseAllAction_, &QAct::triggered, this, [this]() {
+            leftTree_->collapseAll();
+            rightTree_->collapseAll();
+        });
+        connect(consoleAction_, &QAct::toggled, this, [this](bool visible) { console_->setVisible(visible); });
+        connect(editSelectionAction_, &QAct::triggered, this, [this]() { log("Edit selection requested"); });
+        connect(findAction_, &QAct::triggered, this, [this]() { log("Find requested in current folder level"); });
+        connect(optionsAction_, &QAct::triggered, this, [this]() { log("Comparison options opened"); });
+
+        connectTreePair(leftTree_, rightTree_, "left");
+        connectTreePair(rightTree_, leftTree_, "right");
+        connectScrollSync();
+
+        for (CompareTree* tree : {leftTree_, rightTree_}) {
+            tree->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(tree, &QWidget::customContextMenuRequested, this,
+                    [this, tree](const QPoint& pos) { showNodeMenu(tree, pos); });
+            connect(tree, &QTreeWidget::itemDoubleClicked, this,
+                    [this, tree](QTreeWidgetItem* item, int) { openTextCompare(tree, item); });
+        }
+    }
+
+    void openTextCompare(QTreeWidget* tree, QTreeWidgetItem* item) {
+        if (!item || item->data(0, kIsDirRole).toBool()) {
+            return;
+        }
+        const bool isLeft = tree == leftTree_;
+        auto* otherTree = isLeft ? rightTree_ : leftTree_;
+        auto* counterpart = pairedItem(item, otherTree);
+        const QString leftPath = isLeft ? item->data(0, kPathRole).toString()
+                                        : counterpart ? counterpart->data(0, kPathRole).toString() : QString();
+        const QString rightPath = isLeft ? counterpart ? counterpart->data(0, kPathRole).toString() : QString()
+                                         : item->data(0, kPathRole).toString();
+        if (leftPath.isEmpty() || rightPath.isEmpty() || !QFileInfo(leftPath).isFile() ||
+            !QFileInfo(rightPath).isFile()) {
+            return;
+        }
+
+        QPointer<CompareSession> self(this);
+        auto* task = QRunnable::create([self, leftPath, rightPath]() {
+            QFile leftFile(leftPath);
+            QFile rightFile(rightPath);
+            QString leftText;
+            QString rightText;
+            QString error;
+            if (!leftFile.open(QIODevice::ReadOnly)) {
+                error = "Could not open left file: " + leftPath;
+            } else if (!rightFile.open(QIODevice::ReadOnly)) {
+                error = "Could not open right file: " + rightPath;
+            } else {
+                leftText = QString::fromUtf8(leftFile.readAll());
+                rightText = QString::fromUtf8(rightFile.readAll());
+            }
+            QMetaObject::invokeMethod(
+                qApp,
+                [self, leftPath, rightPath, leftText = std::move(leftText),
+                 rightText = std::move(rightText), error = std::move(error)]() {
+                    if (!self) {
+                        return;
+                    }
+                    if (!error.isEmpty()) {
+                        self->log(error);
+                        return;
+                    }
+                    if (self->onTextCompare) {
+                        self->onTextCompare(leftPath, rightPath, leftText, rightText);
+                    }
+                },
+                Qt::QueuedConnection);
+        });
+        task->setAutoDelete(true);
+        QThreadPool::globalInstance()->start(task);
+        log("Opening text comparison: " + QDir::toNativeSeparators(leftPath) + " <-> " +
+            QDir::toNativeSeparators(rightPath));
+    }
+
+    // Expanding / collapsing / selecting a row on one side mirrors on the other.
+    void connectTreePair(QTreeWidget* tree, QTreeWidget* other, const QString& side) {
+        connect(tree, &QTreeWidget::itemExpanded, this, [this, other, side](QTreeWidgetItem* item) {
+            if (auto* counterpart = pairedItem(item, other)) {
+                const QSignalBlocker blocker(other);
+                counterpart->setExpanded(true);
+            }
+            if (item->data(0, kIsDirRole).toBool()) {
+                log("Expanded " + side + " folder: " + item->data(0, kPathRole).toString());
+            }
+        });
+        connect(tree, &QTreeWidget::itemCollapsed, this, [other](QTreeWidgetItem* item) {
+            if (auto* counterpart = pairedItem(item, other)) {
+                const QSignalBlocker blocker(other);
+                counterpart->setExpanded(false);
+            }
+        });
+        connect(tree, &QTreeWidget::currentItemChanged, this,
+                [other](QTreeWidgetItem* current, QTreeWidgetItem*) {
+                    if (auto* counterpart = pairedItem(current, other)) {
+                        const QSignalBlocker blocker(other);
+                        other->setCurrentItem(counterpart);
+                    }
+                });
+    }
+
+    // ------------------------------------------------- node context menu
+    // Right-click on a file or folder row. Every entry only logs for now; the
+    // layout follows Beyond Compare (folders get a few extra entries, files get
+    // "File Compare Report...").
+    void showNodeMenu(CompareTree* tree, const QPoint& pos) {
+        QTreeWidgetItem* item = tree->itemAt(pos);
+        if (!item) {
+            return;  // empty area below the last row
+        }
+        const bool isLeft = tree == leftTree_;
+        QTreeWidgetItem* counterpart = pairedItem(item, isLeft ? rightTree_ : leftTree_);
+
+        NodeContext ctx;
+        ctx.side = isLeft ? Side::Left : Side::Right;
+        ctx.path = item->data(0, kPathRole).toString();
+        ctx.existsHere = !ctx.path.isEmpty();
+        ctx.otherPath = counterpart ? counterpart->data(0, kPathRole).toString() : QString();
+        // A placeholder row has no data of its own; its counterpart knows the kind.
+        ctx.isDir = item->data(0, kIsDirRole).toBool() ||
+                    (counterpart && counterpart->data(0, kIsDirRole).toBool());
+
+        tree->setCurrentItem(item);  // right-click selects the row, like a left-click
+
+        QMenu menu(tree);
+        buildNodeMenu(menu, ctx);
+        menu.exec(tree->viewport()->mapToGlobal(pos));
+    }
+
+    void buildNodeMenu(QMenu& menu, const NodeContext& ctx) {
+        namespace mi = icons::menuicons;
+        const bool toRight = ctx.side == Side::Left;  // "the other side"
+        const QString other = toRight ? "Right" : "Left";
+
+        // ---- open / navigate
+        QAction* open = addNodeAction(&menu, ctx, ctx.isDir ? "Open Folder" : "Open");
+        QFont defaultFont = open->font();
+        defaultFont.setBold(true);  // the default (double-click) action
+        open->setFont(defaultFont);
+        if (ctx.isDir) {
+            addNodeAction(&menu, ctx, "Open Subfolders");
+            addNodeAction(&menu, ctx, "Close Subfolders");
+            addNodeAction(&menu, ctx, "Set as Base Folder");
+            addNodeAction(&menu, ctx, "Set as Base on Other Side");
+            addNodeAction(&menu, ctx, "Open in New View");
+        }
+        QMenu* openWith = menu.addMenu("Open With");
+        openWith->menuAction()->setEnabled(ctx.existsHere);
+        fillProviderMenu(openWith, ctx, populateOpenWithMenu);
+        addNodeAction(&menu, ctx, "Compare To...", {}, "F7");
+        addNodeAction(&menu, ctx, "Align With...", {}, "F6");
+        menu.addSeparator();
+
+        // ---- operate on the node
+        addNodeAction(&menu, ctx, "Compare Contents...", mi::compareContents());
+        addNodeAction(&menu, ctx, "Copy to " + other + "...", mi::copyArrow(toRight),
+                      toRight ? "Ctrl+R" : "Ctrl+L");
+        addNodeAction(&menu, ctx, "Move to " + other + "...", mi::moveArrow(toRight));
+        addNodeAction(&menu, ctx, "Copy to Folder...", mi::copyToFolder());
+        addNodeAction(&menu, ctx, "Move to Folder...", mi::moveToFolder());
+        addNodeAction(&menu, ctx, "Delete...", mi::remove());
+        addNodeAction(&menu, ctx, "Rename", mi::rename(), "F2");
+        addNodeAction(&menu, ctx, "Attributes...");
+        addNodeAction(&menu, ctx, "Touch...", mi::touch());
+        addNodeAction(&menu, ctx, ctx.isDir ? "Exclude" : "Exclude...");
+        addNodeAction(&menu, ctx, "New Folder...", mi::newFolder(), "Ins", /*needsNode=*/false);
+        addNodeAction(&menu, ctx, "Copy Filename");
+
+        // "Ignored" shows a green tick while the node is ignored. The state is
+        // only remembered for the session so far; it does not affect the compare.
+        const bool ignored = ignoredPaths_.contains(ctx.path);
+        QAction* ignoredAction =
+            addNodeAction(&menu, ctx, "Ignored", ignored ? mi::check() : QIcon());
+        connect(ignoredAction, &QAction::triggered, this, [this, ctx]() {
+            const bool nowIgnored = !ignoredPaths_.remove(ctx.path);
+            if (nowIgnored) {
+                ignoredPaths_.insert(ctx.path);
+            }
+            log(QString("Ignored is now %1: %2")
+                    .arg(nowIgnored ? "on" : "off", QDir::toNativeSeparators(ctx.path)));
+        });
+
+        addNodeAction(&menu, ctx, "Refresh Selection", {}, "Shift+F5", /*needsNode=*/false);
+        if (!ctx.isDir) {
+            addNodeAction(&menu, ctx, "File Compare Report...", mi::report());
+        }
+        menu.addSeparator();
+
+        // ---- synchronize (acts on the whole comparison, not on this node)
+        QMenu* sync = menu.addMenu("Synchronize");
+        addNodeAction(sync, ctx, "Update Right...", mi::update(mi::SyncDir::Right), {}, false);
+        addNodeAction(sync, ctx, "Update Left...", mi::update(mi::SyncDir::Left), {}, false);
+        addNodeAction(sync, ctx, "Update Both...", mi::update(mi::SyncDir::Both), {}, false);
+        addNodeAction(sync, ctx, "Mirror to Right...", mi::mirror(mi::SyncDir::Right),
+                      "Shift+Ctrl+R", false);
+        addNodeAction(sync, ctx, "Mirror to Left...", mi::mirror(mi::SyncDir::Left),
+                      "Shift+Ctrl+L", false);
+        menu.addSeparator();
+
+        QMenu* explorer = menu.addMenu("Explorer");
+        explorer->menuAction()->setEnabled(ctx.existsHere);
+        fillProviderMenu(explorer, ctx, populateExplorerMenu);
+    }
+
+    // Adds one entry that logs when activated. Entries that work on the node
+    // itself (`needsNode`) are greyed out on the empty side of an orphan row.
+    // Inside a submenu the log line is prefixed with the submenu's title.
+    QAction* addNodeAction(QMenu* menu, const NodeContext& ctx, const QString& text,
+                           const QIcon& icon = QIcon(), const QString& shortcut = QString(),
+                           bool needsNode = true) {
+        QAction* action = menu->addAction(icon, text);
+        if (!shortcut.isEmpty()) {
+            // Shown right-aligned; the action is not attached to a widget, so it
+            // does not become a global shortcut.
+            action->setShortcut(QKeySequence(shortcut));
+            action->setShortcutVisibleInContextMenu(true);
+        }
+        action->setEnabled(ctx.existsHere || !needsNode);
+        const QString label = menu->title().isEmpty() ? text : menu->title() + " > " + text;
+        connect(action, &QAction::triggered, this, [this, ctx, label]() { logMenuAction(ctx, label); });
+        return action;
+    }
+
+    // Lets a provider fill a submenu, or falls back to a single dummy entry.
+    void fillProviderMenu(QMenu* submenu, const NodeContext& ctx,
+                          const std::function<void(QMenu*, const NodeContext&)>& provider) {
+        if (provider) {
+            provider(submenu, ctx);
+        }
+        if (submenu->isEmpty()) {
+            addNodeAction(submenu, ctx, "Dummy Item", QIcon(), QString(), /*needsNode=*/false);
+        }
+    }
+
+    void logMenuAction(const NodeContext& ctx, const QString& label) {
+        const QString side = ctx.side == Side::Left ? "left" : "right";
+        const QString kind = ctx.isDir ? "folder" : "file";
+        log(QString("Context menu \"%1\" on %2 %3: %4")
+                .arg(label, side, kind, QDir::toNativeSeparators(ctx.displayPath())));
+    }
+
+    void syncHorizontal(QScrollBar* source, QScrollBar* target) {
+        if (syncingScroll_ || !source || !target) {
+            return;
+        }
+        syncingScroll_ = true;
+        const int sourceRange = source->maximum() - source->minimum();
+        const int targetRange = target->maximum() - target->minimum();
+        const int sourceOffset = source->value() - source->minimum();
+        const int targetValue =
+            sourceRange > 0
+                ? target->minimum() + (sourceOffset * targetRange + sourceRange / 2) / sourceRange
+                : target->minimum();
+        target->setValue(targetValue);
+        syncingScroll_ = false;
+    }
+
+    void syncVertical(QTreeWidget* source, QTreeWidget* target) {
+        if (syncingScroll_ || !source || !target) {
+            return;
+        }
+        auto* sourceItem = source->itemAt(1, 1);
+        auto* targetItem = pairedItem(sourceItem, target);
+        if (!targetItem) {
+            return;
+        }
+        syncingScroll_ = true;
+        const int sourceTop = source->visualItemRect(sourceItem).top();
+        target->scrollToItem(targetItem, QAbstractItemView::PositionAtTop);
+        const int targetTop = target->visualItemRect(targetItem).top();
+        target->verticalScrollBar()->setValue(target->verticalScrollBar()->value() + targetTop - sourceTop);
+        syncingScroll_ = false;
+    }
+
+    void connectScrollSync() {
+        auto* lv = leftTree_->verticalScrollBar();
+        auto* rv = rightTree_->verticalScrollBar();
+        auto* lh = leftTree_->horizontalScrollBar();
+        auto* rh = rightTree_->horizontalScrollBar();
+        connect(lv, &QScrollBar::valueChanged, this, [this](int) { syncVertical(leftTree_, rightTree_); });
+        connect(rv, &QScrollBar::valueChanged, this, [this](int) { syncVertical(rightTree_, leftTree_); });
+        connect(lv, &QScrollBar::rangeChanged, this, [this](int, int) { syncVertical(leftTree_, rightTree_); });
+        connect(rv, &QScrollBar::rangeChanged, this, [this](int, int) { syncVertical(rightTree_, leftTree_); });
+        connect(lh, &QScrollBar::valueChanged, this, [this, lh, rh](int) { syncHorizontal(lh, rh); });
+        connect(rh, &QScrollBar::valueChanged, this, [this, lh, rh](int) { syncHorizontal(rh, lh); });
+        connect(lh, &QScrollBar::rangeChanged, this, [this, lh, rh](int, int) { syncHorizontal(lh, rh); });
+        connect(rh, &QScrollBar::rangeChanged, this, [this, lh, rh](int, int) { syncHorizontal(rh, lh); });
+    }
+
+    // ---------------------------------------------------------------- helpers
+    static QString pathText(const QComboBox* combo) { return combo->currentText().trimmed(); }
+
+    static QString folderLabel(const QString& path) {
+        if (path.isEmpty()) {
+            return {};
+        }
+        const QString name = QFileInfo(QDir::cleanPath(path)).fileName();
+        return name.isEmpty() ? QDir::toNativeSeparators(path) : name;
+    }
+
+    static void remember(QComboBox* combo, const QString& text) {
+        if (text.isEmpty()) {
+            return;
+        }
+        const QSignalBlocker blocker(combo);
+        const int existing = combo->findText(text);
+        if (existing >= 0) {
+            combo->removeItem(existing);
+        }
+        combo->insertItem(0, text);
+        combo->setCurrentIndex(0);
+    }
+
+    static void setPath(QComboBox* combo, const QString& text) { combo->setEditText(text); }
+
+    void chooseFolder(QComboBox* combo, const QString& side) {
+        const QString selected =
+            QFileDialog::getExistingDirectory(this, "Select " + side + " folder", pathText(combo));
+        if (!selected.isEmpty()) {
+            setPath(combo, selected);
+            refresh();
+            log(side + " resource selected: " + selected);
+        }
+    }
+
+    void goUp(QComboBox* combo) {
+        QDir dir(pathText(combo));
+        if (!pathText(combo).isEmpty() && dir.cdUp()) {
+            setPath(combo, dir.absolutePath());
+            refresh();
+        }
+    }
+
+    // Move BOTH sides to their parent folder with a single refresh.
+    void goUpBoth() {
+        bool moved = false;
+        for (QComboBox* combo : {leftPath_, rightPath_}) {
+            QDir dir(pathText(combo));
+            if (!pathText(combo).isEmpty() && dir.cdUp()) {
+                setPath(combo, dir.absolutePath());
+                moved = true;
+            }
+        }
+        if (moved) {
+            refresh();
+            log("Both folders moved up to their parent folders");
+        }
+    }
+
+    void updateTitle() {
+        setToolTip(detailedTitle());
+        if (onTitleChanged) {
+            onTitleChanged();
+        }
+    }
+
+    void updateFooter() {
+        const int lf = run_ ? run_->leftFiles : 0;
+        const int rf = run_ ? run_->rightFiles : 0;
+        const qint64 lb = run_ ? run_->leftBytes : 0;
+        const qint64 rb = run_ ? run_->rightBytes : 0;
+        leftCount_->setText(QString("%1 file(s), %2").arg(lf).arg(formatBytes(lb)));
+        rightCount_->setText(QString("%1 file(s), %2").arg(rf).arg(formatBytes(rb)));
+        if (!run_) {
+            leftFree_->clear();
+            rightFree_->clear();
+        }
+    }
+
+    // Hide rows whose kind is switched off in the toolbar. A folder stays
+    // visible while any row below it is visible.
+    bool filterRows(QTreeWidgetItem* left, QTreeWidgetItem* right) {
+        bool visible = false;
+        if (left->childCount() > 0) {
+            for (int i = 0; i < left->childCount() && i < right->childCount(); ++i) {
+                visible = filterRows(left->child(i), right->child(i)) || visible;
+            }
+        } else {
+            const int cls = left->data(0, kClassRole).toInt();
+            visible = cls < 0 || cls >= kPairClassCount || showActions_[cls]->isChecked();
+        }
+        left->setHidden(!visible);
+        right->setHidden(!visible);
+        return visible;
+    }
+
+    void applyViewFilter() {
+        const int count = std::min(leftTree_->topLevelItemCount(), rightTree_->topLevelItemCount());
+        for (int i = 0; i < count; ++i) {
+            filterRows(leftTree_->topLevelItem(i), rightTree_->topLevelItem(i));
+        }
+    }
+
+    // ---------------------------------------------------------------- members
+    QToolBar* toolbar_ = nullptr;
+    QComboBox* leftPath_ = nullptr;
+    QComboBox* rightPath_ = nullptr;
+    QToolButton* leftBrowse_ = nullptr;
+    QToolButton* rightBrowse_ = nullptr;
+    QToolButton* leftUp_ = nullptr;
+    QToolButton* rightUp_ = nullptr;
+    QToolButton* bothUp_ = nullptr;
+    CompareTree* leftTree_ = nullptr;
+    CompareTree* rightTree_ = nullptr;
+    QLabel* leftCount_ = nullptr;
+    QLabel* rightCount_ = nullptr;
+    QLabel* leftFree_ = nullptr;
+    QLabel* rightFree_ = nullptr;
+    QComboBox* modeCombo_ = nullptr;
+    QComboBox* filterCombo_ = nullptr;
+    QPlainTextEdit* console_ = nullptr;
+    QSplitter* splitter_ = nullptr;
+
+    QAction* compareAction_ = nullptr;
+    QAction* refreshAction_ = nullptr;
+    QAction* swapAction_ = nullptr;
+    QAction* selectLeftAction_ = nullptr;
+    QAction* selectRightAction_ = nullptr;
+    QAction* showActions_[kPairClassCount] = {};
+    QAction* expandAllAction_ = nullptr;
+    QAction* collapseAllAction_ = nullptr;
+    QAction* contentsAction_ = nullptr;
+    QAction* timestampsAction_ = nullptr;
+    QAction* filterApplyAction_ = nullptr;
+    QAction* filterClearAction_ = nullptr;
+    QAction* consoleAction_ = nullptr;
+    QAction* editSelectionAction_ = nullptr;
+    QAction* findAction_ = nullptr;
+    QAction* optionsAction_ = nullptr;
+
+    std::shared_ptr<ComparisonRun> run_;
+    bool syncingScroll_ = false;
+    QSet<QString> ignoredPaths_;  // paths marked "Ignored" in the context menu
+};
+
+}  // namespace
+
+extern "C" int openbc_run_gui() {
+    int argc = 1;
+    char application_name[] = "openbc-qt";
+    char* argv[] = {application_name, nullptr};
+    QApplication application(argc, argv);
+
+    QApplication::setStyle(QStyleFactory::create("Fusion"));
+    application.setPalette(openbc::ui::darkPalette());
+    application.setStyleSheet(openbc::ui::applicationStyleSheet());
+
+    QMainWindow window;
+    window.resize(1280, 820);
+
+    auto* sessionMenu = window.menuBar()->addMenu("&Session");
+    auto* actionsMenu = window.menuBar()->addMenu("&Actions");
+    auto* editMenu = window.menuBar()->addMenu("&Edit");
+    auto* searchMenu = window.menuBar()->addMenu("&Search");
+    auto* viewMenu = window.menuBar()->addMenu("&View");
+    auto* toolsMenu = window.menuBar()->addMenu("&Tools");
+    window.menuBar()->addMenu("&Help");
+
+    auto* tabs = new QTabWidget(&window);
+    tabs->setDocumentMode(true);
+    tabs->setMovable(true);
+    tabs->setElideMode(Qt::ElideRight);
+    tabs->setUsesScrollButtons(true);
+    tabs->tabBar()->setDrawBase(false);
+    window.setCentralWidget(tabs);
+
+    auto currentSession = [&]() { return dynamic_cast<CompareSession*>(tabs->currentWidget()); };
+
+    // The Actions / Edit / Search / View / Tools menus always show the actions
+    // of the tab that is currently selected, so a command can only ever affect
+    // the tab you are looking at.
+    auto rebuildMenus = [&]() {
+        auto fill = [](QMenu* menu, const QList<QAction*>& items) {
+            menu->clear();
+            for (QAction* action : items) {
+                if (action) {
+                    menu->addAction(action);
+                } else {
+                    menu->addSeparator();
+                }
+            }
+        };
+        CompareSession* session = currentSession();
+        fill(actionsMenu, session ? session->actionsMenuItems() : QList<QAction*>());
+        fill(editMenu, session ? session->editMenuItems() : QList<QAction*>());
+        fill(searchMenu, session ? session->searchMenuItems() : QList<QAction*>());
+        fill(viewMenu, session ? session->viewMenuItems() : QList<QAction*>());
+        fill(toolsMenu, session ? session->toolsMenuItems() : QList<QAction*>());
+    };
+    auto updateWindowTitle = [&]() {
+        CompareSession* session = currentSession();
+        if (session) {
+            window.setWindowTitle(session->title() + " - Folder Compare - OpenBC");
+        } else if (auto* textView = dynamic_cast<TextCompareView*>(tabs->currentWidget())) {
+            window.setWindowTitle(textView->title() + " - Text Compare - OpenBC");
+        } else {
+            window.setWindowTitle("OpenBC - Folder Compare");
+        }
+    };
+
+    std::function<CompareSession*(const QString&, const QString&, bool)> addSession;
+    std::function<void(int)> closeTab;
+
+    addSession = [&](const QString& left, const QString& right, bool run) -> CompareSession* {
+        auto* session = new CompareSession;
+        session->setPaths(left, right);
+        const int index =
+            tabs->addTab(session, openbc::ui::icons::folderIcon(openbc::ui::color::folderYellow()),
+                         session->title());
+        tabs->setTabToolTip(index, session->detailedTitle());
+
+        auto* close = new QToolButton;
+        close->setObjectName("tabClose");
+        close->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Close));
+        close->setToolTip("Close tab (Ctrl+W)");
+        close->setFocusPolicy(Qt::NoFocus);
+        close->setAutoRaise(true);
+        tabs->tabBar()->setTabButton(index, QTabBar::RightSide, close);
+        QObject::connect(close, &QToolButton::clicked, session,
+                         [&, session]() { closeTab(tabs->indexOf(session)); });
+
+        session->onTitleChanged = [&, session]() {
+            const int i = tabs->indexOf(session);
+            if (i < 0) {
+                return;
+            }
+            tabs->setTabText(i, session->title());
+            tabs->setTabToolTip(i, session->detailedTitle());
+            if (tabs->currentIndex() == i) {
+                updateWindowTitle();
+            }
+        };
+        session->onTextCompare = [&](const QString& leftPath, const QString& rightPath,
+                                     const QString& leftText, const QString& rightText) {
+            auto* textView = new TextCompareView(leftPath, rightPath, leftText, rightText);
+            const int textIndex = tabs->addTab(
+                textView, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Compare),
+                textView->title());
+            tabs->setTabToolTip(textIndex, leftPath + " <-> " + rightPath);
+            auto* textClose = new QToolButton;
+            textClose->setObjectName("tabClose");
+            textClose->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Close));
+            textClose->setToolTip("Close tab (Ctrl+W)");
+            textClose->setFocusPolicy(Qt::NoFocus);
+            textClose->setAutoRaise(true);
+            tabs->tabBar()->setTabButton(textIndex, QTabBar::RightSide, textClose);
+            QObject::connect(textClose, &QToolButton::clicked, textView,
+                             [&, textView]() { closeTab(tabs->indexOf(textView)); });
+            // Home / Sessions both act like Beyond Compare: jump back to the
+            // folder-compare session tab this text view was opened from.
+            textView->onHomeRequested = [&, session]() {
+                const int sessionIndex = tabs->indexOf(session);
+                if (sessionIndex >= 0) tabs->setCurrentIndex(sessionIndex);
+            };
+            textView->onSessionsRequested = textView->onHomeRequested;
+            textView->onTitleChanged = [&, textView]() {
+                const int i = tabs->indexOf(textView);
+                if (i < 0) return;
+                tabs->setTabText(i, textView->title());
+                if (tabs->currentIndex() == i) updateWindowTitle();
+            };
+            tabs->setCurrentIndex(textIndex);
+        };
+        tabs->setCurrentIndex(index);
+        if (run) {
+            session->refresh();
+        }
+        return session;
+    };
+
+    closeTab = [&](int index) {
+        if (index < 0 || index >= tabs->count()) {
+            return;
+        }
+        auto* widget = tabs->widget(index);
+        if (auto* session = dynamic_cast<CompareSession*>(widget)) {
+            session->cancelRun();
+        }
+        tabs->removeTab(index);
+        widget->deleteLater();
+        if (tabs->count() == 0) {
+            addSession(QString(), QString(), false);  // never leave the window empty
+        }
+    };
+
+    auto duplicateTab = [&](int index) {
+        if (index < 0 || index >= tabs->count()) {
+            return;
+        }
+        auto* source = dynamic_cast<CompareSession*>(tabs->widget(index));
+        if (!source) {
+            return;
+        }
+        auto* copy = addSession(source->leftText(), source->rightText(), false);
+        copy->copySettingsFrom(*source);
+        copy->refresh();
+    };
+
+    auto closeOthers = [&](int keep) {
+        auto* keepWidget = tabs->widget(keep);
+        for (int i = tabs->count() - 1; i >= 0; --i) {
+            if (tabs->widget(i) != keepWidget) {
+                closeTab(i);
+            }
+        }
+    };
+
+    // Session menu: these manage the tabs themselves.
+    auto* newTab = sessionMenu->addAction("New Folder Compare");
+    newTab->setShortcut(QKeySequence("Ctrl+T"));
+    auto* duplicate = sessionMenu->addAction("Duplicate Tab");
+    auto* openComparison = sessionMenu->addAction("Open comparison");
+    sessionMenu->addSeparator();
+    auto* closeCurrent = sessionMenu->addAction("Close Tab");
+    closeCurrent->setShortcut(QKeySequence("Ctrl+W"));
+    auto* closeOthersAction = sessionMenu->addAction("Close Other Tabs");
+    sessionMenu->addSeparator();
+    auto* exitAction = sessionMenu->addAction("Exit");
+    exitAction->setShortcut(QKeySequence("Ctrl+Q"));
+
+    QObject::connect(newTab, &QAction::triggered, [&]() { addSession(QString(), QString(), false); });
+    QObject::connect(duplicate, &QAction::triggered, [&]() { duplicateTab(tabs->currentIndex()); });
+    QObject::connect(openComparison, &QAction::triggered, [&]() {
+        if (auto* session = currentSession()) session->log("Open comparison requested");
+    });
+    QObject::connect(closeCurrent, &QAction::triggered, [&]() { closeTab(tabs->currentIndex()); });
+    QObject::connect(closeOthersAction, &QAction::triggered, [&]() { closeOthers(tabs->currentIndex()); });
+    QObject::connect(exitAction, &QAction::triggered, &window, &QWidget::close);
+
+    auto* plus = new QToolButton(tabs);
+    plus->setObjectName("newTab");
+    plus->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Plus));
+    plus->setToolTip("New folder compare (Ctrl+T)");
+    plus->setAutoRaise(true);
+    tabs->setCornerWidget(plus, Qt::TopRightCorner);
+    QObject::connect(plus, &QToolButton::clicked, [&]() { addSession(QString(), QString(), false); });
+
+    tabs->tabBar()->setContextMenuPolicy(Qt::CustomContextMenu);
+    QObject::connect(tabs->tabBar(), &QWidget::customContextMenuRequested, [&](const QPoint& pos) {
+        const int index = tabs->tabBar()->tabAt(pos);
+        if (index < 0) {
+            return;
+        }
+        QMenu menu;
+        QAction* dup = menu.addAction("Duplicate Tab");
+        menu.addSeparator();
+        QAction* close = menu.addAction("Close Tab");
+        QAction* others = menu.addAction("Close Other Tabs");
+        others->setEnabled(tabs->count() > 1);
+        QAction* chosen = menu.exec(tabs->tabBar()->mapToGlobal(pos));
+        if (chosen == dup) {
+            duplicateTab(index);
+        } else if (chosen == close) {
+            closeTab(index);
+        } else if (chosen == others) {
+            closeOthers(index);
+        }
+    });
+
+    QObject::connect(tabs, &QTabWidget::currentChanged, [&](int) {
+        rebuildMenus();
+        updateWindowTitle();
+    });
+
+    // if linux
+    #ifdef Q_OS_LINUX
+    addSession("/home/kira/tmp/source", "/home/kira/tmp/target", true);
+    #endif
+    // if windows
+    #ifdef Q_OS_WINDOWS
+    addSession("D:/personal/github/devopsnextgenx/open-bc/test/source", "D:/personal/github/devopsnextgenx/open-bc/test/target", true);
+    #endif
+    rebuildMenus();
+    updateWindowTitle();
+    window.show();
+
+    return application.exec();
+}
+
+#ifdef OPENBC_BUILD_EXECUTABLE
+int main(int argc, char *argv[]) {
+    return openbc_run_gui();
+}
+#endif

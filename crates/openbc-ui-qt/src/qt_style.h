@@ -456,6 +456,8 @@ enum class Glyph {
     CopyLine,
     NextSection,
     PrevSection,
+    Find,
+    MinimapPixel,
 };
 
 inline QIcon glyph(Glyph which) {
@@ -672,14 +674,28 @@ inline QIcon glyph(Glyph which) {
         });
     case Glyph::NextSection:
     case Glyph::PrevSection: {
-        const bool next = which == Glyph::NextSection;
-        return make([next, ink](QPainter& p, QIcon::Mode, QIcon::State) {
+        return make([next = which == Glyph::NextSection, ink](QPainter& p, QIcon::Mode,
+                                                               QIcon::State) {
             p.setPen(Qt::NoPen);
             p.setBrush(ink);
             if (next) {
                 p.drawPolygon(QPolygonF({QPointF(3.0, 4.5), QPointF(13.0, 4.5), QPointF(8.0, 11.5)}));
             } else {
                 p.drawPolygon(QPolygonF({QPointF(3.0, 11.5), QPointF(13.0, 11.5), QPointF(8.0, 4.5)}));
+            }
+        });
+    case Glyph::Find:
+        return make([ink](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(QPen(ink, 1.7, Qt::SolidLine, Qt::RoundCap));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(QPointF(6.6, 6.6), 4.4, 4.4);
+            p.drawLine(QPointF(10.0, 10.0), QPointF(14.2, 14.2));
+        });
+    case Glyph::MinimapPixel:
+        return make([ink](QPainter& p, QIcon::Mode, QIcon::State state) {
+            p.setPen(QPen(ink, state == QIcon::On ? 1.1 : 2.6, Qt::SolidLine, Qt::FlatCap));
+            for (const qreal y : {2.4, 5.2, 8.0, 10.8, 13.6}) {
+                p.drawLine(QPointF(2.0, y), QPointF(14.0, y));
             }
         });
     }
