@@ -264,12 +264,37 @@ inline QString applicationStyleSheet() {
         QToolBar#textCompareToolbar QToolButton:checked { background: #232323; border-color: #232323; }
         QFrame#diffLinePreview { background: #232323; border: 0; border-top: 1px solid #505050; }
         QFrame#diffLinePreview QLabel { font-family: "Consolas", "Courier New", monospace; }
+        QLineEdit#previewText {
+            font-family: "Consolas", "Courier New", monospace; border-radius: 0;
+        }
+        QLabel#previewLineNo {
+            font-family: "Consolas", "Courier New", monospace; color: #8b90a6;
+            background: #1b1b1b; padding: 0 6px; border: 1px solid transparent;
+        }
 
-        QScrollBar:vertical { background: #232323; width: 13px; margin: 0; border: 0; }
-        QScrollBar:horizontal { background: #232323; height: 13px; margin: 0; border: 0; }
-        QScrollBar::handle:vertical { background: #555a6b; min-height: 28px; border-radius: 4px; margin: 2px; }
-        QScrollBar::handle:horizontal { background: #555a6b; min-width: 28px; border-radius: 4px; margin: 2px; }
-        QScrollBar::handle:hover { background: #6b7189; }
+        QFrame#sideHeader { background: #232323; border: 0; border-bottom: 1px solid #3a3a3a; }
+        QLabel#sidePath {
+            font-weight: 700; color: #f8f8f2; background: transparent; padding: 0;
+        }
+        QLabel#sideAttrs {
+            color: #8b90a6; background: transparent; padding: 0; font-size: 11px;
+        }
+        QToolButton#saveSideBtn {
+            background: transparent; border: 1px solid transparent; border-radius: 3px; padding: 2px;
+        }
+        QToolButton#saveSideBtn:hover { background: #4d4d4d; border-color: #5f5f5f; }
+        QToolButton#saveSideBtn:disabled { background: transparent; }
+        QToolButton#saveSideBtn[dirty="true"] {
+            background: rgba(60, 220, 130, 35); border-color: #3cdc82;
+        }
+        QToolButton#saveSideBtn[dirty="true"]:hover { background: rgba(60, 220, 130, 60); }
+
+        QScrollBar:vertical { background: #1b1b1b; width: 15px; margin: 0; border-left: 1px solid #3a3a3a; }
+        QScrollBar:horizontal { background: #1b1b1b; height: 15px; margin: 0; border-top: 1px solid #3a3a3a; }
+        QScrollBar::handle:vertical { background: #5f6479; min-height: 32px; border-radius: 4px; margin: 2px 3px; }
+        QScrollBar::handle:horizontal { background: #5f6479; min-width: 32px; border-radius: 4px; margin: 3px 2px; }
+        QScrollBar::handle:hover { background: #7880a0; }
+        QScrollBar::handle:pressed { background: #8b93bd; }
         QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
         QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
     )");
@@ -458,6 +483,7 @@ enum class Glyph {
     PrevSection,
     Find,
     MinimapPixel,
+    Save,
 };
 
 inline QIcon glyph(Glyph which) {
@@ -697,6 +723,22 @@ inline QIcon glyph(Glyph which) {
             for (const qreal y : {2.4, 5.2, 8.0, 10.8, 13.6}) {
                 p.drawLine(QPointF(2.0, y), QPointF(14.0, y));
             }
+        });
+    case Glyph::Save:
+        // Classic floppy-disk glyph: body, dark shutter block top-left, and a
+        // small paper-label rectangle lower half - drawn with the same "gold"
+        // accent as Refresh/Swap so an unsaved side reads as actionable.
+        return make([gold, ink](QPainter& p, QIcon::Mode, QIcon::State state) {
+            const QColor body = state == QIcon::On ? gold : ink;
+            p.setPen(Qt::NoPen);
+            p.setBrush(body);
+            QPainterPath shell;
+            shell.addRoundedRect(QRectF(2.2, 1.8, 11.6, 12.4), 1.4, 1.4);
+            p.drawPath(shell);
+            p.setBrush(QColor(0x23, 0x23, 0x23));
+            p.drawRect(QRectF(4.4, 2.6, 6.0, 3.6));
+            p.setBrush(body.darker(160));
+            p.drawRect(QRectF(4.6, 8.2, 6.8, 4.6));
         });
     }
     }

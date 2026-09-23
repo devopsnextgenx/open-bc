@@ -23,22 +23,26 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QContextMenuEvent>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QKeySequence>
 #include <QLabel>
 #include <QList>
+#include <QLocale>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QSet>
 #include <QSplitter>
 #include <QStringList>
+#include <QStyle>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextEdit>
 #include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QVector>
 #include <QWidget>
@@ -126,6 +130,96 @@ private:
         }
     }
 
+    // Per-side header: file name (with full path as a tooltip) plus a save
+    // icon on the top row, and a smaller line of file attributes - modified
+    // date, size, text encoding, and line-ending style ("PC" for CRLF,
+    // matching the reference app's own label for Windows-style endings, vs
+    // "Unix"/"Mac" for LF/CR-only) - on the row below, the same layout the
+    // reference screenshot uses just under each side's path.
+    QWidget* buildSideHeader(bool left) {
+        auto* frame = new QFrame(this);
+        frame->setObjectName("sideHeader");
+        auto* layout = new QVBoxLayout(frame);
+        layout->setContentsMargins(8, 4, 8, 4);
+        layout->setSpacing(2);
+
+        auto* pathRow = new QHBoxLayout;
+        pathRow->setContentsMargins(0, 0, 0, 0);
+        pathRow->setSpacing(4);
+        QLabel*& pathLabel = left ? leftPathLabel_ : rightPathLabel_;
+        QToolButton*& saveButton = left ? leftSaveButton_ : rightSaveButton_;
+        pathLabel = new QLabel(frame);
+        pathLabel->setObjectName("sidePath");
+        pathRow->addWidget(pathLabel, 1);
+        saveButton = new QToolButton(frame);
+        saveButton->setObjectName("saveSideBtn");
+        saveButton->setIcon(icons::glyph(icons::Glyph::Save));
+        saveButton->setIconSize(QSize(15, 15));
+        saveButton->setToolTip(left ? "Save left file (Ctrl+S while focused)"
+                                    : "Save right file (Ctrl+S while focused)");
+        saveButton->setCursor(Qt::PointingHandCursor);
+        connect(saveButton, &QToolButton::clicked, this, [this, left]() {
+            syncFromEditors();
+            saveSide(left);
+        });
+        pathRow->addWidget(saveButton, 0);
+        layout->addLayout(pathRow);
+
+        QLabel*& attrsLabel = left ? leftAttrsLabel_ : rightAttrsLabel_;
+        attrsLabel = new QLabel(frame);
+        attrsLabel->setObjectName("sideAttrs");
+        layout->addWidget(attrsLabel);
+
+        refreshSideHeader(left);
+        return frame;
+    }
+
+    // Recomputes one side's path/attribute labels and enables/disables its
+    // save button (nothing to save once that side has no unsaved lines).
+    // Called after every rebuild(), save, reload, and swap so the date/size
+    // shown always matches what is actually on disk right now.
+    void refreshSideHeader(bool left) {
+        const QString& path = left ? leftPath_ : rightPath_;
+        QLabel* pathLabel = left ? leftPathLabel_ : rightPathLabel_;
+        QLabel* attrsLabel = left ? leftAttrsLabel_ : rightAttrsLabel_;
+        QToolButton* saveButton = left ? leftSaveButton_ : rightSaveButton_;
+        if (!pathLabel || !attrsLabel) return;
+
+        const QFileInfo info(path);
+        pathLabel->setText(info.fileName().isEmpty() ? "(no file)" : info.fileName());
+        pathLabel->setToolTip(path);
+
+        if (info.exists()) {
+            const QString modified = info.lastModified().toString("M/d/yyyy h:mm:ss AP");
+            const QString size = QLocale().toString(info.size()) + " bytes";
+            const QString lineEnding = detectLineEnding(left);
+            attrsLabel->setText(QString("%1    %2    %3    %4")
+                                     .arg(modified, size, "UTF-8", lineEnding));
+        } else {
+            attrsLabel->setText("(unsaved)");
+        }
+        if (saveButton) {
+            const bool dirty = !(left ? leftDirtyLines_ : rightDirtyLines_).isEmpty();
+            saveButton->setIcon(icons::glyph(icons::Glyph::Save));
+            saveButton->setProperty("dirty", dirty);
+            saveButton->style()->unpolish(saveButton);
+            saveButton->style()->polish(saveButton);
+        }
+    }
+
+    // Windows ("PC"), Unix, or Mac line endings, guessed from the in-memory
+    // text the same way the reference app's status strip does: look at the
+    // first line that actually has a carriage return either still attached
+    // or not. leftOriginal_/rightOriginal_ are split on '\n' already, so a
+    // line ending in '\r' means the source was CRLF.
+    QString detectLineEnding(bool left) const {
+        const QStringList& lines = left ? leftOriginal_ : rightOriginal_;
+        for (const QString& line : lines) {
+            if (line.endsWith('\r')) return "PC";
+        }
+        return lines.size() > 1 ? "Unix" : "PC";
+    }
+
     void buildUi() {
         using icons::Glyph;
         auto* root = new QVBoxLayout(this);
@@ -195,13 +289,10 @@ private:
         root->addWidget(toolbar_);
 
         auto* header = new QHBoxLayout;
-        header->setContentsMargins(8, 5, 8, 5);
-        leftLabel_ = new QLabel(QFileInfo(leftPath_).fileName(), this);
-        rightLabel_ = new QLabel(QFileInfo(rightPath_).fileName(), this);
-        leftLabel_->setStyleSheet("font-weight:700; color:#f8f8f2;");
-        rightLabel_->setStyleSheet("font-weight:700; color:#f8f8f2;");
-        header->addWidget(leftLabel_, 1);
-        header->addWidget(rightLabel_, 1);
+        header->setContentsMargins(0, 0, 0, 0);
+        header->setSpacing(1);
+        header->addWidget(buildSideHeader(/*left=*/true), 1);
+        header->addWidget(buildSideHeader(/*left=*/false), 1);
         root->addLayout(header);
 
         auto* editors = new QSplitter(Qt::Horizontal, this);
@@ -227,6 +318,13 @@ private:
         // inner edge next to the splitter, pointing left.
         rightEditor_ = new LineNumberEditor(LineNumberEditor::GutterSide::Right,
                                             LineNumberEditor::GutterSide::Left, rightPane);
+        // The two editors' vertical scrollbars are kept perfectly in sync
+        // (see connectSignals()), so the right editor's own scrollbar is
+        // pure redundancy - and it was overlapping/squeezing its line-number
+        // gutter, which also lives on that same outer-right edge. Scrolling
+        // either pane, or dragging the left editor's scrollbar, still moves
+        // both; only one visible scrollbar is needed.
+        rightEditor_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         rightLayout->addWidget(rightEditor_, 1);
 
         // One QSyntaxHighlighter per editor: it carries both the language
@@ -395,8 +493,8 @@ private:
             std::swap(leftOriginal_, rightOriginal_);
             std::swap(leftPath_, rightPath_);
             std::swap(leftDirtyLines_, rightDirtyLines_);
-            leftLabel_->setText(QFileInfo(leftPath_).fileName());
-            rightLabel_->setText(QFileInfo(rightPath_).fileName());
+            refreshSideHeader(true);
+            refreshSideHeader(false);
             applyLanguageHighlighting();
             if (onTitleChanged) onTitleChanged();
             rebuild();
@@ -748,6 +846,8 @@ private:
         currentRow_ = -1;
         refreshDirtyIndicators();
         updateMinimapViewport();
+        refreshSideHeader(true);
+        refreshSideHeader(false);
         status_->setText(QString("%1 difference section(s)   |   %2 line(s)   |   %3 changed row(s)")
                              .arg(sectionCount)
                              .arg(rows_.size())
@@ -812,6 +912,9 @@ private:
         updateExtraSelections();
         leftEditor_->setDirtyRows(leftDirtyRows_);
         rightEditor_->setDirtyRows(rightDirtyRows_);
+        QSet<int> bothDirty = leftDirtyRows_;
+        bothDirty.unite(rightDirtyRows_);
+        miniMap_->setDirtyRows(bothDirty);
     }
 
     // VS Code-style current-line highlight, plus the green "needs saving"
@@ -849,10 +952,16 @@ private:
     // fraction-of-whole-file the mini-map needs, so its black viewport
     // rectangle always matches what is actually on screen.
     void updateMinimapViewport() {
-        const int total = qMax(1, rows_.size());
         const QScrollBar* bar = leftEditor_->verticalScrollBar();
+        const qreal pageStep = qMax(1, bar->pageStep());
+        // bar->maximum() is how far the *top* of the viewport can still
+        // travel, so maximum()+pageStep() is the full scrollable extent in
+        // the scrollbar's own units - this holds regardless of whether a
+        // "unit" happens to be one text line (NoWrap) or something coarser
+        // (word-wrap on), so the box always matches what's really on screen.
+        const qreal total = qMax<qreal>(1.0, bar->maximum() + pageStep);
         const qreal start = static_cast<qreal>(bar->value()) / total;
-        const qreal span = qMax(1, bar->pageStep()) / static_cast<qreal>(total);
+        const qreal span = pageStep / total;
         miniMap_->setViewport(start, span);
     }
 
@@ -880,6 +989,7 @@ private:
         file.close();
         (left ? leftDirtyLines_ : rightDirtyLines_).clear();
         refreshDirtyIndicators();
+        refreshSideHeader(left);
         status_->setText(QFileInfo(path).fileName() + " saved.");
     }
 
@@ -919,8 +1029,12 @@ private:
     QAction* swapAction_ = nullptr;
     QAction* reloadAction_ = nullptr;
 
-    QLabel* leftLabel_ = nullptr;
-    QLabel* rightLabel_ = nullptr;
+    QLabel* leftPathLabel_ = nullptr;
+    QLabel* rightPathLabel_ = nullptr;
+    QLabel* leftAttrsLabel_ = nullptr;
+    QLabel* rightAttrsLabel_ = nullptr;
+    QToolButton* leftSaveButton_ = nullptr;
+    QToolButton* rightSaveButton_ = nullptr;
     LineNumberEditor* leftEditor_ = nullptr;
     LineNumberEditor* rightEditor_ = nullptr;
     DifferenceOverview* miniMap_ = nullptr;

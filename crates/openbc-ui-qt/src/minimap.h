@@ -26,6 +26,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QSet>
 #include <functional>
 
 #include "diff_algorithms.h"
@@ -46,8 +47,8 @@ public:
     explicit DifferenceOverview(QWidget* parent = nullptr, bool vertical = false)
         : QFrame(parent), vertical_(vertical) {
         if (vertical_) {
-            setMinimumWidth(22);
-            setMaximumWidth(22);
+            setMinimumWidth(28);
+            setMaximumWidth(28);
         } else {
             setMinimumHeight(18);
             setMaximumHeight(18);
@@ -58,6 +59,18 @@ public:
     void setRows(const QVector<TextDiffLine>& rows) {
         rows_ = rows;
         blocks_ = groupDiffRows(rows_);
+        update();
+    }
+
+    // Rows (indices into the currently-displayed rows_) that have an
+    // in-memory edit not yet written to disk on either side. Drawn as a
+    // dedicated bright-green tick in its own thin column next to the diff
+    // bars, independent of block thickness, so a single dirty line inside a
+    // large change block - or a dirty line inside a tiny one - is equally
+    // visible instead of being lost proportionally to the block's size.
+    void setDirtyRows(const QSet<int>& rows) {
+        if (dirtyRows_ == rows) return;
+        dirtyRows_ = rows;
         update();
     }
 
@@ -103,23 +116,31 @@ protected:
             paintBlocks(painter, rowSize);
         }
 
+        if (!dirtyRows_.isEmpty()) {
+            paintDirtyTicks(painter, rowSize);
+        }
+
         if (currentRow_ >= 0 && currentRow_ < rows_.size()) {
             const qreal at = currentRow_ * rowSize;
             painter.fillRect(vertical_ ? QRectF(0, at, width(), qMax<qreal>(1, rowSize))
                                        : QRectF(at, 0, qMax<qreal>(1, rowSize), height()),
-                            QColor("#f8f8f2"));
+                            QColor(248, 248, 242, 60));
         }
 
-        // The viewport rectangle: a hollow black-bordered box, sized and
-        // positioned from the fractions the editor last reported, showing
-        // exactly which portion of the full file height is on screen.
+        // The viewport rectangle: a hollow, brighter box (filled just enough
+        // to read as "this is the page currently on screen") sized and
+        // positioned from the fractions the editor last reported. It always
+        // reflects the actual scrollable range - see
+        // TextCompareView::updateMinimapViewport() - so on a short file that
+        // never fills the window, the box shrinks/moves to match rather than
+        // always stretching across the whole strip.
         if (vertical_ && viewportSpan_ > 0.0) {
             const int top = qRound(viewportStart_ * height());
-            const int h = qMax(3, qRound(viewportSpan_ * height()));
-            QPen pen(QColor(0, 0, 0));
+            const int h = qMax(4, qRound(viewportSpan_ * height()));
+            QPen pen(QColor(235, 235, 235));
             pen.setWidth(1);
             painter.setPen(pen);
-            painter.setBrush(QColor(255, 255, 255, 28));
+            painter.setBrush(QColor(255, 255, 255, 40));
             painter.drawRect(QRect(0, top, width() - 1, h - 1));
         }
     }
@@ -170,16 +191,37 @@ private:
     // diagonal hash texture painted over their base colour, echoing the
     // hashed background the editors use for the same rows.
     void paintBlocks(QPainter& painter, qreal rowSize) {
+        const qreal barWidth = vertical_ ? width() - kDirtyColumnWidth - 6 : width() - 4;
         for (const DiffGroup& block : blocks_) {
             const qreal start = block.start * rowSize;
-            const qreal thickness = qMax<qreal>(2.0, (block.end - block.start + 1) * rowSize);
+            const qreal thickness = qMax<qreal>(3.0, (block.end - block.start + 1) * rowSize);
             const bool missing = groupIsMissing(block);
             const QColor color = colorFor(block.whitespaceOnly, missing);
-            const QRectF bar = vertical_ ? QRectF(3, start, width() - 6, thickness)
+            const QRectF bar = vertical_ ? QRectF(3, start, barWidth, thickness)
                                          : QRectF(start, 2, thickness, height() - 4);
             painter.fillRect(bar, color);
             if (missing && thickness > 3.0) {
                 painter.fillRect(bar, QBrush(QColor(0, 0, 0, 90), Qt::BDiagPattern));
+            }
+        }
+    }
+
+    // Dedicated column (the strip's inner edge, next to the splitter) that
+    // marks rows with an unsaved edit - a small bright tick per dirty row,
+    // always the same size regardless of how thick the diff bar behind it
+    // is, so one dirty line in a 40-line block is exactly as visible as one
+    // dirty line on its own.
+    void paintDirtyTicks(QPainter& painter, qreal rowSize) {
+        static const QColor kDirty(60, 220, 130);
+        const qreal x = vertical_ ? width() - kDirtyColumnWidth + 1 : 0;
+        for (int row : dirtyRows_) {
+            if (row < 0 || row >= rows_.size()) continue;
+            const qreal at = row * rowSize;
+            const qreal thickness = qMax<qreal>(2.0, rowSize);
+            if (vertical_) {
+                painter.fillRect(QRectF(x, at, kDirtyColumnWidth - 2, thickness), kDirty);
+            } else {
+                painter.fillRect(QRectF(at, height() - 4, thickness, 3), kDirty);
             }
         }
     }
@@ -189,22 +231,27 @@ private:
     // thin lines instead of one dominating the map - useful once files get
     // long enough that block-mode's proportional bars all blur together.
     void paintPixelLines(QPainter& painter, qreal rowSize) {
+        const qreal barWidth = vertical_ ? width() - kDirtyColumnWidth - 6 : width() - 4;
         for (int row = 0; row < rows_.size(); ++row) {
             const TextDiffLine& line = rows_[row];
             if (!line.changed) continue;
             const bool missing = line.leftNumber == 0 || line.rightNumber == 0;
             const QColor color = colorFor(line.whitespaceOnly, missing);
             const qreal at = row * rowSize;
+            const qreal thickness = qMax<qreal>(1.5, rowSize * 0.9);
             if (vertical_) {
-                painter.fillRect(QRectF(3, at, width() - 6, 1.0), color);
+                painter.fillRect(QRectF(3, at, barWidth, thickness), color);
             } else {
-                painter.fillRect(QRectF(at, 2, 1.0, height() - 4), color);
+                painter.fillRect(QRectF(at, 2, thickness, height() - 4), color);
             }
         }
     }
 
+    static constexpr qreal kDirtyColumnWidth = 6.0;
+
     QVector<TextDiffLine> rows_;
     QVector<DiffGroup> blocks_;
+    QSet<int> dirtyRows_;
     bool vertical_ = false;
     bool pixelLineMode_ = false;
     int currentRow_ = -1;
