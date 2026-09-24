@@ -40,4 +40,7 @@ std::uint8_t openbc_highlight_foreground(const OpenBcHighlight*, std::size_t, st
 std::uint8_t openbc_highlight_background(const OpenBcHighlight*, std::size_t, std::uint8_t);
 std::uint8_t openbc_highlight_bold(const OpenBcHighlight*, std::size_t);
 std::uint8_t openbc_highlight_italic(const OpenBcHighlight*, std::size_t);
+char* openbc_highlight_to_html(const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t,
+                               std::uint8_t);
+void openbc_highlight_html_destroy(char*);
 }

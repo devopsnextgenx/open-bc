@@ -34,6 +34,13 @@ public:
             entries = QJsonDocument::fromJson(file.readAll()).array();
             file.close();
         }
+        for (int index = entries.size() - 1; index >= 0; --index) {
+            const auto existing = entries[index].toObject();
+            if (existing["kind"].toString() == kind && existing["left"].toString() == left &&
+                existing["right"].toString() == right) {
+                entries.removeAt(index);
+            }
+        }
         QJsonObject entry;
         entry["kind"] = kind;
         entry["left"] = left;
@@ -41,6 +48,19 @@ public:
         entry["openedAt"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
         entries.prepend(entry);
         while (entries.size() > 200) entries.removeLast();
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            file.write(QJsonDocument(entries).toJson(QJsonDocument::Indented));
+        }
+    }
+
+    static void removeAt(int index) {
+        const QString path = rootPath() + "/sessions/history.json";
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) return;
+        QJsonArray entries = QJsonDocument::fromJson(file.readAll()).array();
+        file.close();
+        if (index < 0 || index >= entries.size()) return;
+        entries.removeAt(index);
         if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             file.write(QJsonDocument(entries).toJson(QJsonDocument::Indented));
         }

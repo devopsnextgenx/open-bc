@@ -224,6 +224,11 @@ extern "C" int openbc_run_gui() {
         auto* widget = tabs->widget(index);
         if (auto* session = dynamic_cast<CompareSession*>(widget)) {
             session->cancelRun();
+            const QString left = session->leftText();
+            const QString right = session->rightText();
+            if (!left.isEmpty() || !right.isEmpty()) {
+                SessionHistory::record("folder", left, right);
+            }
         }
         if (widget == home) {
             return;

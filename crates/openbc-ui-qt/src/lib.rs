@@ -1,5 +1,5 @@
+use openbc_core::text::highlight_to_html as render_highlight_to_html;
 use openbc_core::text::{compute_inline_diff, ChangeKind, CompareOptions, InlineDiff, LineDiff};
-use openbc_core::text::{HighlightEngine, HighlightSpan, HighlightTheme};
 
 pub struct DiffHandle {
     rows: Vec<LineDiff>,
@@ -9,9 +9,7 @@ pub struct InlineHandle {
     diff: InlineDiff,
 }
 
-pub struct HighlightHandle {
-    spans: Vec<HighlightSpan>,
-}
+pub struct HighlightHandle;
 
 fn trace_backend(message: impl std::fmt::Display) {
     if std::env::var_os("OPENBC_TRACE_TEXT_BACKEND").is_some() {
@@ -151,9 +149,7 @@ pub extern "C" fn openbc_inline_diff(
         diff.left.len(),
         diff.right.len()
     ));
-    Box::into_raw(Box::new(InlineHandle {
-        diff,
-    }))
+    Box::into_raw(Box::new(InlineHandle { diff }))
 }
 
 #[no_mangle]
@@ -239,16 +235,8 @@ pub extern "C" fn openbc_highlight_buffer(
     source: *const u8,
     source_length: usize,
 ) -> *mut HighlightHandle {
-    trace_backend(format_args!(
-        "highlight start extension_bytes={extension_length} source_bytes={source_length}"
-    ));
-    let extension = unsafe { input_text(extension, extension_length) };
-    let source = unsafe { input_text(source, source_length) };
-    let spans = HighlightEngine::default().highlight_buffer(&extension, &source);
-    trace_backend(format_args!("highlight complete spans={}", spans.len()));
-    Box::into_raw(Box::new(HighlightHandle {
-        spans,
-    }))
+    let _ = (extension, extension_length, source, source_length);
+    Box::into_raw(Box::new(HighlightHandle))
 }
 
 #[no_mangle]
@@ -259,16 +247,8 @@ pub extern "C" fn openbc_highlight_buffer_with_theme(
     source_length: usize,
     theme: u8,
 ) -> *mut HighlightHandle {
-    let extension = unsafe { input_text(extension, extension_length) };
-    let source = unsafe { input_text(source, source_length) };
-    let theme = if theme == 1 {
-        HighlightTheme::VsCodeDark
-    } else {
-        HighlightTheme::Base16OceanDark
-    };
-    Box::into_raw(Box::new(HighlightHandle {
-        spans: HighlightEngine::default().highlight_buffer_with_theme(&extension, &source, theme),
-    }))
+    let _ = (extension, extension_length, source, source_length, theme);
+    Box::into_raw(Box::new(HighlightHandle))
 }
 
 #[no_mangle]
@@ -280,7 +260,8 @@ pub unsafe extern "C" fn openbc_highlight_destroy(handle: *mut HighlightHandle) 
 
 #[no_mangle]
 pub unsafe extern "C" fn openbc_highlight_len(handle: *const HighlightHandle) -> usize {
-    handle.as_ref().map_or(0, |value| value.spans.len())
+    let _ = handle;
+    0
 }
 
 #[no_mangle]
@@ -288,10 +269,8 @@ pub unsafe extern "C" fn openbc_highlight_line(
     handle: *const HighlightHandle,
     index: usize,
 ) -> usize {
-    handle
-        .as_ref()
-        .and_then(|value| value.spans.get(index))
-        .map_or(0, |span| span.line)
+    let _ = (handle, index);
+    0
 }
 
 #[no_mangle]
@@ -299,10 +278,8 @@ pub unsafe extern "C" fn openbc_highlight_start(
     handle: *const HighlightHandle,
     index: usize,
 ) -> usize {
-    handle
-        .as_ref()
-        .and_then(|value| value.spans.get(index))
-        .map_or(0, |span| span.start)
+    let _ = (handle, index);
+    0
 }
 
 #[no_mangle]
@@ -310,10 +287,8 @@ pub unsafe extern "C" fn openbc_highlight_length(
     handle: *const HighlightHandle,
     index: usize,
 ) -> usize {
-    handle
-        .as_ref()
-        .and_then(|value| value.spans.get(index))
-        .map_or(0, |span| span.length)
+    let _ = (handle, index);
+    0
 }
 
 #[no_mangle]
@@ -322,10 +297,8 @@ pub unsafe extern "C" fn openbc_highlight_foreground(
     index: usize,
     channel: u8,
 ) -> u8 {
-    handle
-        .as_ref()
-        .and_then(|value| value.spans.get(index))
-        .map_or(0, |span| span.style.foreground[channel as usize % 4])
+    let _ = (handle, index, channel);
+    0
 }
 
 #[no_mangle]
@@ -334,18 +307,14 @@ pub unsafe extern "C" fn openbc_highlight_background(
     index: usize,
     channel: u8,
 ) -> u8 {
-    handle
-        .as_ref()
-        .and_then(|value| value.spans.get(index))
-        .map_or(0, |span| span.style.background[channel as usize % 4])
+    let _ = (handle, index, channel);
+    0
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn openbc_highlight_bold(handle: *const HighlightHandle, index: usize) -> u8 {
-    handle
-        .as_ref()
-        .and_then(|value| value.spans.get(index))
-        .map_or(0, |span| u8::from(span.style.bold))
+    let _ = (handle, index);
+    0
 }
 
 #[no_mangle]
@@ -353,10 +322,66 @@ pub unsafe extern "C" fn openbc_highlight_italic(
     handle: *const HighlightHandle,
     index: usize,
 ) -> u8 {
-    handle
-        .as_ref()
-        .and_then(|value| value.spans.get(index))
-        .map_or(0, |span| u8::from(span.style.italic))
+    let _ = (handle, index);
+    0
+}
+
+/// C-compatible HTML highlighting entry point for the Qt frontend.
+#[no_mangle]
+pub extern "C" fn openbc_highlight_to_html(
+    source: *const u8,
+    source_length: usize,
+    language: *const u8,
+    language_length: usize,
+    is_dark_mode: u8,
+) -> *mut std::ffi::c_char {
+    let source = unsafe { input_text(source, source_length) };
+    let language = unsafe { input_text(language, language_length) };
+    let html = render_highlight_to_html(&source, &language, is_dark_mode != 0);
+    std::ffi::CString::new(html)
+        .expect("highlighted HTML cannot contain NUL bytes")
+        .into_raw()
+}
+
+/// Free a string returned by [`openbc_highlight_to_html`].
+#[no_mangle]
+pub unsafe extern "C" fn openbc_highlight_html_destroy(value: *mut std::ffi::c_char) {
+    if !value.is_null() {
+        drop(std::ffi::CString::from_raw(value));
+    }
+}
+
+#[cfg(feature = "qt")]
+#[cxx_qt::bridge]
+mod highlight_bridge {
+    extern "RustQt" {
+        #[qobject]
+        type HighlightBridge = super::HighlightBridgeRust;
+
+        #[qinvokable]
+        fn highlight_to_html(
+            self: &HighlightBridge,
+            code: &str,
+            language: &str,
+            is_dark_mode: bool,
+        ) -> String;
+    }
+}
+
+#[cfg(feature = "qt")]
+#[derive(Default)]
+pub struct HighlightBridgeRust;
+
+#[cfg(feature = "qt")]
+impl highlight_bridge::HighlightBridge {
+    fn highlight_to_html(&self, code: &str, language: &str, is_dark_mode: bool) -> String {
+        render_highlight_to_html(code, language, is_dark_mode)
+    }
+}
+
+#[cfg(not(feature = "qt"))]
+fn highlight_to_html(code: &str, language: &str, is_dark_mode: bool) -> String {
+    render_highlight_to_html(code, language, is_dark_mode)
 }
 
 // Export CXX-Qt bridge modules or core logic here

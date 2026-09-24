@@ -6,6 +6,6 @@ pub mod models;
 pub mod normalize;
 
 pub use diff::{compute_inline_diff, TextCompareEngine};
-pub use highlight::{HighlightEngine, HighlightSpan, HighlightStyle, HighlightTheme};
+pub use highlight::highlight_to_html;
 pub use models::{ChangeKind, CharChangeKind, CharDiff, CompareOptions, InlineDiff, LineDiff};
 pub use normalize::LogNormalizer;
