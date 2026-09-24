@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
+use syntect::html::highlighted_html_for_string;
 use syntect::highlighting::{FontStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
@@ -29,6 +30,9 @@ pub struct HighlightSpan {
 /// Highlight source code as a self-contained HTML fragment.
 #[must_use]
 pub fn highlight_to_html(source: &str, language: &str, is_dark_mode: bool) -> String {
+    if uses_syntect(language) {
+        return syntect_html(source, language, is_dark_mode);
+    }
     let Some((body, css)) = render_source(source, language, is_dark_mode) else {
         return plain_html(source);
     };
@@ -50,7 +54,21 @@ pub fn highlight_to_spans(source: &str, language: &str, is_dark_mode: bool) -> V
 fn uses_syntect(language: &str) -> bool {
     matches!(
         language.trim().trim_start_matches('.').to_ascii_lowercase().as_str(),
-        "c++" | "cpp" | "cc" | "cxx" | "java" | "sh" | "bash" | "shell"
+        "c"
+            | "c++"
+            | "cpp"
+            | "cc"
+            | "cxx"
+            | "java"
+            | "sh"
+            | "bash"
+            | "shell"
+            | "json"
+            | "yaml"
+            | "yml"
+            | "xml"
+            | "html"
+            | "htm"
     )
 }
 
@@ -108,6 +126,30 @@ fn syntect_spans(source: &str, language: &str, is_dark_mode: bool) -> Vec<Highli
         }
     }
     merge_adjacent_spans(spans)
+}
+
+fn syntect_html(source: &str, language: &str, is_dark_mode: bool) -> String {
+    static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+    static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
+    let syntax_set = SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines);
+    let normalized = language.trim().trim_start_matches('.').to_ascii_lowercase();
+    let Some(syntax) = syntax_set
+        .find_syntax_by_extension(&normalized)
+        .or_else(|| syntax_set.find_syntax_by_token(language.trim()))
+    else {
+        return plain_html(source);
+    };
+    let theme_set = THEME_SET.get_or_init(ThemeSet::load_defaults);
+    let theme_name = if is_dark_mode {
+        "base16-ocean.dark"
+    } else {
+        "InspiredGitHub"
+    };
+    let Some(theme) = theme_set.themes.get(theme_name) else {
+        return plain_html(source);
+    };
+    highlighted_html_for_string(source, syntax_set, syntax, theme)
+        .unwrap_or_else(|_| plain_html(source))
 }
 
 fn render_source(source: &str, language: &str, is_dark_mode: bool) -> Option<(String, String)> {
@@ -321,6 +363,32 @@ mod tests {
             ("java", "class Main { public static void main(String[] args) {} }"),
         ] {
             assert!(!highlight_to_spans(source, language, true).is_empty(), "{language}");
+        }
+    }
+
+    #[test]
+    fn renders_json_yaml_xml_and_html_spans() {
+        for (language, source) in [
+            ("json", r#"{"name": "OpenBC", "enabled": true}"#),
+            ("yaml", "name: OpenBC\nenabled: true"),
+            ("yml", "name: OpenBC\nenabled: true"),
+            ("xml", "<item enabled=\"true\">OpenBC</item>"),
+            ("html", "<main><h1>OpenBC</h1></main>"),
+        ] {
+            assert!(!highlight_to_spans(source, language, true).is_empty(), "{language}");
+        }
+    }
+
+    #[test]
+    fn renders_json_yaml_xml_and_html_html() {
+        for (language, source) in [
+            ("json", r#"{"name": "OpenBC"}"#),
+            ("yaml", "name: OpenBC"),
+            ("xml", "<item>OpenBC</item>"),
+            ("html", "<main>OpenBC</main>"),
+        ] {
+            let html = highlight_to_html(source, language, true);
+            assert!(html.contains("<span"), "{language}");
         }
     }
 }
