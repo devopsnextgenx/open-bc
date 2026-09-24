@@ -284,10 +284,15 @@ inline QString applicationStyleSheet() {
         }
         QToolButton#saveSideBtn:hover { background: #4d4d4d; border-color: #5f5f5f; }
         QToolButton#saveSideBtn:disabled { background: transparent; }
+        /* Blue = this side has copied/edited lines that are not yet written to
+        disk. Kept distinct from the green row-highlight used by the minimap
+        and the dirty-row gutter bars, so the button reads as "action needed"
+        rather than "state". */
         QToolButton#saveSideBtn[dirty="true"] {
-            background: rgba(60, 220, 130, 35); border-color: #3cdc82;
+            background: rgba(78, 156, 255, 45); border-color: #4e9cff;
         }
-        QToolButton#saveSideBtn[dirty="true"]:hover { background: rgba(60, 220, 130, 60); }
+        QToolButton#saveSideBtn[dirty="true"]:hover { background: rgba(78, 156, 255, 80); }
+        QToolButton#saveSideBtn[dirty="true"]:pressed { background: rgba(78, 156, 255, 110); }
 
         QScrollBar:vertical { background: #1b1b1b; width: 15px; margin: 0; border-left: 1px solid #3a3a3a; }
         QScrollBar:horizontal { background: #1b1b1b; height: 15px; margin: 0; border-top: 1px solid #3a3a3a; }
@@ -745,6 +750,26 @@ inline QIcon glyph(Glyph which) {
     return QIcon();
 }
 
+// Colour-parameterised floppy-disk glyph, for callers that need to draw
+// the save icon in an "attention" colour (e.g. the per-side save buttons
+// when that side has copied-but-unsaved lines). Glyph::Save itself paints
+// in the generic ink / gold palette used by the toolbar; this variant lets
+// the caller pick the body colour directly.
+inline QIcon saveIcon(const QColor& body) {
+    return make([body](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(body);
+        QPainterPath shell;
+        shell.addRoundedRect(QRectF(2.2, 1.8, 11.6, 12.4), 1.4, 1.4);
+        p.drawPath(shell);
+        // Dark shutter block top-left.
+        p.setBrush(QColor(0x23, 0x23, 0x23));
+        p.drawRect(QRectF(4.4, 2.6, 6.0, 3.6));
+        // Slightly darker paper-label rectangle lower half.
+        p.setBrush(body.darker(160));
+        p.drawRect(QRectF(4.6, 8.2, 6.8, 4.6));
+    });
+}
 
 // ---------------------------------------------------------------------------
 // Context-menu icons. Same 16x16 design space as the toolbar glyphs, drawn in

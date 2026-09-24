@@ -1,20 +1,9 @@
 // text_compare_view.h
 // ---------------------------------------------------------------------------
 // TextCompareView: the two-pane diff editor tab (toolbar, minimap, the two
-// LineNumberEditor panes, the bottom DiffLinePreview console, and now the
-// FindReplaceBar). This is the file that wires together everything the
-// other new headers provide:
-//   - computeInlineDiff() results feed both editors' whitespace-glyph
-//     overlay (LineNumberEditor::setInlineDiffs) and each side's
-//     SyntaxHighlighter (red/whitespace diff colouring).
-//   - SyntaxHighlighter also gets a language selected from the file
-//     extension via syntax::forExtension().
-//   - FindReplaceBar is created once, hidden until Ctrl+F/the toolbar
-//     button opens it.
-//   - editMenuItems()/searchMenuItems()/viewMenuItems()/actionsMenuItems()
-//     expose this view's QActions so main_window.h's rebuildMenus() can
-//     populate the top menu bar for a text-compare tab, not just a
-//     folder-compare (CompareSession) tab.
+// LineNumberEditor panes, the bottom DiffLinePreview console, and the
+// FindReplaceBar). This revision gives each side its own undo/redo history
+// and routes Ctrl+Z / Ctrl+Y to whichever pane currently has focus.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -27,6 +16,7 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
 #include <QList>
@@ -72,22 +62,19 @@ public:
         buildUi();
         connectSignals();
         rebuild();
+        // Each side starts with its own single-entry history ("as loaded").
+        pushSideHistory(/*left=*/true);
+        pushSideHistory(/*left=*/false);
     }
 
     QString title() const {
         return QFileInfo(leftPath_).fileName() + " <-> " + QFileInfo(rightPath_).fileName();
     }
 
-    // Wired by main() so the toolbar's Home / Sessions buttons behave like
-    // Beyond Compare's: both return the user to the session (folder-compare)
-    // tab this text view was opened from.
     std::function<void()> onHomeRequested;
     std::function<void()> onSessionsRequested;
     std::function<void()> onTitleChanged;
 
-    // Menu item accessors - main_window.h's rebuildMenus() reads these
-    // when this view is the active tab, the same way it already reads
-    // CompareSession's for a folder-compare tab.
     QList<QAction*> editMenuItems() const { return {undoAction_, redoAction_, saveAction_}; }
     QList<QAction*> searchMenuItems() const { return {findAction_, nextSectionAction_, prevSectionAction_}; }
     QList<QAction*> viewMenuItems() const {
@@ -96,25 +83,45 @@ public:
     }
     QList<QAction*> actionsMenuItems() const { return {copyAction_, swapAction_, reloadAction_}; }
 
-private:
-    // Whichever editor pane last had keyboard focus - used as the default
-    // target for Ctrl+Z/Ctrl+Y and for the find bar's "This pane" scope.
-    LineNumberEditor* focusedEditor() const {
-        return (rightEditor_ && rightEditor_->hasFocus()) ? rightEditor_ : leftEditor_;
+protected:
+    // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y are intercepted here *before*
+    // QPlainTextEdit's own keyPressEvent can swallow them. They are then
+    // routed to the focused pane's own history, so undoing the left pane
+    // never touches the right pane's state.
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if ((watched == leftEditor_ || watched == rightEditor_) &&
+            event->type() == QEvent::KeyPress) {
+            auto* ke = static_cast<QKeyEvent*>(event);
+            const QKeySequence seq(ke->key() | ke->modifiers());
+            if (seq == QKeySequence::Undo) {
+                undoFocusedSide();
+                return true;
+            }
+            if (seq == QKeySequence::Redo ||
+                seq == QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z)) {
+                redoFocusedSide();
+                return true;
+            }
+        }
+        return QWidget::eventFilter(watched, event);
     }
 
-    // Picks each side's syntax-highlighting language from its own file
-    // extension (so comparing a .cpp to a .h, say, highlights each pane
-    // correctly rather than forcing both to match).
+private:
+    // Whichever editor pane last actually held keyboard focus. Falls back
+    // to the left pane if neither has ever been focused (e.g. only the
+    // toolbar has focus), so Ctrl+Z still does something sensible.
+    LineNumberEditor* focusedEditor() const {
+        if (rightEditor_ && rightEditor_->hasFocus()) return rightEditor_;
+        if (leftEditor_ && leftEditor_->hasFocus()) return leftEditor_;
+        if (lastFocusedEditor_) return lastFocusedEditor_;
+        return leftEditor_;
+    }
+
     void applyLanguageHighlighting() {
         leftHighlighter_->setLanguage(syntax::forExtension(QFileInfo(leftPath_).suffix()));
         rightHighlighter_->setLanguage(syntax::forExtension(QFileInfo(rightPath_).suffix()));
     }
 
-    // Char-level diff (red mismatches / tinted+glyphed whitespace) for every
-    // row that has real content on both sides; pure insert/delete rows (one
-    // side missing entirely) are left empty here since the hashed-background
-    // ExtraSelection already marks those as "no counterpart", not "differs".
     void computeInlineDiffs(const QVector<TextDiffLine>& rows) {
         leftInline_.clear();
         rightInline_.clear();
@@ -132,14 +139,6 @@ private:
         }
     }
 
-    // Per-side header: an editable path row (combo box + Browse button -
-    // the same PathSelector CompareSession's folder pickers use, in
-    // Mode::File here) plus a save icon on the top row, and a smaller line
-    // of file attributes - modified date, size, text encoding, and
-    // line-ending style ("PC" for CRLF, matching the reference app's own
-    // label for Windows-style endings, vs "Unix"/"Mac" for LF/CR-only) - on
-    // the row below, the same layout the reference screenshot uses just
-    // under each side's path.
     QWidget* buildSideHeader(bool left) {
         auto* frame = new QFrame(this);
         frame->setObjectName("sideHeader");
@@ -154,8 +153,6 @@ private:
         QToolButton*& saveButton = left ? leftSaveButton_ : rightSaveButton_;
         selector = new PathSelector(PathSelector::Mode::File, left ? "Left" : "Right", frame);
         selector->combo()->setObjectName("sidePath");
-        // Browsing picks a different file for this side entirely - load it
-        // in place of whatever was being compared here before.
         selector->onBrowsed = [this, left](const QString& path) { loadSide(left, path); };
         pathRow->addWidget(selector, 1);
         saveButton = new QToolButton(frame);
@@ -181,10 +178,6 @@ private:
         return frame;
     }
 
-    // Recomputes one side's path/attribute labels and enables/disables its
-    // save button (nothing to save once that side has no unsaved lines).
-    // Called after every rebuild(), save, reload, and swap so the date/size
-    // shown always matches what is actually on disk right now.
     void refreshSideHeader(bool left) {
         const QString& path = left ? leftPath_ : rightPath_;
         PathSelector* selector = left ? leftSelector_ : rightSelector_;
@@ -193,8 +186,6 @@ private:
         if (!selector || !attrsLabel) return;
 
         const QFileInfo info(path);
-        // Full path, editable, same as CompareSession's folder pickers -
-        // rather than just the file name a plain label used to show.
         selector->setText(path);
         selector->combo()->setToolTip(path);
 
@@ -208,19 +199,26 @@ private:
             attrsLabel->setText("(unsaved)");
         }
         if (saveButton) {
-            const bool dirty = !(left ? leftDirtyLines_ : rightDirtyLines_).isEmpty();
-            saveButton->setIcon(icons::glyph(icons::Glyph::Save));
+            // A side is "unsaved" if it has copied-but-not-saved rows *or* if the
+            // user has edited it by hand at all since the last load/save. The
+            // leftDirtyLines_/rightDirtyLines_ sets only cover the copy-to-other
+            // -side path (they drive the green row highlight), so without the
+            // extra unsaved flags manual typing would leave the button grey.
+            const bool dirty = (left ? leftUnsaved_ : rightUnsaved_) ||
+                            !(left ? leftDirtyLines_ : rightDirtyLines_).isEmpty();
+            static const QColor kDirtyBlue(0x4e, 0x9c, 0xff);
+            static const QColor kCleanInk(0xdd, 0xe0, 0xee);
+            saveButton->setIcon(icons::saveIcon(dirty ? kDirtyBlue : kCleanInk));
             saveButton->setProperty("dirty", dirty);
+            saveButton->setToolTip(
+                dirty ? "Unsaved changes on this side - click or Ctrl+S to write to disk"
+                    : (left ? "Save left file (Ctrl+S while focused)"
+                            : "Save right file (Ctrl+S while focused)"));
             saveButton->style()->unpolish(saveButton);
             saveButton->style()->polish(saveButton);
         }
     }
 
-    // Windows ("PC"), Unix, or Mac line endings, guessed from the in-memory
-    // text the same way the reference app's status strip does: look at the
-    // first line that actually has a carriage return either still attached
-    // or not. leftOriginal_/rightOriginal_ are split on '\n' already, so a
-    // line ending in '\r' means the source was CRLF.
     QString detectLineEnding(bool left) const {
         const QStringList& lines = left ? leftOriginal_ : rightOriginal_;
         for (const QString& line : lines) {
@@ -235,7 +233,6 @@ private:
         root->setContentsMargins(0, 0, 0, 0);
         root->setSpacing(0);
 
-        // ---- toolbar: mirrors Beyond Compare's Text Compare toolbar ----
         toolbar_ = new QToolBar(this);
         toolbar_->setObjectName("textCompareToolbar");
         toolbar_->setMovable(false);
@@ -277,11 +274,6 @@ private:
         findAction_->setShortcut(QKeySequence::Find);
         findAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         findAction_->setToolTip("Find / Replace (Ctrl+F)");
-        // WidgetWithChildrenShortcut fires when the associated widget or one
-        // of its *children* has focus; the action's owner (toolbar_) is a
-        // sibling of the editors, not their parent, so it must also be
-        // registered on `this` (matching saveAction_ below) or Ctrl+F would
-        // only fire while the toolbar itself had focus.
         addAction(findAction_);
         toolbar_->addSeparator();
 
@@ -312,8 +304,6 @@ private:
         leftLayout->setContentsMargins(0, 0, 0, 0);
         leftLayout->setSpacing(0);
         miniMap_ = new DifferenceOverview(leftPane, true);
-        // Left editor: numbers on the outer (left) edge, arrows on the inner
-        // edge next to the splitter, pointing right toward the other file.
         leftEditor_ = new LineNumberEditor(LineNumberEditor::GutterSide::Left,
                                            LineNumberEditor::GutterSide::Right, leftPane);
         leftLayout->addWidget(miniMap_);
@@ -323,25 +313,22 @@ private:
         auto* rightLayout = new QHBoxLayout(rightPane);
         rightLayout->setContentsMargins(0, 0, 0, 0);
         rightLayout->setSpacing(0);
-        // Right editor: numbers on the outer (right) edge, arrows on the
-        // inner edge next to the splitter, pointing left.
         rightEditor_ = new LineNumberEditor(LineNumberEditor::GutterSide::Right,
                                             LineNumberEditor::GutterSide::Left, rightPane);
-        // The two editors' vertical scrollbars are kept perfectly in sync
-        // (see connectSignals()), so the right editor's own scrollbar is
-        // pure redundancy - and it was overlapping/squeezing its line-number
-        // gutter, which also lives on that same outer-right edge. Scrolling
-        // either pane, or dragging the left editor's scrollbar, still moves
-        // both; only one visible scrollbar is needed.
         rightEditor_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         rightLayout->addWidget(rightEditor_, 1);
 
-        // One QSyntaxHighlighter per editor: it carries both the language
-        // syntax colouring (picked from the file extension, below) and the
-        // char-level diff overlay (red mismatches / tinted whitespace) fed
-        // to it from rebuild() - Qt does not support layering two
-        // independent highlighters on the same document, so both concerns
-        // share this one highlighter per side.
+        // Intercept Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z on both editors before
+        // their own keyPressEvent can swallow them.
+        leftEditor_->installEventFilter(this);
+        rightEditor_->installEventFilter(this);
+
+        // Undo/redo is driven by this view's own per-side snapshot
+        // histories, which survive rebuild()'s setPlainText() calls.
+        // Disable the native stacks so the two systems don't fight.
+        leftEditor_->setUndoRedoEnabled(false);
+        rightEditor_->setUndoRedoEnabled(false);
+
         leftHighlighter_ = new SyntaxHighlighter(leftEditor_->document());
         rightHighlighter_ = new SyntaxHighlighter(rightEditor_->document());
         leftHighlighter_->setInlineDiffProvider([this](int block) {
@@ -360,9 +347,6 @@ private:
         editors->setStretchFactor(1, 1);
         root->addWidget(editors, 1);
 
-        // Find/Replace bar: hidden until Ctrl+F (or the toolbar's Find
-        // button) opens it; see FindReplaceBar for the per-pane/both-panes
-        // scope selector.
         findBar_ = new FindReplaceBar(this);
         findBar_->setEditors(leftEditor_, rightEditor_);
         root->addWidget(findBar_);
@@ -374,25 +358,14 @@ private:
         status_->setStyleSheet("background:#3e3e3e; border-top:1px solid #505050; padding:3px 8px;");
         root->addWidget(status_);
 
-        // Right-click context menu on each editor pane (Align Manually,
-        // Isolate, Copy to Other Side, Edit Line, indent, Compare to
-        // Clipboard, plus the usual clipboard/Open With actions).
         leftEditor_->setContextMenuPolicy(Qt::CustomContextMenu);
         rightEditor_->setContextMenuPolicy(Qt::CustomContextMenu);
 
-        // Ctrl+S saves whichever editor pane currently has keyboard focus,
-        // to its own file on disk - not both sides at once, so the user
-        // always saves the side they are actually looking at/editing.
         saveAction_ = new QAction(this);
         saveAction_->setShortcut(QKeySequence::Save);
         saveAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         addAction(saveAction_);
 
-        // Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) undo/redo whichever pane has
-        // focus. QPlainTextEdit already binds these itself, but declaring
-        // them explicitly here means they also show up in the Edit menu
-        // (editMenuItems()) and keeps working even if a future ancestor
-        // widget installs its own shortcut on the same key sequence.
         undoAction_ = new QAction("Undo", this);
         undoAction_->setShortcut(QKeySequence::Undo);
         undoAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
@@ -422,10 +395,6 @@ private:
                     }
                     updateMinimapViewport();
                 });
-        // Both editors' rows line up (filler blanks keep them aligned), so
-        // whichever side the caret moves in, mirror the same row number as
-        // the "current line" on both panes - VS Code style highlight, kept
-        // in sync across the split the way the minimap/preview already are.
         const auto updateCurrentRow = [this](const QTextCursor& cursor) {
             currentRow_ = cursor.blockNumber();
             miniMap_->setCurrentRow(currentRow_);
@@ -446,21 +415,50 @@ private:
                 [this]() { findBar_->openFor(focusedEditor()); });
         connect(pixelMinimapAction_, &QAction::toggled, this,
                 [this](bool on) { miniMap_->setPixelLineMode(on); });
-        connect(undoAction_, &QAction::triggered, this, [this]() { focusedEditor()->undo(); });
-        connect(redoAction_, &QAction::triggered, this, [this]() { focusedEditor()->redo(); });
-        // Keeps the find bar's "This pane" scope pointed at whichever
-        // editor the user actually last clicked/typed into, and - since
-        // isModified() is only ever true between rebuild()'s two
-        // setPlainText() calls and now - auto-reloads once the user clicks
-        // (or Tabs) away from a side they actually edited, so switching
-        // panes after typing catches the diff up without an explicit
-        // Reload click.
+
+        // Menu / toolbar triggers route to the focused pane's history.
+        connect(undoAction_, &QAction::triggered, this, [this]() { undoFocusedSide(); });
+        connect(redoAction_, &QAction::triggered, this, [this]() { redoFocusedSide(); });
+
+        // One debounce timer per side: typing in the left pane only ever
+        // pushes onto the left history, and vice versa.
+        leftEditTimer_ = new QTimer(this);
+        leftEditTimer_->setSingleShot(true);
+        leftEditTimer_->setInterval(400);
+        connect(leftEditTimer_, &QTimer::timeout, this, [this]() {
+            syncFromEditors();
+            pushSideHistory(/*left=*/true);
+        });
+        rightEditTimer_ = new QTimer(this);
+        rightEditTimer_->setSingleShot(true);
+        rightEditTimer_->setInterval(400);
+        connect(rightEditTimer_, &QTimer::timeout, this, [this]() {
+            syncFromEditors();
+            pushSideHistory(/*left=*/false);
+        });
+        connect(leftEditor_->document(), &QTextDocument::contentsChanged, this, [this]() {
+            if (applyingProgrammaticUpdate_ || restoringHistory_) return;
+            leftUnsaved_ = true;
+            refreshSideHeader(true);
+            if (leftEditTimer_) leftEditTimer_->start();
+        });
+        connect(rightEditor_->document(), &QTextDocument::contentsChanged, this, [this]() {
+            if (applyingProgrammaticUpdate_ || restoringHistory_) return;
+            rightUnsaved_ = true;
+            refreshSideHeader(false);
+            if (rightEditTimer_) rightEditTimer_->start();
+        });
+
         connect(qApp, &QApplication::focusChanged, this, [this](QWidget* old, QWidget* now) {
             if (now == leftEditor_ || now == leftEditor_->viewport()) {
+                lastFocusedEditor_ = leftEditor_;
                 findBar_->notifyFocused(leftEditor_);
             } else if (now == rightEditor_ || now == rightEditor_->viewport()) {
+                lastFocusedEditor_ = rightEditor_;
                 findBar_->notifyFocused(rightEditor_);
             }
+            // Undo/redo enable-state depends on which pane is focused.
+            updateUndoRedoActions();
 
             const bool leftBlurred = (old == leftEditor_ || old == leftEditor_->viewport()) &&
                                       now != leftEditor_ && now != leftEditor_->viewport();
@@ -472,17 +470,6 @@ private:
             }
         });
 
-        // Track structural edits (a newline typed or removed) separately per
-        // side: those change how many blocks exist, so the row <-> block
-        // mapping the diff arrows/highlights rely on is no longer valid
-        // until the next Reload. In-place edits that don't add or remove a
-        // line keep the mapping intact and stay fully interactive.
-        //
-        // Rather than making the user click Reload themselves, schedule one
-        // automatically - deferred to the next spin of the event loop
-        // (scheduleAutoReload()) rather than run inline here, since we're
-        // still inside the document's own change signal and rebuild()
-        // replaces that same document's text via setPlainText().
         connect(leftEditor_->document(), &QTextDocument::blockCountChanged, this,
                 [this](int count) {
                     if (applyingProgrammaticUpdate_ || count == rows_.size()) return;
@@ -520,15 +507,21 @@ private:
         connect(nextSectionAction_, &QAction::triggered, this, [this]() { jumpToSection(1); });
         connect(prevSectionAction_, &QAction::triggered, this, [this]() { jumpToSection(-1); });
         connect(swapAction_, &QAction::triggered, this, [this]() {
+            flushPendingEdits();
             syncFromEditors();
             std::swap(leftOriginal_, rightOriginal_);
             std::swap(leftPath_, rightPath_);
             std::swap(leftDirtyLines_, rightDirtyLines_);
+            std::swap(leftUnsaved_, rightUnsaved_);                      // <-- new
             refreshSideHeader(true);
             refreshSideHeader(false);
             applyLanguageHighlighting();
             if (onTitleChanged) onTitleChanged();
             rebuild();
+            // Post-swap state goes into *both* histories, so undoing either
+            // side restores that side's pre-swap content.
+            pushSideHistory(true);
+            pushSideHistory(false);
         });
         connect(reloadAction_, &QAction::triggered, this, [this]() {
             syncFromEditors();
@@ -541,9 +534,6 @@ private:
                 [this](const QPoint& pos) { showEditorContextMenu(rightEditor_, pos, false); });
         connect(saveAction_, &QAction::triggered, this, [this]() { saveFocusedSide(); });
 
-        // Bottom preview strip: top row edits the left editor's current
-        // line, bottom row edits the right editor's - wired straight
-        // through to whichever row the caret is currently on.
         preview_->onLeftEdited = [this](const QString& text) { applyPreviewEdit(true, text); };
         preview_->onRightEdited = [this](const QString& text) { applyPreviewEdit(false, text); };
     }
@@ -587,14 +577,7 @@ private:
         return nullptr;
     }
 
-    // Right-click menu for an editor pane, matching Beyond Compare's text
-    // compare context menu: alignment/section actions on top, line-editing
-    // actions in the middle, then the usual clipboard actions and Open With.
     void showEditorContextMenu(LineNumberEditor* editor, const QPoint& pos, bool isLeft) {
-        // `pos` arrives in the editor widget's own coordinates (that is what
-        // customContextMenuRequested delivers); cursorForPosition and the
-        // global-position lookup both need viewport coordinates instead,
-        // since the gutters shift the viewport away from (0, 0).
         const QPoint viewportPos = editor->viewport()->mapFrom(editor, pos);
         const int row = editor->cursorForPosition(viewportPos).blockNumber();
         const DiffGroup* group = groupContainingRow(row);
@@ -628,6 +611,10 @@ private:
         QAction* chosen = menu.exec(editor->viewport()->mapToGlobal(viewportPos));
         if (!chosen) return;
 
+        // Every branch that modifies the editor pushes the pre-edit state
+        // onto *that side's* history before applying, then the post-edit
+        // state after - so Ctrl+Z from that pane can always walk back.
+        const bool sideIsLeft = (editor == leftEditor_);
         if (chosen == alignManually) {
             status_->setText("Align Manually: pick the matching line on the other side.");
         } else if (chosen == isolate) {
@@ -644,24 +631,44 @@ private:
             editor->setTextCursor(cursorAtRow(editor, row));
             editor->setFocus();
         } else if (chosen == insertBlank) {
+            flushPendingEdits();
+            syncFromEditors();
             QTextCursor cursor = cursorAtRow(editor, row);
             cursor.movePosition(QTextCursor::StartOfBlock);
             cursor.insertBlock();
-        } else if (chosen == increaseIndent) {
-            indentRow(editor, row, true);
-        } else if (chosen == decreaseIndent) {
-            indentRow(editor, row, false);
+            syncFromEditors();
+            pushSideHistory(sideIsLeft);
+        } else if (chosen == increaseIndent || chosen == decreaseIndent) {
+            flushPendingEdits();
+            syncFromEditors();
+            indentRow(editor, row, chosen == increaseIndent);
+            syncFromEditors();
+            pushSideHistory(sideIsLeft);
         } else if (chosen == compareClipboard) {
             compareToClipboard(isLeft);
         } else if (chosen == cutAction) {
+            flushPendingEdits();
+            syncFromEditors();
             editor->cut();
+            syncFromEditors();
+            pushSideHistory(sideIsLeft);
         } else if (chosen == copyAction) {
             editor->copy();
         } else if (chosen == pasteAction) {
+            flushPendingEdits();
+            syncFromEditors();
             editor->paste();
+            syncFromEditors();
+            pushSideHistory(sideIsLeft);
         } else if (chosen == deleteAction) {
             QTextCursor cursor = editor->textCursor();
-            if (cursor.hasSelection()) cursor.removeSelectedText();
+            if (cursor.hasSelection()) {
+                flushPendingEdits();
+                syncFromEditors();
+                cursor.removeSelectedText();
+                syncFromEditors();
+                pushSideHistory(sideIsLeft);
+            }
         } else if (chosen == openDefault || chosen == openChoose) {
             status_->setText("Open With: " + (isLeft ? leftPath_ : rightPath_));
         }
@@ -704,13 +711,6 @@ private:
                              .arg(isLeft ? "left" : "right"));
     }
 
-    // Pulls whatever the user has actually typed back into the plain
-    // left/right line arrays so Reload, Swap and group-copy all operate on
-    // current content rather than the text captured when the tab opened.
-    // Rows still in sync with the editors (no lines added/removed) are read
-    // back precisely, filler alignment rows included; once a side has had a
-    // structural edit (a newline typed or deleted) its row mapping can no
-    // longer be trusted, so that side falls back to the editor's raw text.
     void syncFromEditors() {
         if (!leftStructurallyEdited_) {
             for (int i = 0; i < rows_.size() && i < leftEditor_->document()->blockCount(); ++i) {
@@ -730,9 +730,6 @@ private:
         }
     }
 
-    // A row belongs in the real file if it was a real line to begin with, or
-    // if the user typed something into what used to be an alignment filler
-    // (which makes it a genuine new line). Untouched filler rows are dropped.
     QStringList materializeSide(bool left) const {
         QStringList result;
         for (const auto& row : rows_) {
@@ -743,15 +740,163 @@ private:
         return result;
     }
 
-    // Copies every row in [startRow, endRow] to the other side in one shot.
-    // `row` indices are into rows_ (the currently displayed/filtered list);
-    // the edit itself targets the untouched original line arrays so a
-    // subsequent rebuild() re-diffs cleanly. `shift` accounts for lines this
-    // same call has already inserted earlier in the loop. Every line the
-    // copy lands on is marked dirty on the destination side (a "needs
-    // saving" flag independent of the diff itself) so it can be picked out
-    // with a green highlight until that side is saved with Ctrl+S.
+    // ---------------------------------------------------------------------
+    // Per-side undo / redo history.
+    //
+    // rebuild() replaces both editors' text via setPlainText(), which wipes
+    // the per-document undo stacks. Instead of one both-sides history, each
+    // pane now owns its own stack: any operation that changes a side pushes
+    // that side's new state onto its history, and Ctrl+Z / Ctrl+Y walk only
+    // the *focused* pane's stack. Undoing the left pane therefore never
+    // touches the right pane's content or its own undo position.
+    //
+    // Each push captures the *current* state, so the history is a list of
+    // historical versions of one side, with `*HistoryIndex_` pointing at the
+    // version currently displayed. Entries survive saves (a save only writes
+    // to disk) and only die when the tab is closed, bounded to
+    // kMaxHistoryEntries snapshots per side.
+    // ---------------------------------------------------------------------
+    struct SideSnapshot {
+        QStringList lines;
+        QSet<int> dirty;
+        QString path;
+        bool unsaved = false;   // <-- new
+    };
+    static constexpr int kMaxHistoryEntries = 200;
+
+    // Appends a snapshot of one side to that side's history. No-op if the
+    // side's current state already matches the snapshot at the current
+    // index (which happens routinely for the unchanged side in operations
+    // that push both sides).
+    void pushSideHistory(bool left) {
+        if (restoringHistory_) return;
+        QVector<SideSnapshot>& history = left ? leftHistory_ : rightHistory_;
+        int& index = left ? leftHistoryIndex_ : rightHistoryIndex_;
+        SideSnapshot snap;
+        if (left) {
+            snap.lines = leftOriginal_;
+            snap.dirty = leftDirtyLines_;
+            snap.path = leftPath_;
+            snap.unsaved = leftUnsaved_;       // <-- new
+        } else {
+            snap.lines = rightOriginal_;
+            snap.dirty = rightDirtyLines_;
+            snap.path = rightPath_;
+            snap.unsaved = rightUnsaved_;      // <-- new
+        }
+        if (index >= 0 && index < history.size()) {
+            const SideSnapshot& cur = history[index];
+            if (cur.lines == snap.lines && cur.dirty == snap.dirty &&
+                cur.path == snap.path && cur.unsaved == snap.unsaved) {   // <-- new
+                updateUndoRedoActions();
+                return;
+            }
+        }
+        if (index >= 0 && index + 1 < history.size()) {
+            history.resize(index + 1);
+        }
+        history.append(std::move(snap));
+        if (history.size() > kMaxHistoryEntries) history.removeFirst();
+        index = history.size() - 1;
+        updateUndoRedoActions();
+    }
+
+    // Flushes any debounced typing on *both* sides into their respective
+    // histories, so hitting Ctrl+Z immediately after typing (or starting a
+    // copy / load / swap) still has the pre-edit state as its own entry.
+    void flushPendingEdits() {
+        bool leftDirty = false;
+        bool rightDirty = false;
+        if (leftEditTimer_ && leftEditTimer_->isActive()) {
+            leftEditTimer_->stop();
+            leftDirty = true;
+        }
+        if (rightEditTimer_ && rightEditTimer_->isActive()) {
+            rightEditTimer_->stop();
+            rightDirty = true;
+        }
+        if (!leftDirty && !rightDirty) return;
+        syncFromEditors();
+        if (leftDirty) pushSideHistory(true);
+        if (rightDirty) pushSideHistory(false);
+    }
+
+    void undoFocusedSide() {
+        flushPendingEdits();
+        LineNumberEditor* editor = focusedEditor();
+        const bool left = (editor == leftEditor_);
+        QVector<SideSnapshot>& history = left ? leftHistory_ : rightHistory_;
+        int& index = left ? leftHistoryIndex_ : rightHistoryIndex_;
+        if (index <= 0) return;
+        --index;
+        applySideSnapshot(left);
+        status_->setText(QString("Undo %1  (%2 / %3)")
+                             .arg(left ? "left" : "right")
+                             .arg(index + 1)
+                             .arg(history.size()));
+    }
+
+    void redoFocusedSide() {
+        flushPendingEdits();
+        LineNumberEditor* editor = focusedEditor();
+        const bool left = (editor == leftEditor_);
+        QVector<SideSnapshot>& history = left ? leftHistory_ : rightHistory_;
+        int& index = left ? leftHistoryIndex_ : rightHistoryIndex_;
+        if (index < 0 || index >= history.size() - 1) return;
+        ++index;
+        applySideSnapshot(left);
+        status_->setText(QString("Redo %1  (%2 / %3)")
+                             .arg(left ? "left" : "right")
+                             .arg(index + 1)
+                             .arg(history.size()));
+    }
+
+    // Restores one side from its current history entry and rebuilds the
+    // whole view (so the diff colouring, minimap, arrow gutters, dirty
+    // indicators and side headers are all recomputed). The *other* side is
+    // left completely untouched.
+    void applySideSnapshot(bool left) {
+        QVector<SideSnapshot>& history = left ? leftHistory_ : rightHistory_;
+        const int index = left ? leftHistoryIndex_ : rightHistoryIndex_;
+        if (index < 0 || index >= history.size()) return;
+        restoringHistory_ = true;
+        const SideSnapshot& snap = history[index];
+        bool pathChanged = false;
+        if (left) {
+            leftOriginal_ = snap.lines;
+            leftDirtyLines_ = snap.dirty;
+            leftUnsaved_ = snap.unsaved;       // <-- new
+            pathChanged = (leftPath_ != snap.path);
+            leftPath_ = snap.path;
+            leftStructurallyEdited_ = false;
+        } else {
+            rightOriginal_ = snap.lines;
+            rightDirtyLines_ = snap.dirty;
+            rightUnsaved_ = snap.unsaved;     // <-- new
+            pathChanged = (rightPath_ != snap.path);
+            rightPath_ = snap.path;
+            rightStructurallyEdited_ = false;
+        }
+        if (pathChanged) applyLanguageHighlighting();
+        rebuild();
+        restoringHistory_ = false;
+        if (pathChanged && onTitleChanged) onTitleChanged();
+        updateUndoRedoActions();
+    }
+
+    // Enabled-state of the Edit-menu Undo/Redo entries follows whichever
+    // pane currently has focus.
+    void updateUndoRedoActions() {
+        LineNumberEditor* editor = focusedEditor();
+        const bool left = (editor == leftEditor_);
+        const int index = left ? leftHistoryIndex_ : rightHistoryIndex_;
+        const int size = left ? leftHistory_.size() : rightHistory_.size();
+        if (undoAction_) undoAction_->setEnabled(index > 0);
+        if (redoAction_) redoAction_->setEnabled(index >= 0 && index < size - 1);
+    }
+
     void copyGroup(int startRow, int endRow, bool leftToRight) {
+        flushPendingEdits();
         syncFromEditors();
         startRow = qMax(0, startRow);
         endRow = qMin(rows_.size() - 1, endRow);
@@ -785,12 +930,14 @@ private:
                 }
             }
         }
+        // Mark the destination side unsaved *before* rebuild() so its
+        // refreshSideHeader() picks up the new flag and recolours the icon.
+        if (leftToRight) rightUnsaved_ = true;
+        else              leftUnsaved_ = true;
         rebuild();
+        pushSideHistory(/*left=*/!leftToRight);
     }
 
-    // Shifts every previously-recorded dirty (1-based) line number at or
-    // after `insertedAt1Based` up by one to account for a freshly-inserted
-    // line, then marks the new line itself dirty too.
     static void markDirtyForInsert(QSet<int>& dirty, int insertedAt1Based) {
         QSet<int> shifted;
         for (int number : dirty) {
@@ -800,8 +947,6 @@ private:
         dirty = shifted;
     }
 
-    // Position to insert a brand-new line at, found by walking back to the
-    // closest earlier row that still has a real line number on that side.
     int insertionIndex(int fromRow, bool forRight) const {
         for (int i = fromRow - 1; i >= 0; --i) {
             const int number = forRight ? rows_[i].rightNumber : rows_[i].leftNumber;
@@ -829,11 +974,6 @@ private:
         return result;
     }
 
-    // Row/column + scroll position for one editor, captured before rebuild()
-    // replaces its text wholesale and restored after - so an auto-reload
-    // triggered by the user's own typing (see scheduleAutoReload()) doesn't
-    // yank them away from where they were working. Clamped back against the
-    // new document's (possibly different) size on restore.
     struct CursorSnapshot {
         int block = 0;
         int column = 0;
@@ -854,13 +994,6 @@ private:
         editor->verticalScrollBar()->setValue(qMin(snap.scroll, editor->verticalScrollBar()->maximum()));
     }
 
-    // Runs Reload's own syncFromEditors()+rebuild() on the next spin of the
-    // event loop instead of right away - both triggers below (a structural
-    // edit, or focus leaving an edited side) fire from inside a signal that
-    // rebuild()'s setPlainText() shouldn't be re-entered from - and
-    // coalesces bursts of triggers (typing several lines quickly, or both
-    // sides' blockCountChanged firing in the same tick) into a single
-    // rebuild.
     void scheduleAutoReload() {
         if (autoReloadPending_) return;
         autoReloadPending_ = true;
@@ -868,6 +1001,10 @@ private:
             autoReloadPending_ = false;
             syncFromEditors();
             rebuild();
+            // Only the side that was actually edited will get a real push;
+            // the other side dedups against its current head.
+            pushSideHistory(true);
+            pushSideHistory(false);
         });
     }
 
@@ -914,9 +1051,6 @@ private:
         rightStructurallyEdited_ = false;
         leftEditor_->document()->setModified(false);
         rightEditor_->document()->setModified(false);
-        // Reset before restoring the cursor below, not after: setTextCursor()
-        // fires cursorPositionChanged synchronously, which is what actually
-        // sets currentRow_ (and the preview strip) back to the restored row.
         currentRow_ = -1;
         preview_->clear();
         restoreCursor(leftEditor_, leftSnap);
@@ -941,12 +1075,6 @@ private:
                              .arg(differenceCount));
     }
 
-    // Colours each changed row to say what actually happened to it, matching
-    // Beyond Compare's convention: green on the side a line was added to,
-    // red/pink on the side a line was removed from, amber where the same
-    // line exists on both sides but its text differs, blue for a
-    // whitespace-only difference, and a diagonal hatch on whichever side has
-    // no counterpart at all (a pure filler/alignment row).
     void computeDiffSelections(const QVector<TextDiffLine>& rows) {
         leftDiffSelections_.clear();
         rightDiffSelections_.clear();
@@ -977,8 +1105,6 @@ private:
         }
     }
 
-    // Row(s), by index into rows_, that a side's copied-but-unsaved lines
-    // land on right now.
     QSet<int> dirtyRowIndices(bool left) const {
         const QSet<int>& dirty = left ? leftDirtyLines_ : rightDirtyLines_;
         QSet<int> result;
@@ -990,9 +1116,6 @@ private:
         return result;
     }
 
-    // Recomputes the green "copied, not yet saved" overlay from
-    // left/rightDirtyLines_ and pushes it both into the editors' extra
-    // selections (full-row highlight) and into the arrow-gutter marker.
     void refreshDirtyIndicators() {
         leftDirtyRows_ = dirtyRowIndices(true);
         rightDirtyRows_ = dirtyRowIndices(false);
@@ -1004,10 +1127,6 @@ private:
         miniMap_->setDirtyRows(bothDirty);
     }
 
-    // VS Code-style current-line highlight, plus the green "needs saving"
-    // overlay for copied lines - both drawn on top of the base diff
-    // colouring, kept on the same row in both editors regardless of which
-    // pane the caret or a mouse click actually landed in.
     void updateExtraSelections() {
         const auto withOverlays = [this](LineNumberEditor* editor,
                                          QVector<QTextEdit::ExtraSelection> selections,
@@ -1035,11 +1154,6 @@ private:
             withOverlays(rightEditor_, rightDiffSelections_, rightDirtyRows_));
     }
 
-    // Maps the editor's current vertical-scrollbar position onto the
-    // fraction-of-whole-file the mini-map needs. DifferenceOverview itself
-    // decides how tall to paint the sliding box (capping it on short files
-    // so a document that fits on screen does not produce a full-height
-    // indicator); here we only report the true scrollbar start/span.
     void updateMinimapViewport() {
         const QScrollBar* bar = leftEditor_->verticalScrollBar();
         const qreal pageStep = qMax(1, bar->pageStep());
@@ -1049,7 +1163,6 @@ private:
         miniMap_->setViewport(start, span);
     }
 
-    // Writes whichever editor currently has focus back to its file on disk.
     void saveFocusedSide() {
         syncFromEditors();
         if (leftEditor_->hasFocus()) {
@@ -1061,10 +1174,6 @@ private:
         }
     }
 
-    // Loads a different file into one side, replacing whatever was being
-    // compared there before - what the side header's Browse button does.
-    // Mirrors what the constructor does for the initial two files, just
-    // re-run later for a single side.
     void loadSide(bool left, const QString& path) {
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -1074,10 +1183,12 @@ private:
         const QString text = QTextStream(&file).readAll();
         file.close();
 
-        syncFromEditors();  // keep whatever the other side's editor currently holds
+        flushPendingEdits();
+        syncFromEditors();
         (left ? leftPath_ : rightPath_) = path;
         (left ? leftOriginal_ : rightOriginal_) = text.split('\n');
         (left ? leftDirtyLines_ : rightDirtyLines_).clear();
+        if (left) leftUnsaved_ = false; else rightUnsaved_ = false;
         (left ? leftStructurallyEdited_ : rightStructurallyEdited_) = false;
 
         applyLanguageHighlighting();
@@ -1087,6 +1198,9 @@ private:
         refreshDirtyIndicators();
         if (onTitleChanged) onTitleChanged();
         status_->setText(QFileInfo(path).fileName() + " loaded.");
+        // Only the side that was reloaded gets a history entry - Ctrl+Z
+        // there will bring back the file that was previously compared.
+        pushSideHistory(left);
     }
 
     void saveSide(bool left) {
@@ -1100,31 +1214,38 @@ private:
         out << (left ? leftOriginal_ : rightOriginal_).join('\n');
         file.close();
         (left ? leftDirtyLines_ : rightDirtyLines_).clear();
+        if (left) leftUnsaved_ = false; else rightUnsaved_ = false; 
         refreshDirtyIndicators();
         refreshSideHeader(left);
         status_->setText(QFileInfo(path).fileName() + " saved.");
+        // Deliberately no history push: saving must not wipe the undo/redo
+        // stacks, otherwise Ctrl+Z after a save would have nothing to walk
+        // back to.
     }
 
-    // Applies an edit made in the bottom preview strip straight back into
-    // the corresponding editor's current line (in place - this never adds
-    // or removes a line, so the row <-> block mapping stays valid).
     void applyPreviewEdit(bool left, const QString& text) {
         if (currentRow_ < 0 || currentRow_ >= rows_.size()) return;
         LineNumberEditor* editor = left ? leftEditor_ : rightEditor_;
         const int number = left ? rows_[currentRow_].leftNumber : rows_[currentRow_].rightNumber;
-        if (number == 0) return;  // filler row on this side - nothing to edit
+        if (number == 0) return;
+        // Flush any debounced typing so the pre-edit state is its own entry.
+        flushPendingEdits();
         QTextCursor cursor = cursorAtRow(editor, currentRow_);
         cursor.select(QTextCursor::LineUnderCursor);
         cursor.insertText(text);
         editor->setFocus();
+        syncFromEditors();
+        if (left) leftUnsaved_ = true; else rightUnsaved_ = true;
+        pushSideHistory(left);
+        refreshSideHeader(left);
     }
 
     QString leftPath_;
     QString rightPath_;
     QStringList leftOriginal_;
     QStringList rightOriginal_;
-    QVector<TextDiffLine> rows_;    // currently displayed rows (post All/Diffs/Context filter)
-    QVector<DiffGroup> groups_;     // contiguous change runs within rows_
+    QVector<TextDiffLine> rows_;
+    QVector<DiffGroup> groups_;
 
     QToolBar* toolbar_ = nullptr;
     QAction* homeAction_ = nullptr;
@@ -1163,14 +1284,18 @@ private:
     bool leftStructurallyEdited_ = false;
     bool rightStructurallyEdited_ = false;
 
-    // 1-based line numbers (into leftOriginal_/rightOriginal_) that were
-    // written by a copy-to-other-side action and have not been saved since.
     QSet<int> leftDirtyLines_;
     QSet<int> rightDirtyLines_;
-    // Same information translated into row indices (into rows_) for the
-    // currently displayed/filtered document - what actually gets painted.
     QSet<int> leftDirtyRows_;
     QSet<int> rightDirtyRows_;
+    
+    // Per-side "has unsaved edits of any kind" flag. Distinct from the
+    // leftDirtyLines_/rightDirtyLines_ sets, which only cover copy-to-other
+    // -side rows (and drive the green row highlight). Set on any content
+    // change; cleared on save and on loadSide. Carried in SideSnapshot so
+    // undo/redo restores it.
+    bool leftUnsaved_ = false;                                   // <-- new
+    bool rightUnsaved_ = false;                                  // <-- new
 
     QAction* saveAction_ = nullptr;
     QAction* undoAction_ = nullptr;
@@ -1183,6 +1308,20 @@ private:
     QVector<QVector<CharSegment>> leftInline_;
     QVector<QVector<CharSegment>> rightInline_;
     FindReplaceBar* findBar_ = nullptr;
+
+    // Per-side undo/redo history. Each side is an independent stack of
+    // historical versions of that side; Ctrl+Z / Ctrl+Y walk only the
+    // focused pane's stack (see undoFocusedSide / redoFocusedSide).
+    QVector<SideSnapshot> leftHistory_;
+    int leftHistoryIndex_ = -1;
+    QVector<SideSnapshot> rightHistory_;
+    int rightHistoryIndex_ = -1;
+    bool restoringHistory_ = false;
+    QTimer* leftEditTimer_ = nullptr;
+    QTimer* rightEditTimer_ = nullptr;
+    // Remembers which pane last actually held focus, so Ctrl+Z still has a
+    // target when focus is temporarily on the toolbar or a menu.
+    LineNumberEditor* lastFocusedEditor_ = nullptr;
 };
 
 }  // namespace openbc::app

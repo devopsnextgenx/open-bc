@@ -1,16 +1,6 @@
 // line_number_editor.h
 // ---------------------------------------------------------------------------
-// The per-side text editor used by TextCompareView: a QPlainTextEdit with a
-// line-number gutter, a copy-arrow gutter, and (new) an overlay that paints
-// VS Code-style dot/arrow glyphs over runs of whitespace that mismatch their
-// counterpart line (space vs. tab, trailing spaces, etc). Character-level
-// "this text differs" red colouring and the whitespace-mismatch background
-// tint themselves are applied by SyntaxHighlighter (syntax_highlighter.h),
-// which TextCompareView attaches to this editor's document - Qt does not
-// support stacking two independent QSyntaxHighlighters on one document, so
-// diff colouring and language syntax colouring have to share one
-// highlighter; this class only draws the extra whitespace glyphs, which
-// need pixel-accurate glyph positions a QTextCharFormat can't express.
+// (header comment unchanged)
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -22,6 +12,7 @@
 #include <QPlainTextEdit>
 #include <QRect>
 #include <QResizeEvent>
+#include <QScrollBar>
 #include <QSet>
 #include <QTextBlock>
 #include <QTextLayout>
@@ -36,10 +27,6 @@ namespace openbc::app {
 
 class LineNumberEditor : public QPlainTextEdit {
 public:
-    // Which margin a gutter widget lives in. Line numbers and the copy-arrow
-    // strip are configured independently so the right-hand editor can show
-    // its numbers on the outer (right) edge while still keeping its arrows
-    // on the inner edge next to the splitter.
     enum class GutterSide { None, Left, Right };
 
     explicit LineNumberEditor(GutterSide numberSide = GutterSide::Left,
@@ -58,7 +45,10 @@ public:
                         lineNumberArea_->update(0, rect.y(), lineNumberArea_->width(), rect.height());
                         if (arrowArea_) arrowArea_->update(0, rect.y(), arrowArea_->width(), rect.height());
                     }
-                    if (rect.contains(viewport()->rect())) updateMarginWidths();
+                    if (rect.contains(viewport()->rect())) {
+                        updateMarginWidths();
+                        repositionGutters();
+                    }
                 });
         connect(this, &QPlainTextEdit::cursorPositionChanged, this,
                 [this]() { lineNumberArea_->update(); });
@@ -75,7 +65,15 @@ public:
                                         : "Copy this change to the left");
             arrowArea_->installEventFilter(this);
         }
+        // The scrollbar can appear/disappear without the widget being
+        // resized (e.g. the document got shorter); reposition the right
+        // gutter so it stays clear of the scrollbar in that case too.
+        if (QScrollBar* sb = verticalScrollBar()) {
+            connect(sb, &QScrollBar::rangeChanged, this,
+                    [this](int, int) { repositionGutters(); });
+        }
         updateMarginWidths();
+        repositionGutters();
     }
 
     void setLineNumbers(const QVector<int>& numbers) {
@@ -84,39 +82,22 @@ public:
         lineNumberArea_->update();
     }
 
-    // Rows currently shown (same list on both editors) plus the grouping
-    // used to draw/hit-test one arrow per contiguous change. Call with two
-    // empty containers to hide all arrows, e.g. once free-form edits have
-    // made the row mapping stale until the next Reload.
     void setDiffData(const QVector<TextDiffLine>& rows, const QVector<DiffGroup>& groups) {
         diffRows_ = rows;
         diffGroups_ = groups;
         if (arrowArea_) arrowArea_->update();
     }
 
-    // Rows (by block number in the currently displayed document) that were
-    // just copied in from the other side and are not yet saved to disk. They
-    // get a green marker in the arrow gutter - green being "copied, needs
-    // saving" - which is independent of (and outlives) the yellow/red diff
-    // arrow, since once the copy lands both sides read the same and the
-    // ordinary diff group for that row disappears on the next Reload.
     void setDirtyRows(const QSet<int>& rows) {
         dirtyRows_ = rows;
         if (arrowArea_) arrowArea_->update();
     }
 
-    // Per-block (row) inline-diff segments for THIS side, computed by
-    // TextCompareView via computeInlineDiff() and handed to both editors
-    // whenever rebuild() runs. Used to paint mismatched whitespace with a
-    // VS Code-style dot/arrow glyph on top of the background the syntax
-    // highlighter's diff formatting already tinted (see
-    // syntax_highlighter.h - SyntaxHighlighter::setInlineDiffProvider).
     void setInlineDiffs(const QVector<QVector<CharSegment>>& perBlockSegments) {
         inlineDiffs_ = perBlockSegments;
         viewport()->update();
     }
 
-    // (start row, end row) of the group that was clicked, inclusive.
     std::function<void(int, int)> onArrowClicked;
 
 protected:
@@ -140,34 +121,10 @@ protected:
 
     void resizeEvent(QResizeEvent* event) override {
         QPlainTextEdit::resizeEvent(event);
-        const QRect cr = contentsRect();
-        int left = cr.left();
-        int right = cr.right();
-        if (numberSide_ == GutterSide::Left) {
-            lineNumberArea_->setGeometry(left, cr.top(), lineNumberDigitsWidth(), cr.height());
-            left += lineNumberDigitsWidth();
-        }
-        if (arrowSide_ == GutterSide::Left) {
-            arrowArea_->setGeometry(left, cr.top(), kArrowWidth, cr.height());
-            left += kArrowWidth;
-        }
-        if (numberSide_ == GutterSide::Right) {
-            right -= lineNumberDigitsWidth();
-            lineNumberArea_->setGeometry(right, cr.top(), lineNumberDigitsWidth(), cr.height());
-        }
-        if (arrowSide_ == GutterSide::Right) {
-            right -= kArrowWidth;
-            arrowArea_->setGeometry(right, cr.top(), kArrowWidth, cr.height());
-        }
+        repositionGutters();
     }
 
-    // Draws small "·" (space) / "→" (tab) glyphs over whitespace that
-    // differs from the counterpart line - e.g. one side indented with
-    // spaces, the other with a tab - the same convention VS Code's "Render
-    // Whitespace" mode uses. The mismatch's tinted background comes from
-    // the syntax highlighter's format (setInlineDiffProvider); this only
-    // adds the glyph on top of it so the *kind* of whitespace is legible,
-    // not just that something there differs.
+    // (paintEvent unchanged)
     void paintEvent(QPaintEvent* event) override {
         QPlainTextEdit::paintEvent(event);
         if (inlineDiffs_.isEmpty()) return;
@@ -220,6 +177,38 @@ private:
         setViewportMargins(leftMargin, 0, rightMargin, 0);
     }
 
+    // Places the line-number and copy-arrow gutter widgets. The right-hand
+    // limit excludes the vertical scrollbar (when visible) so a right-side
+    // gutter - the left pane's copy-arrow strip, which also paints the
+    // green "copied, needs saving" markers - is not covered by the
+    // scrollbar.
+    void repositionGutters() {
+        const QRect cr = contentsRect();
+        const int sbWidth = (verticalScrollBar() && verticalScrollBar()->isVisible())
+                                ? verticalScrollBar()->width() : 0;
+        const int rightLimit = cr.right() - sbWidth;  // inclusive
+        int left = cr.left();
+        int right = rightLimit;
+
+        if (numberSide_ == GutterSide::Left) {
+            lineNumberArea_->setGeometry(left, cr.top(), lineNumberDigitsWidth(), cr.height());
+            left += lineNumberDigitsWidth();
+        }
+        if (arrowSide_ == GutterSide::Left) {
+            arrowArea_->setGeometry(left, cr.top(), kArrowWidth, cr.height());
+            left += kArrowWidth;
+        }
+        if (numberSide_ == GutterSide::Right) {
+            const int w = lineNumberDigitsWidth();
+            right -= w;
+            lineNumberArea_->setGeometry(right + 1, cr.top(), w, cr.height());
+        }
+        if (arrowSide_ == GutterSide::Right) {
+            right -= kArrowWidth;
+            arrowArea_->setGeometry(right + 1, cr.top(), kArrowWidth, cr.height());
+        }
+    }
+
     void paintLineNumbers(QPaintEvent* event) {
         QPainter painter(lineNumberArea_);
         painter.fillRect(event->rect(), QColor("#232323"));
@@ -232,9 +221,6 @@ private:
         });
     }
 
-    // A group with more than one visible row gets a short bar spanning its
-    // full height in addition to the arrowhead, so a big change reads as one
-    // wide marker instead of a giant single triangle.
     void paintArrows(QPaintEvent* event) {
         QPainter painter(arrowArea_);
         painter.fillRect(event->rect(), QColor("#232323"));
@@ -308,10 +294,6 @@ private:
         }
     }
 
-    // Walks the blocks currently on screen, handing each one's row number and
-    // pixel top/bottom to `fn`. `event` narrows the walk to the repainted
-    // rect when painting; pass nullptr to cover the whole viewport (used for
-    // hit-testing on click).
     template <typename Fn>
     void forEachVisibleBlock(QPaintEvent* event, Fn&& fn) {
         QTextBlock block = firstVisibleBlock();
@@ -340,7 +322,7 @@ private:
     QVector<DiffGroup> diffGroups_;
     QSet<int> dirtyRows_;
 
-    QVector<QVector<CharSegment>> inlineDiffs_;  // per-block whitespace/mismatch segments
+    QVector<QVector<CharSegment>> inlineDiffs_;
 
     friend class TextCompareView;
 };
