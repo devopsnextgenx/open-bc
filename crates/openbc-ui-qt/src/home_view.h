@@ -1,13 +1,15 @@
 #pragma once
 
-#include <QDateTime>
 #include <QFileInfo>
-#include <QHash>
+#include <QFormLayout>
+#include <QInputDialog>
+#include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QPainter>
-#include <QPixmap>
-#include <QLabel>
 #include <QPushButton>
+#include <QSplitter>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -18,18 +20,6 @@
 
 namespace openbc::app {
 
-inline QIcon timelineIcon(const QColor& color) {
-    QPixmap pixmap(16, 16);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setPen(QPen(color.lighter(135), 1.3));
-    painter.drawLine(QPointF(8, 1), QPointF(8, 15));
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(color);
-    painter.drawEllipse(QPointF(8, 8), 4, 4);
-    return QIcon(pixmap);
-}
-
 inline QIcon historyFileIcon(const QString& path) {
     const QString extension = QFileInfo(path).suffix().toLower();
     QColor color(0x8f, 0x9b, 0xb3);
@@ -37,9 +27,7 @@ inline QIcon historyFileIcon(const QString& path) {
     else if (extension == "cpp" || extension == "h") color = QColor(0x4f, 0x9d, 0xde);
     else if (extension == "py") color = QColor(0xe5, 0xc0, 0x7b);
     else if (extension == "js" || extension == "ts") color = QColor(0xe8, 0xc5, 0x47);
-    else if (extension == "json" || extension == "toml" || extension == "yaml") {
-        color = QColor(0x68, 0xc0, 0x9a);
-    }
+    else if (extension == "json" || extension == "toml" || extension == "yaml") color = QColor(0x68, 0xc0, 0x9a);
     QPixmap pixmap(16, 16);
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
@@ -62,106 +50,239 @@ public:
     explicit HomeView(QWidget* parent = nullptr) : QWidget(parent) {
         setObjectName("homeView");
         auto* root = new QVBoxLayout(this);
-        root->setContentsMargins(36, 28, 36, 28);
+        root->setContentsMargins(28, 22, 28, 22);
         auto* heading = new QLabel("OpenBC", this);
         heading->setObjectName("homeHeading");
         root->addWidget(heading);
-        auto* subtitle = new QLabel(
-            "Compare folders and files with a clear history of recent work.", this);
+        auto* subtitle = new QLabel("Compare folders and files, then keep the sessions you return to.", this);
         subtitle->setObjectName("homeSubtitle");
         root->addWidget(subtitle);
 
-        auto* actions = new QHBoxLayout;
-        auto* folder = new QPushButton("New Folder Compare", this);
-        auto* text = new QPushButton("New Text Compare", this);
-        actions->addWidget(folder);
-        actions->addWidget(text);
-        actions->addStretch();
-        root->addLayout(actions);
-        connect(folder, &QPushButton::clicked, this,
-                [this]() { if (onNewFolderCompare) onNewFolderCompare(); });
-        connect(text, &QPushButton::clicked, this,
-                [this]() { if (onNewTextCompare) onNewTextCompare(); });
+        auto* split = new QSplitter(Qt::Horizontal, this);
+        split->setObjectName("homeSplit");
+        split->setChildrenCollapsible(false);
+        root->addWidget(split, 1);
 
-        auto* historyTitle = new QLabel("Recent sessions", this);
-        historyTitle->setObjectName("homeSectionTitle");
-        root->addWidget(historyTitle);
-        history_ = new QTreeWidget(this);
+        history_ = new QTreeWidget(split);
         history_->setObjectName("homeHistory");
         history_->setHeaderHidden(true);
         history_->setRootIsDecorated(true);
         history_->setUniformRowHeights(true);
-        history_->setIndentation(20);
+        history_->setIndentation(18);
         history_->setSelectionMode(QAbstractItemView::SingleSelection);
         history_->setContextMenuPolicy(Qt::CustomContextMenu);
-        root->addWidget(history_, 1);
-        connect(history_, &QTreeWidget::itemDoubleClicked, this,
-                [this](QTreeWidgetItem* item, int) {
-                    const int index = item->data(0, Qt::UserRole).toInt();
-                    if (index >= 0 && index < historyEntries_.size() && onOpenHistory) {
-                        onOpenHistory(historyEntries_[index]);
-                    }
-                });
+
+        auto* details = new QWidget(split);
+        auto* detailsLayout = new QVBoxLayout(details);
+        detailsLayout->setContentsMargins(26, 4, 4, 4);
+        auto* optionsTitle = new QLabel("Start a comparison", details);
+        optionsTitle->setObjectName("homeSectionTitle");
+        detailsLayout->addWidget(optionsTitle);
+        auto* actions = new QHBoxLayout;
+        auto* folder = new QToolButton(details);
+        folder->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::FolderOpen));
+        folder->setText("Folder compare");
+        folder->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        folder->setObjectName("homeAction");
+        auto* text = new QToolButton(details);
+        text->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Compare));
+        text->setText("Text compare");
+        text->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        text->setObjectName("homeAction");
+        actions->addWidget(folder);
+        actions->addWidget(text);
+        actions->addStretch();
+        detailsLayout->addLayout(actions);
+        connect(folder, &QToolButton::clicked, this, [this]() { if (onNewFolderCompare) onNewFolderCompare(); });
+        connect(text, &QToolButton::clicked, this, [this]() { if (onNewTextCompare) onNewTextCompare(); });
+
+        auto* selectedTitle = new QLabel("Selected session", details);
+        selectedTitle->setObjectName("homeSectionTitle");
+        detailsLayout->addWidget(selectedTitle);
+        label_ = new QLineEdit(details);
+        label_->setPlaceholderText("Session name");
+        left_ = new QLineEdit(details);
+        right_ = new QLineEdit(details);
+        auto* form = new QFormLayout;
+        form->addRow("Name", label_);
+        form->addRow("Left", left_);
+        form->addRow("Right", right_);
+        detailsLayout->addLayout(form);
+        auto* buttons = new QHBoxLayout;
+        open_ = new QPushButton("Open", details);
+        edit_ = new QPushButton("Edit paths", details);
+        save_ = new QPushButton("Save session", details);
+        buttons->addWidget(open_);
+        buttons->addWidget(edit_);
+        buttons->addWidget(save_);
+        buttons->addStretch();
+        detailsLayout->addLayout(buttons);
+        detailsLayout->addStretch();
+        clearDetails();
+
+        connect(history_, &QTreeWidget::itemSelectionChanged, this, [this]() { showSelected(); });
+        connect(open_, &QPushButton::clicked, this, [this]() {
+            if (selected_.kind.isEmpty() || !onOpenHistory) return;
+            selected_.label = label_->text().trimmed();
+            selected_.left = left_->text();
+            selected_.right = right_->text();
+            onOpenHistory(selected_);
+        });
+        connect(edit_, &QPushButton::clicked, this, [this]() {
+            const bool enabled = !left_->isEnabled();
+            left_->setEnabled(enabled);
+            right_->setEnabled(enabled);
+            edit_->setText(enabled ? "Done editing" : "Edit paths");
+        });
+        connect(save_, &QPushButton::clicked, this, [this]() { saveSelected(); });
         connect(history_, &QWidget::customContextMenuRequested, this, [this](const QPoint& position) {
-            auto* item = history_->itemAt(position);
-            if (!item || !item->parent()) return;
-            const int index = item->data(0, Qt::UserRole).toInt();
-            if (index < 0 || index >= historyEntries_.size()) return;
-            QMenu menu(history_);
-            QAction* remove = menu.addAction("Remove from history");
-            if (menu.exec(history_->viewport()->mapToGlobal(position)) == remove) {
-                SessionHistory::removeAt(index);
-                refreshHistory();
-            }
+            contextMenu(position);
         });
         refreshHistory();
+        split->setSizes({300, 700});
     }
 
     void refreshHistory() {
         history_->clear();
-        historyEntries_ = SessionHistory::load();
-        QHash<QString, QTreeWidgetItem*> groups;
-        for (int index = 0; index < historyEntries_.size(); ++index) {
-            const auto& entry = historyEntries_[index];
-            const int age = entry.openedAt.date().daysTo(QDate::currentDate());
-            const QString groupName = age <= 0 ? "Today"
-                                      : age == 1 ? "Yesterday"
-                                      : age <= 7 ? "This week"
-                                      : age <= 14 ? "Last week"
-                                      : age <= 31 ? "Last month"
-                                                   : "Older";
-            auto* group = groups.value(groupName);
-            if (!group) {
-                group = new QTreeWidgetItem(history_, {groupName});
-                const QColor groupColor = groupName == "Today"       ? QColor(0x55, 0xd6, 0xa7)
-                                        : groupName == "Yesterday"  ? QColor(0x5b, 0xb5, 0xf5)
-                                        : groupName == "This week"  ? QColor(0xc0, 0x9a, 0xff)
-                                        : groupName == "Last week"  ? QColor(0xf0, 0xb3, 0x5a)
-                                        : groupName == "Last month" ? QColor(0xf0, 0x7a, 0x8a)
-                                                                     : QColor(0x9a, 0xa3, 0xb8);
-                group->setIcon(0, timelineIcon(groupColor));
-                group->setExpanded(true);
-                group->setFlags(Qt::ItemIsEnabled);
-                groups.insert(groupName, group);
+        auto* recent = new QTreeWidgetItem(history_, {"Recent sessions"});
+        recent->setIcon(0, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Refresh));
+        recent->setFlags(Qt::ItemIsEnabled);
+        const auto entries = SessionHistory::load();
+        for (int index = 0; index < entries.size(); ++index) addSessionItem(recent, entries[index], false, {}, index);
+        recent->setExpanded(true);
+        for (const auto& node : SessionHistory::loadSavedNodes()) {
+            auto* nodeItem = new QTreeWidgetItem(history_, {node.name});
+            nodeItem->setIcon(0, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::FolderOpen));
+            nodeItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            nodeItem->setData(0, Qt::UserRole + 2, node.name);
+            for (int index = 0; index < node.sessions.size(); ++index) {
+                addSessionItem(nodeItem, node.sessions[index], true, node.name, index);
             }
-            const QString left = entry.left.isEmpty() ? "(missing)" : entry.left;
-            const QString right = entry.right.isEmpty() ? "(missing)" : entry.right;
-            auto* leaf = new QTreeWidgetItem(group);
-            const bool folder = entry.kind == "folder";
-            leaf->setIcon(0, folder ? openbc::ui::icons::folderIcon(openbc::ui::color::folderYellow())
-                                    : historyFileIcon(left));
-            leaf->setText(0, (folder ? "Folder  " : "Files   ") + QFileInfo(left).fileName() +
-                              "  <->  " + QFileInfo(right).fileName());
-            leaf->setToolTip(0, left + "\n<->\n" + right);
-            leaf->setData(0, Qt::UserRole, index);
-            leaf->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            nodeItem->setExpanded(true);
         }
         history_->expandAll();
     }
 
 private:
+    void addSessionItem(QTreeWidgetItem* parent, const SessionHistoryEntry& entry, bool saved,
+                        const QString& node, int index) {
+        const QString label = entry.label.isEmpty() ? SessionHistory::defaultLabel(entry.kind, entry.left, entry.right) : entry.label;
+        auto* item = new QTreeWidgetItem(parent, {label});
+        item->setIcon(0, entry.kind == "folder"
+                              ? openbc::ui::icons::folderIcon(openbc::ui::color::folderYellow())
+                              : historyFileIcon(entry.left));
+        item->setToolTip(0, entry.left + "\n<->\n" + entry.right);
+        item->setData(0, Qt::UserRole, saved);
+        item->setData(0, Qt::UserRole + 1, index);
+        item->setData(0, Qt::UserRole + 2, node);
+        item->setData(0, Qt::UserRole + 3, true);
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+    }
+
+    bool hasSelection() const { return selectedItem_ && selectedItem_->data(0, Qt::UserRole + 3).toBool(); }
+
+    void showSelected() {
+        selectedItem_ = history_->currentItem();
+        if (!hasSelection()) {
+            clearDetails();
+            return;
+        }
+        const bool saved = selectedItem_->data(0, Qt::UserRole).toBool();
+        const int index = selectedItem_->data(0, Qt::UserRole + 1).toInt();
+        const QString node = selectedItem_->data(0, Qt::UserRole + 2).toString();
+        selected_ = saved ? SessionHistory::loadSaved(node).value(index) : SessionHistory::load().value(index);
+        selected_.savedNode = node;
+        selected_.savedIndex = index;
+        selectedSaved_ = saved;
+        label_->setText(selectedItem_->text(0));
+        left_->setText(selected_.left);
+        right_->setText(selected_.right);
+        left_->setEnabled(false);
+        right_->setEnabled(false);
+        edit_->setText("Edit paths");
+        open_->setEnabled(true);
+        edit_->setEnabled(true);
+        save_->setEnabled(true);
+        save_->setText(saved ? "Save changes" : "Save session");
+    }
+
+    void clearDetails() {
+        selected_ = {};
+        selectedItem_ = nullptr;
+        label_->clear();
+        left_->clear();
+        right_->clear();
+        left_->setEnabled(false);
+        right_->setEnabled(false);
+        open_->setEnabled(false);
+        edit_->setEnabled(false);
+        save_->setEnabled(false);
+    }
+
+    void saveSelected() {
+        if (!hasSelection()) return;
+        selected_.label = label_->text().trimmed();
+        selected_.left = left_->text();
+        selected_.right = right_->text();
+        if (selectedSaved_) {
+            SessionHistory::updateSaved(selected_.savedNode, selected_.savedIndex, selected_, selected_.label);
+        } else {
+            bool ok = false;
+            const QString node = QInputDialog::getText(this, "Save session", "Named node", QLineEdit::Normal,
+                                                       "Personal", &ok);
+            if (ok && !node.trimmed().isEmpty()) SessionHistory::save(selected_, node, selected_.label);
+        }
+        refreshHistory();
+    }
+
+    void contextMenu(const QPoint& position) {
+        auto* item = history_->itemAt(position);
+        if (!item) return;
+        const bool saved = item->data(0, Qt::UserRole).toBool();
+        const QString node = item->data(0, Qt::UserRole + 2).toString();
+        const int index = item->data(0, Qt::UserRole + 1).toInt();
+        if (!item->parent()) {
+            if (node.isEmpty()) return;
+            QMenu menu(history_);
+            QAction* remove = menu.addAction("Remove named node");
+            if (menu.exec(history_->viewport()->mapToGlobal(position)) == remove) {
+                SessionHistory::removeNode(node);
+                refreshHistory();
+            }
+            return;
+        }
+        if (!saved && item->parent()->text(0) != "Recent sessions") return;
+        QMenu menu(history_);
+        QAction* rename = menu.addAction("Rename session");
+        QAction* save = menu.addAction("Save to named node");
+        QAction* remove = menu.addAction("Remove from history");
+        QAction* chosen = menu.exec(history_->viewport()->mapToGlobal(position));
+        if (chosen == rename) {
+            const QString value = QInputDialog::getText(this, "Rename session", "Name", QLineEdit::Normal, item->text(0));
+            if (!value.trimmed().isEmpty()) {
+                if (saved) SessionHistory::renameSaved(node, index, value);
+                else SessionHistory::renameRecent(index, value);
+            }
+            refreshHistory();
+        } else if (chosen == save) {
+            history_->setCurrentItem(item);
+            saveSelected();
+        } else if (chosen == remove) {
+            if (saved) SessionHistory::removeSaved(node, index); else SessionHistory::removeAt(index);
+            refreshHistory();
+        }
+    }
+
     QTreeWidget* history_ = nullptr;
-    QList<SessionHistoryEntry> historyEntries_;
+    QTreeWidgetItem* selectedItem_ = nullptr;
+    QLineEdit* label_ = nullptr;
+    QLineEdit* left_ = nullptr;
+    QLineEdit* right_ = nullptr;
+    QPushButton* open_ = nullptr;
+    QPushButton* edit_ = nullptr;
+    QPushButton* save_ = nullptr;
+    SessionHistoryEntry selected_;
+    bool selectedSaved_ = false;
 };
 
 }  // namespace openbc::app

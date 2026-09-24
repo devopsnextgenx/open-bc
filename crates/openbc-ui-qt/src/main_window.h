@@ -17,6 +17,8 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QKeySequence>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
@@ -37,6 +39,46 @@
 
 namespace openbc::app {
 
+class PersistedMainWindow : public QMainWindow {
+public:
+    explicit PersistedMainWindow(QSettings& preferences, QWidget* parent = nullptr)
+        : QMainWindow(parent), preferences_(preferences) {
+        const auto document = QJsonDocument::fromJson(
+            preferences_.value("window/geometry").toString().toUtf8());
+        const QJsonObject geometry = document.isObject() ? document.object() : QJsonObject();
+        const bool maximized = geometry.value("maximized").toBool(true);
+        const int width = geometry.value("width").toInt();
+        const int height = geometry.value("height").toInt();
+        if (width > 0 && height > 0) {
+            setGeometry(geometry.value("x").toInt(), geometry.value("y").toInt(), width, height);
+        }
+        if (maximized) {
+            setWindowState(windowState() | Qt::WindowMaximized);
+        }
+    }
+
+    void saveWindowState() {
+        const QRect restoredGeometry = normalGeometry().isValid() ? normalGeometry() : geometry();
+        const QJsonObject geometry{{"x", restoredGeometry.x()},
+                                   {"y", restoredGeometry.y()},
+                                   {"width", restoredGeometry.width()},
+                                   {"height", restoredGeometry.height()},
+                                   {"maximized", isMaximized()}};
+        preferences_.setValue(
+            "window/geometry",
+            QString::fromUtf8(QJsonDocument(geometry).toJson(QJsonDocument::Compact)));
+    }
+
+protected:
+    void closeEvent(QCloseEvent* event) override {
+        saveWindowState();
+        QMainWindow::closeEvent(event);
+    }
+
+private:
+    QSettings& preferences_;
+};
+
 extern "C" int openbc_run_gui() {
     int argc = 1;
     char application_name[] = "openbc-qt";
@@ -49,8 +91,7 @@ extern "C" int openbc_run_gui() {
     QDir().mkpath(SessionHistory::rootPath());
     QSettings preferences(SessionHistory::rootPath() + "/preferences.ini", QSettings::IniFormat);
 
-    QMainWindow window;
-    window.resize(1280, 820);
+    PersistedMainWindow window(preferences);
 
     auto* sessionMenu = window.menuBar()->addMenu("&Session");
     auto* actionsMenu = window.menuBar()->addMenu("&Actions");
@@ -292,15 +333,7 @@ extern "C" int openbc_run_gui() {
 
     home->onNewFolderCompare = [&]() { addSession(QString(), QString(), false); };
     home->onNewTextCompare = [&]() {
-        const QString left = QFileDialog::getOpenFileName(&window, "Open left file");
-        if (left.isEmpty()) return;
-        const QString right = QFileDialog::getOpenFileName(&window, "Open right file");
-        if (right.isEmpty()) return;
-        QFile leftFile(left);
-        QFile rightFile(right);
-        if (!leftFile.open(QIODevice::ReadOnly) || !rightFile.open(QIODevice::ReadOnly)) return;
-        addTextView(left, right, QString::fromUtf8(leftFile.readAll()),
-                    QString::fromUtf8(rightFile.readAll()), nullptr);
+        addTextView(QString(), QString(), QString(), QString(), nullptr);
     };
     home->onOpenHistory = [&](const SessionHistoryEntry& entry) {
         if (entry.kind == "folder") {

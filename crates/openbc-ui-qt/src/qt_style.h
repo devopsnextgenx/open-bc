@@ -211,6 +211,13 @@ inline QString applicationStyleSheet(Theme theme = Theme::Dark) {
         QTreeWidget#homeHistory::item { height: 28px; padding: 2px 6px; }
         QTreeWidget#homeHistory::item:selected { background: #44475a; }
         QTreeWidget#homeHistory::item:hover:!selected { background: #393c49; }
+        QSplitter#homeSplit::handle { background: #505260; width: 2px; }
+        QToolButton#homeAction {
+            background: #30323d; border: 1px solid #505260; border-radius: 4px;
+            color: #f8f8f2; padding: 10px 16px; min-width: 108px;
+        }
+        QToolButton#homeAction:hover { background: #3d4050; border-color: #72779a; }
+        QToolButton#homeAction:pressed { background: #23242c; }
 
         /* ---- per-tab toolbar ---- */
         QToolBar {
