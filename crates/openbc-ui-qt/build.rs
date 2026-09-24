@@ -14,6 +14,15 @@ fn main() {
 
     cxx_qt_build::CxxQtBuilder::new()
         .qt_module("Widgets")
+        .qt_module("Qml")
+        .qml_module(cxx_qt_build::QmlModule {
+            uri: "OpenBC",
+            version_major: 1,
+            version_minor: 0,
+            rust_files: &["src/highlight_bridge.rs"],
+            qml_files: &["qml/HighlightedTextEdit.qml"],
+            qrc_files: &[],
+        })
         .cc_builder(move |cc| {
             cc.file("src/qt_app.cpp");
             cc.include("src");

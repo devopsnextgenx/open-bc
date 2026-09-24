@@ -364,10 +364,10 @@ private:
         auto* styleMenu = syntaxStyleMenu_->addMenu("Editor Style");
         auto* styleGroup = new QActionGroup(this);
         styleGroup->setExclusive(true);
+        vscodeDarkStyleAction_ = styleMenu->addAction("VS Code Dark");
         vibrantStyleAction_ = styleMenu->addAction("Vibrant");
         classicStyleAction_ = styleMenu->addAction("Classic");
         contrastStyleAction_ = styleMenu->addAction("High Contrast");
-        vscodeDarkStyleAction_ = styleMenu->addAction("VS Code Dark");
         for (QAction* action : {vibrantStyleAction_, classicStyleAction_, contrastStyleAction_,
                     vscodeDarkStyleAction_}) {
             action->setCheckable(true);

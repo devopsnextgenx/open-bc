@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import OpenBC 1.0
 
 TextEdit {
     id: editor
@@ -8,7 +9,7 @@ TextEdit {
     property string language: "rust"
     property bool darkMode: true
     property string highlightedHtml: ""
-    property var highlightBridge: null
+    property HighlightBridge highlightBridge: HighlightBridge {}
 
     readOnly: true
     selectByMouse: true

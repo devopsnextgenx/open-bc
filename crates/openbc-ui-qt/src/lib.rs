@@ -1,5 +1,11 @@
 use openbc_core::text::highlight_to_html as render_highlight_to_html;
-use openbc_core::text::{compute_inline_diff, ChangeKind, CompareOptions, InlineDiff, LineDiff};
+use openbc_core::text::{
+    compute_inline_diff, highlight_to_spans, ChangeKind, CompareOptions, HighlightSpan, InlineDiff,
+    LineDiff,
+};
+
+#[cfg(feature = "qt")]
+mod highlight_bridge;
 
 pub struct DiffHandle {
     rows: Vec<LineDiff>,
@@ -9,7 +15,9 @@ pub struct InlineHandle {
     diff: InlineDiff,
 }
 
-pub struct HighlightHandle;
+pub struct HighlightHandle {
+    spans: Vec<HighlightSpan>,
+}
 
 fn trace_backend(message: impl std::fmt::Display) {
     if std::env::var_os("OPENBC_TRACE_TEXT_BACKEND").is_some() {
@@ -235,8 +243,11 @@ pub extern "C" fn openbc_highlight_buffer(
     source: *const u8,
     source_length: usize,
 ) -> *mut HighlightHandle {
-    let _ = (extension, extension_length, source, source_length);
-    Box::into_raw(Box::new(HighlightHandle))
+    let extension = unsafe { input_text(extension, extension_length) };
+    let source = unsafe { input_text(source, source_length) };
+    Box::into_raw(Box::new(HighlightHandle {
+        spans: highlight_to_spans(&source, &extension, true),
+    }))
 }
 
 #[no_mangle]
@@ -247,8 +258,11 @@ pub extern "C" fn openbc_highlight_buffer_with_theme(
     source_length: usize,
     theme: u8,
 ) -> *mut HighlightHandle {
-    let _ = (extension, extension_length, source, source_length, theme);
-    Box::into_raw(Box::new(HighlightHandle))
+    let extension = unsafe { input_text(extension, extension_length) };
+    let source = unsafe { input_text(source, source_length) };
+    Box::into_raw(Box::new(HighlightHandle {
+        spans: highlight_to_spans(&source, &extension, theme != 0),
+    }))
 }
 
 #[no_mangle]
@@ -260,8 +274,7 @@ pub unsafe extern "C" fn openbc_highlight_destroy(handle: *mut HighlightHandle) 
 
 #[no_mangle]
 pub unsafe extern "C" fn openbc_highlight_len(handle: *const HighlightHandle) -> usize {
-    let _ = handle;
-    0
+    handle.as_ref().map_or(0, |value| value.spans.len())
 }
 
 #[no_mangle]
@@ -269,8 +282,10 @@ pub unsafe extern "C" fn openbc_highlight_line(
     handle: *const HighlightHandle,
     index: usize,
 ) -> usize {
-    let _ = (handle, index);
-    0
+    handle
+        .as_ref()
+        .and_then(|value| value.spans.get(index))
+        .map_or(0, |span| span.line)
 }
 
 #[no_mangle]
@@ -278,8 +293,10 @@ pub unsafe extern "C" fn openbc_highlight_start(
     handle: *const HighlightHandle,
     index: usize,
 ) -> usize {
-    let _ = (handle, index);
-    0
+    handle
+        .as_ref()
+        .and_then(|value| value.spans.get(index))
+        .map_or(0, |span| span.start)
 }
 
 #[no_mangle]
@@ -287,8 +304,10 @@ pub unsafe extern "C" fn openbc_highlight_length(
     handle: *const HighlightHandle,
     index: usize,
 ) -> usize {
-    let _ = (handle, index);
-    0
+    handle
+        .as_ref()
+        .and_then(|value| value.spans.get(index))
+        .map_or(0, |span| span.length)
 }
 
 #[no_mangle]
@@ -297,8 +316,12 @@ pub unsafe extern "C" fn openbc_highlight_foreground(
     index: usize,
     channel: u8,
 ) -> u8 {
-    let _ = (handle, index, channel);
-    0
+    handle
+        .as_ref()
+        .and_then(|value| value.spans.get(index))
+        .and_then(|span| span.foreground.get(channel as usize))
+        .copied()
+        .unwrap_or(0)
 }
 
 #[no_mangle]
@@ -307,14 +330,20 @@ pub unsafe extern "C" fn openbc_highlight_background(
     index: usize,
     channel: u8,
 ) -> u8 {
-    let _ = (handle, index, channel);
-    0
+    handle
+        .as_ref()
+        .and_then(|value| value.spans.get(index))
+        .and_then(|span| span.background.get(channel as usize))
+        .copied()
+        .unwrap_or(0)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn openbc_highlight_bold(handle: *const HighlightHandle, index: usize) -> u8 {
-    let _ = (handle, index);
-    0
+    handle
+        .as_ref()
+        .and_then(|value| value.spans.get(index))
+        .map_or(0, |span| span.bold as u8)
 }
 
 #[no_mangle]
@@ -322,8 +351,10 @@ pub unsafe extern "C" fn openbc_highlight_italic(
     handle: *const HighlightHandle,
     index: usize,
 ) -> u8 {
-    let _ = (handle, index);
-    0
+    handle
+        .as_ref()
+        .and_then(|value| value.spans.get(index))
+        .map_or(0, |span| span.italic as u8)
 }
 
 /// C-compatible HTML highlighting entry point for the Qt frontend.
@@ -348,34 +379,6 @@ pub extern "C" fn openbc_highlight_to_html(
 pub unsafe extern "C" fn openbc_highlight_html_destroy(value: *mut std::ffi::c_char) {
     if !value.is_null() {
         drop(std::ffi::CString::from_raw(value));
-    }
-}
-
-#[cfg(feature = "qt")]
-#[cxx_qt::bridge]
-mod highlight_bridge {
-    extern "RustQt" {
-        #[qobject]
-        type HighlightBridge = super::HighlightBridgeRust;
-
-        #[qinvokable]
-        fn highlight_to_html(
-            self: &HighlightBridge,
-            code: &str,
-            language: &str,
-            is_dark_mode: bool,
-        ) -> String;
-    }
-}
-
-#[cfg(feature = "qt")]
-#[derive(Default)]
-pub struct HighlightBridgeRust;
-
-#[cfg(feature = "qt")]
-impl highlight_bridge::HighlightBridge {
-    fn highlight_to_html(&self, code: &str, language: &str, is_dark_mode: bool) -> String {
-        render_highlight_to_html(code, language, is_dark_mode)
     }
 }
 
