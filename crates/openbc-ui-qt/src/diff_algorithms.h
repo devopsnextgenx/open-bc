@@ -39,7 +39,7 @@ inline QVector<TextDiffLine> alignTextLines(const QStringList& left, const QStri
     OpenBcDiff* handle = openbc_compare_buffers(
         reinterpret_cast<const std::uint8_t*>(leftBytes.constData()), leftBytes.size(),
         reinterpret_cast<const std::uint8_t*>(rightBytes.constData()), rightBytes.size(), 0, 0, 0,
-        0.95);
+        0.80);
     QVector<TextDiffLine> result;
     if (!handle) return result;
     const std::size_t count = openbc_diff_len(handle);

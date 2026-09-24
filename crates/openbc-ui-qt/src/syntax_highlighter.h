@@ -58,6 +58,8 @@ public:
         inlineDiffProvider_ = std::move(provider);
     }
 
+    void refreshInlineDiffs() { rehighlight(); }
+
 protected:
     void highlightBlock(const QString& text) override {
         if (!enabled_) return;

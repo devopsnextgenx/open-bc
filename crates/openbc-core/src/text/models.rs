@@ -71,7 +71,7 @@ pub struct CompareOptions {
     pub ignore_timestamps: bool,
     /// Mask pod names and hexadecimal container identifiers before comparison.
     pub ignore_container_ids: bool,
-    /// Minimum Jaro-Winkler score for pairing deleted and added lines.
+    /// Minimum Jaro-Winkler score for pairing deleted and added lines as a modification.
     pub fuzzy_threshold: f64,
 }
 
@@ -81,7 +81,7 @@ impl Default for CompareOptions {
             ignore_whitespace: false,
             ignore_timestamps: false,
             ignore_container_ids: false,
-            fuzzy_threshold: 0.95,
+            fuzzy_threshold: 0.80,
         }
     }
 }

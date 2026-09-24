@@ -58,6 +58,65 @@ pub fn compute_inline_diff(left: &str, right: &str) -> InlineDiff {
     }
 }
 
+fn append_change_block(
+    results: &mut Vec<LineDiff>,
+    deleted: &[usize],
+    inserted: &[usize],
+    left_raw: &[&str],
+    right_raw: &[&str],
+    left_normalized: &[String],
+    right_normalized: &[String],
+    fuzzy_threshold: f64,
+) {
+    for (&left_index, &right_index) in deleted.iter().zip(inserted) {
+        let similarity = jaro_winkler(&left_normalized[left_index], &right_normalized[right_index]);
+        if similarity >= fuzzy_threshold {
+            results.push(LineDiff {
+                left_line_num: Some(left_index + 1),
+                right_line_num: Some(right_index + 1),
+                left_text: left_raw[left_index].to_owned(),
+                right_text: right_raw[right_index].to_owned(),
+                kind: ChangeKind::Modified {
+                    similarity_score: (similarity * 100.0).round().clamp(0.0, 100.0) as u8,
+                },
+            });
+        } else {
+            results.push(LineDiff {
+                left_line_num: Some(left_index + 1),
+                right_line_num: None,
+                left_text: left_raw[left_index].to_owned(),
+                right_text: String::new(),
+                kind: ChangeKind::Deleted,
+            });
+            results.push(LineDiff {
+                left_line_num: None,
+                right_line_num: Some(right_index + 1),
+                left_text: String::new(),
+                right_text: right_raw[right_index].to_owned(),
+                kind: ChangeKind::Added,
+            });
+        }
+    }
+    for &left_index in deleted.iter().skip(inserted.len()) {
+        results.push(LineDiff {
+            left_line_num: Some(left_index + 1),
+            right_line_num: None,
+            left_text: left_raw[left_index].to_owned(),
+            right_text: String::new(),
+            kind: ChangeKind::Deleted,
+        });
+    }
+    for &right_index in inserted.iter().skip(deleted.len()) {
+        results.push(LineDiff {
+            left_line_num: None,
+            right_line_num: Some(right_index + 1),
+            left_text: String::new(),
+            right_text: right_raw[right_index].to_owned(),
+            kind: ChangeKind::Added,
+        });
+    }
+}
+
 fn build_inline_ranges(
     start: usize,
     middle_len: usize,
@@ -111,10 +170,24 @@ impl TextCompareEngine {
         let mut results = Vec::new();
         let mut left_index = 0;
         let mut right_index = 0;
+        let mut deleted = Vec::new();
+        let mut inserted = Vec::new();
 
         for change in diff.iter_all_changes() {
             match change.tag() {
                 ChangeTag::Equal => {
+                    append_change_block(
+                        &mut results,
+                        &deleted,
+                        &inserted,
+                        &left_raw,
+                        &right_raw,
+                        &left_normalized,
+                        &right_normalized,
+                        options.fuzzy_threshold,
+                    );
+                    deleted.clear();
+                    inserted.clear();
                     results.push(LineDiff {
                         left_line_num: Some(left_index + 1),
                         right_line_num: Some(right_index + 1),
@@ -126,63 +199,25 @@ impl TextCompareEngine {
                     right_index += 1;
                 }
                 ChangeTag::Delete => {
-                    results.push(LineDiff {
-                        left_line_num: Some(left_index + 1),
-                        right_line_num: None,
-                        left_text: left_raw[left_index].to_owned(),
-                        right_text: String::new(),
-                        kind: ChangeKind::Deleted,
-                    });
+                    deleted.push(left_index);
                     left_index += 1;
                 }
                 ChangeTag::Insert => {
-                    let inserted = right_raw[right_index];
-                    let inserted_normalized = &right_normalized[right_index];
-                    let mut deleted_run_start = results.len();
-                    while deleted_run_start > 0 {
-                        let row = &results[deleted_run_start - 1];
-                        if row.kind != ChangeKind::Deleted || row.right_line_num.is_some() {
-                            break;
-                        }
-                        deleted_run_start -= 1;
-                    }
-                    let match_index = (deleted_run_start < results.len())
-                        .then_some(deleted_run_start)
-                        .filter(|&index| {
-                            results[index].left_line_num.is_some_and(|line| {
-                                jaro_winkler(&left_normalized[line - 1], inserted_normalized)
-                                    >= options.fuzzy_threshold
-                            })
-                        });
-
-                    if let Some(result_index) = match_index {
-                        let left_line = results[result_index]
-                            .left_line_num
-                            .expect("deleted rows have a left line number");
-                        let score =
-                            (jaro_winkler(&left_normalized[left_line - 1], inserted_normalized)
-                                * 100.0)
-                                .round()
-                                .clamp(0.0, 100.0) as u8;
-                        let result = &mut results[result_index];
-                        result.right_line_num = Some(right_index + 1);
-                        result.right_text = inserted.to_owned();
-                        result.kind = ChangeKind::Modified {
-                            similarity_score: score,
-                        };
-                    } else {
-                        results.push(LineDiff {
-                            left_line_num: None,
-                            right_line_num: Some(right_index + 1),
-                            left_text: String::new(),
-                            right_text: inserted.to_owned(),
-                            kind: ChangeKind::Added,
-                        });
-                    }
+                    inserted.push(right_index);
                     right_index += 1;
                 }
             }
         }
+        append_change_block(
+            &mut results,
+            &deleted,
+            &inserted,
+            &left_raw,
+            &right_raw,
+            &left_normalized,
+            &right_normalized,
+            options.fuzzy_threshold,
+        );
         results
     }
 }
@@ -204,6 +239,19 @@ mod tests {
             &options,
         );
         assert!(matches!(result[0].kind, ChangeKind::Modified { .. }));
+    }
+
+    #[test]
+    fn pairs_config_value_replacement_for_inline_diff() {
+        let result = TextCompareEngine::compare_buffers(
+            "{\n  \"server\": \"staging\",\n  \"port\": 8080\n}",
+            "{\n  \"server\": \"production\",\n  \"port\": 8085\n}",
+            &CompareOptions::default(),
+        );
+
+        assert!(matches!(result[1].kind, ChangeKind::Modified { .. }));
+        assert_eq!(result[1].left_text, "  \"server\": \"staging\",");
+        assert_eq!(result[1].right_text, "  \"server\": \"production\",");
     }
 
     #[test]

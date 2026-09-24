@@ -126,8 +126,10 @@ private:
     }
 
     void setHighlightStyle(SyntaxHighlighter::Style style) {
+        applyingProgrammaticUpdate_ = true;
         leftHighlighter_->setStyle(style);
         rightHighlighter_->setStyle(style);
+        applyingProgrammaticUpdate_ = false;
     }
 
     void computeInlineDiffs(const QVector<TextDiffLine>& rows) {
@@ -527,12 +529,16 @@ private:
         connect(showDiffsAction_, &QAction::triggered, this, [this]() { rebuild(); });
         connect(contextAction_, &QAction::triggered, this, [this]() { rebuild(); });
         connect(syntaxAutoAction_, &QAction::triggered, this, [this]() {
+            applyingProgrammaticUpdate_ = true;
             leftHighlighter_->setEnabled(true);
             rightHighlighter_->setEnabled(true);
+            applyingProgrammaticUpdate_ = false;
         });
         connect(syntaxPlainAction_, &QAction::triggered, this, [this]() {
+            applyingProgrammaticUpdate_ = true;
             leftHighlighter_->setEnabled(false);
             rightHighlighter_->setEnabled(false);
+            applyingProgrammaticUpdate_ = false;
         });
         connect(vibrantStyleAction_, &QAction::triggered, this, [this]() {
             setHighlightStyle(SyntaxHighlighter::Style::Vibrant);
@@ -1100,7 +1106,6 @@ private:
         applyingProgrammaticUpdate_ = true;
         leftEditor_->setPlainText(leftLines.join('\n'));
         rightEditor_->setPlainText(rightLines.join('\n'));
-        applyingProgrammaticUpdate_ = false;
         leftStructurallyEdited_ = false;
         rightStructurallyEdited_ = false;
         leftEditor_->document()->setModified(false);
@@ -1116,6 +1121,9 @@ private:
         rightEditor_->setDiffData(rows_, groups_);
         leftEditor_->setInlineDiffs(leftInline_);
         rightEditor_->setInlineDiffs(rightInline_);
+        leftHighlighter_->refreshInlineDiffs();
+        rightHighlighter_->refreshInlineDiffs();
+        applyingProgrammaticUpdate_ = false;
         computeDiffSelections(rows_);
         miniMap_->setRows(rows_);
         miniMap_->setCurrentRow(currentRow_);
