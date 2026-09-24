@@ -41,6 +41,7 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextEdit>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -448,12 +449,26 @@ private:
         connect(undoAction_, &QAction::triggered, this, [this]() { focusedEditor()->undo(); });
         connect(redoAction_, &QAction::triggered, this, [this]() { focusedEditor()->redo(); });
         // Keeps the find bar's "This pane" scope pointed at whichever
-        // editor the user actually last clicked/typed into.
-        connect(qApp, &QApplication::focusChanged, this, [this](QWidget*, QWidget* now) {
+        // editor the user actually last clicked/typed into, and - since
+        // isModified() is only ever true between rebuild()'s two
+        // setPlainText() calls and now - auto-reloads once the user clicks
+        // (or Tabs) away from a side they actually edited, so switching
+        // panes after typing catches the diff up without an explicit
+        // Reload click.
+        connect(qApp, &QApplication::focusChanged, this, [this](QWidget* old, QWidget* now) {
             if (now == leftEditor_ || now == leftEditor_->viewport()) {
                 findBar_->notifyFocused(leftEditor_);
             } else if (now == rightEditor_ || now == rightEditor_->viewport()) {
                 findBar_->notifyFocused(rightEditor_);
+            }
+
+            const bool leftBlurred = (old == leftEditor_ || old == leftEditor_->viewport()) &&
+                                      now != leftEditor_ && now != leftEditor_->viewport();
+            const bool rightBlurred = (old == rightEditor_ || old == rightEditor_->viewport()) &&
+                                       now != rightEditor_ && now != rightEditor_->viewport();
+            if ((leftBlurred && leftEditor_->document()->isModified()) ||
+                (rightBlurred && rightEditor_->document()->isModified())) {
+                scheduleAutoReload();
             }
         });
 
@@ -462,17 +477,25 @@ private:
         // mapping the diff arrows/highlights rely on is no longer valid
         // until the next Reload. In-place edits that don't add or remove a
         // line keep the mapping intact and stay fully interactive.
+        //
+        // Rather than making the user click Reload themselves, schedule one
+        // automatically - deferred to the next spin of the event loop
+        // (scheduleAutoReload()) rather than run inline here, since we're
+        // still inside the document's own change signal and rebuild()
+        // replaces that same document's text via setPlainText().
         connect(leftEditor_->document(), &QTextDocument::blockCountChanged, this,
                 [this](int count) {
                     if (applyingProgrammaticUpdate_ || count == rows_.size()) return;
                     leftStructurallyEdited_ = true;
                     leftEditor_->setDiffData({}, {});
+                    scheduleAutoReload();
                 });
         connect(rightEditor_->document(), &QTextDocument::blockCountChanged, this,
                 [this](int count) {
                     if (applyingProgrammaticUpdate_ || count == rows_.size()) return;
                     rightStructurallyEdited_ = true;
                     rightEditor_->setDiffData({}, {});
+                    scheduleAutoReload();
                 });
 
         connect(homeAction_, &QAction::triggered, this,
@@ -806,7 +829,52 @@ private:
         return result;
     }
 
+    // Row/column + scroll position for one editor, captured before rebuild()
+    // replaces its text wholesale and restored after - so an auto-reload
+    // triggered by the user's own typing (see scheduleAutoReload()) doesn't
+    // yank them away from where they were working. Clamped back against the
+    // new document's (possibly different) size on restore.
+    struct CursorSnapshot {
+        int block = 0;
+        int column = 0;
+        int scroll = 0;
+    };
+
+    static CursorSnapshot captureCursor(LineNumberEditor* editor) {
+        const QTextCursor cursor = editor->textCursor();
+        return {cursor.blockNumber(), cursor.positionInBlock(), editor->verticalScrollBar()->value()};
+    }
+
+    static void restoreCursor(LineNumberEditor* editor, const CursorSnapshot& snap) {
+        const QTextBlock block =
+            editor->document()->findBlockByNumber(qBound(0, snap.block, editor->document()->blockCount() - 1));
+        QTextCursor cursor(block);
+        cursor.setPosition(block.position() + qBound(0, snap.column, qMax(0, block.length() - 1)));
+        editor->setTextCursor(cursor);
+        editor->verticalScrollBar()->setValue(qMin(snap.scroll, editor->verticalScrollBar()->maximum()));
+    }
+
+    // Runs Reload's own syncFromEditors()+rebuild() on the next spin of the
+    // event loop instead of right away - both triggers below (a structural
+    // edit, or focus leaving an edited side) fire from inside a signal that
+    // rebuild()'s setPlainText() shouldn't be re-entered from - and
+    // coalesces bursts of triggers (typing several lines quickly, or both
+    // sides' blockCountChanged firing in the same tick) into a single
+    // rebuild.
+    void scheduleAutoReload() {
+        if (autoReloadPending_) return;
+        autoReloadPending_ = true;
+        QTimer::singleShot(0, this, [this]() {
+            autoReloadPending_ = false;
+            syncFromEditors();
+            rebuild();
+        });
+    }
+
     void rebuild() {
+        const CursorSnapshot leftSnap = captureCursor(leftEditor_);
+        const CursorSnapshot rightSnap = captureCursor(rightEditor_);
+
         QVector<TextDiffLine> all = alignTextLines(leftOriginal_, rightOriginal_);
         if (minorAction_->isChecked()) {
             for (auto& row : all) {
@@ -844,6 +912,15 @@ private:
         applyingProgrammaticUpdate_ = false;
         leftStructurallyEdited_ = false;
         rightStructurallyEdited_ = false;
+        leftEditor_->document()->setModified(false);
+        rightEditor_->document()->setModified(false);
+        // Reset before restoring the cursor below, not after: setTextCursor()
+        // fires cursorPositionChanged synchronously, which is what actually
+        // sets currentRow_ (and the preview strip) back to the restored row.
+        currentRow_ = -1;
+        preview_->clear();
+        restoreCursor(leftEditor_, leftSnap);
+        restoreCursor(rightEditor_, rightSnap);
 
         leftEditor_->setLineNumbers(leftNumbers);
         rightEditor_->setLineNumbers(rightNumbers);
@@ -853,8 +930,7 @@ private:
         rightEditor_->setInlineDiffs(rightInline_);
         computeDiffSelections(rows_);
         miniMap_->setRows(rows_);
-        preview_->clear();
-        currentRow_ = -1;
+        miniMap_->setCurrentRow(currentRow_);
         refreshDirtyIndicators();
         updateMinimapViewport();
         refreshSideHeader(true);
@@ -1083,6 +1159,7 @@ private:
     QVector<QTextEdit::ExtraSelection> rightDiffSelections_;
 
     bool applyingProgrammaticUpdate_ = false;
+    bool autoReloadPending_ = false;
     bool leftStructurallyEdited_ = false;
     bool rightStructurallyEdited_ = false;
 
