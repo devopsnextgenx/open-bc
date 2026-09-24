@@ -183,7 +183,7 @@ extern "C" int openbc_run_gui() {
     std::function<void(int)> closeTab;
 
     addSession = [&](const QString& left, const QString& right, bool run) -> CompareSession* {
-        auto* session = new CompareSession;
+        auto* session = new CompareSession(&preferences);
         session->setPaths(left, right);
         if (run && !left.isEmpty() && !right.isEmpty()) {
             SessionHistory::record("folder", left, right);

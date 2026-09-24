@@ -39,6 +39,7 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QPlainTextEdit>
+#include <QSettings>
 #include <QRunnable>
 #include <QSplitter>
 #include <QThreadPool>
@@ -296,7 +297,8 @@ public:
     std::function<void(QMenu*, const NodeContext&)> populateOpenWithMenu;
     std::function<void(QMenu*, const NodeContext&)> populateExplorerMenu;
 
-    explicit CompareSession(QWidget* parent = nullptr) : QWidget(parent) {
+    explicit CompareSession(QSettings* preferences = nullptr, QWidget* parent = nullptr)
+        : QWidget(parent), preferences_(preferences) {
         createActions();
         buildUi();
         connectSignals();
@@ -658,6 +660,7 @@ private:
         rightCount_ = right.count;
         leftFree_ = left.free;
         rightFree_ = right.free;
+        configureColumnVisibility();
 
         auto* panes = new QSplitter(Qt::Horizontal, this);
         panes->setChildrenCollapsible(false);
@@ -859,6 +862,57 @@ private:
                         other->setCurrentItem(counterpart);
                     }
                 });
+    }
+
+    static QStringList folderColumnNames() {
+        return {"name", "extension", "size", "modified", "attributes"};
+    }
+
+    static QStringList folderColumnLabels() {
+        return {"Name", "Ext", "Size", "Modified", "Attributes"};
+    }
+
+    void configureColumnVisibility() {
+        for (CompareTree* tree : {leftTree_, rightTree_}) {
+            tree->header()->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(tree->header(), &QWidget::customContextMenuRequested, this,
+                    [this, tree](const QPoint& pos) { showColumnMenu(tree, pos); });
+        }
+
+        const QStringList names = folderColumnNames();
+        for (int column = 0; column < names.size(); ++column) {
+            const bool visible = !preferences_ ||
+                                 preferences_->value("folder/columns/" + names[column], true).toBool();
+            setColumnVisible(column, visible, false);
+        }
+    }
+
+    void setColumnVisible(int column, bool visible, bool persist) {
+        const int visibleCount = leftTree_->header()->count() - leftTree_->header()->hiddenSectionCount();
+        if (!visible && visibleCount == 1) {
+            return;
+        }
+        leftTree_->setColumnHidden(column, !visible);
+        rightTree_->setColumnHidden(column, !visible);
+        if (persist && preferences_) {
+            const QStringList names = folderColumnNames();
+            preferences_->setValue("folder/columns/" + names[column], visible);
+        }
+    }
+
+    void showColumnMenu(CompareTree* tree, const QPoint& pos) {
+        QMenu menu(tree->header());
+        const QStringList labels = folderColumnLabels();
+        const int visibleCount = tree->header()->count() - tree->header()->hiddenSectionCount();
+        for (int column = 0; column < labels.size(); ++column) {
+            auto* action = menu.addAction(labels[column]);
+            action->setCheckable(true);
+            action->setChecked(!tree->isColumnHidden(column));
+            action->setEnabled(action->isChecked() || visibleCount > 1);
+            connect(action, &QAction::triggered, this,
+                    [this, column](bool visible) { setColumnVisible(column, visible, true); });
+        }
+        menu.exec(tree->header()->viewport()->mapToGlobal(pos));
     }
 
     // ------------------------------------------------- node context menu
@@ -1279,6 +1333,7 @@ private:
     QComboBox* filterCombo_ = nullptr;
     QPlainTextEdit* console_ = nullptr;
     QSplitter* splitter_ = nullptr;
+    QSettings* preferences_ = nullptr;
 
     QAction* compareAction_ = nullptr;
     QAction* refreshAction_ = nullptr;
