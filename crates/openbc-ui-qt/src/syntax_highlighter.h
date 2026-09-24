@@ -132,14 +132,25 @@ private:
     }
 
     QColor styledForeground(const QColor& color) const {
-        if (!color.isValid() || style_ == Style::Classic || style_ == Style::VsCodeDark) return color;
+        if (!color.isValid() || style_ == Style::Classic) return color;
         QColor result = color.toHsv();
         const int hue = result.hue() < 0 ? 0 : result.hue();
         if (style_ == Style::Vibrant) {
             result.setHsv(hue, qMax(125, result.saturation()),
                           qBound(80, result.value() + 12, 255));
-        } else {
+        } else if (style_ == Style::HighContrast) {
             result.setHsv(hue, 255, result.value() < 145 ? 220 : result.value());
+        } else {
+            const int lightness = color.lightness();
+            if (color.saturation() < 35) {
+                return QColor(0xd4, 0xd4, 0xd4);
+            }
+            if (hue < 35 || hue >= 335) return QColor(0xce, 0x91, 0x78);
+            if (hue < 85) return QColor(0xd7, 0xba, 0x7d);
+            if (hue < 165) return QColor(0x4e, 0xc9, 0xb0);
+            if (hue < 245) return QColor(0x56, 0x9c, 0xd6);
+            if (lightness < 90) return QColor(0xc5, 0x86, 0xc0);
+            return QColor(0xc5, 0x86, 0xc0);
         }
         return result.toRgb();
     }
@@ -155,7 +166,7 @@ private:
     QString extension_;
     QVector<BackendHighlightSpan> spans_;
     std::function<QVector<CharSegment>(int)> inlineDiffProvider_;
-    Style style_ = Style::Vibrant;
+    Style style_ = Style::VsCodeDark;
     bool enabled_ = true;
     bool refreshing_ = false;
 };

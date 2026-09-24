@@ -9,3 +9,4 @@ similar = "2.4"
 strsim = "0.11"
 thiserror.workspace = true
 tree-painter = "0.0.0"
+syntect = "5.3"

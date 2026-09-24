@@ -1,6 +1,11 @@
 //! Backend-owned HTML syntax highlighting using tree-sitter and Helix themes.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{FontStyle, ThemeSet};
+use syntect::parsing::SyntaxSet;
+use syntect::util::LinesWithEndings;
 
 /// A syntax-highlighted source span using UTF-8 byte offsets.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,10 +38,76 @@ pub fn highlight_to_html(source: &str, language: &str, is_dark_mode: bool) -> St
 /// Highlight source code for native editors that apply `QTextCharFormat` spans.
 #[must_use]
 pub fn highlight_to_spans(source: &str, language: &str, is_dark_mode: bool) -> Vec<HighlightSpan> {
+    if uses_syntect(language) {
+        return syntect_spans(source, language, is_dark_mode);
+    }
     let Some((body, css)) = render_source(source, language, is_dark_mode) else {
         return Vec::new();
     };
     parse_rendered_spans(&body, &css)
+}
+
+fn uses_syntect(language: &str) -> bool {
+    matches!(
+        language.trim().trim_start_matches('.').to_ascii_lowercase().as_str(),
+        "c++" | "cpp" | "cc" | "cxx" | "java" | "sh" | "bash" | "shell"
+    )
+}
+
+fn syntect_spans(source: &str, language: &str, is_dark_mode: bool) -> Vec<HighlightSpan> {
+    static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+    static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
+    let syntax_set = SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines);
+    let normalized = language.trim().trim_start_matches('.').to_ascii_lowercase();
+    let Some(syntax) = syntax_set
+        .find_syntax_by_extension(&normalized)
+        .or_else(|| syntax_set.find_syntax_by_token(language.trim()))
+    else {
+        return Vec::new();
+    };
+    let theme_set = THEME_SET.get_or_init(ThemeSet::load_defaults);
+    let theme_name = if is_dark_mode {
+        "base16-ocean.dark"
+    } else {
+        "InspiredGitHub"
+    };
+    let Some(theme) = theme_set.themes.get(theme_name) else {
+        return Vec::new();
+    };
+    let mut highlighter = HighlightLines::new(syntax, theme);
+    let mut spans = Vec::new();
+    for (line, text) in LinesWithEndings::from(source).enumerate() {
+        let Ok(ranges) = highlighter.highlight_line(text, &syntax_set) else {
+            continue;
+        };
+        let mut start = 0;
+        for (style, token) in ranges {
+            let token = token.trim_end_matches(['\n', '\r']);
+            if !token.is_empty() {
+                spans.push(HighlightSpan {
+                    line,
+                    start,
+                    length: token.len(),
+                    foreground: [
+                        style.foreground.r,
+                        style.foreground.g,
+                        style.foreground.b,
+                        style.foreground.a,
+                    ],
+                    background: [
+                        style.background.r,
+                        style.background.g,
+                        style.background.b,
+                        style.background.a,
+                    ],
+                    bold: style.font_style.contains(FontStyle::BOLD),
+                    italic: style.font_style.contains(FontStyle::ITALIC),
+                });
+            }
+            start += token.len();
+        }
+    }
+    merge_adjacent_spans(spans)
 }
 
 fn render_source(source: &str, language: &str, is_dark_mode: bool) -> Option<(String, String)> {
@@ -240,5 +311,16 @@ mod tests {
     fn renders_light_theme_and_escapes_unknown_languages() {
         let html = highlight_to_html("<plain>", "unknown", false);
         assert_eq!(html, "<pre>&lt;plain&gt;</pre>");
+    }
+
+    #[test]
+    fn renders_cpp_shell_and_java_spans() {
+        for (language, source) in [
+            ("cpp", "int main() { return 0; }"),
+            ("sh", "#!/bin/sh\necho \"hello\""),
+            ("java", "class Main { public static void main(String[] args) {} }"),
+        ] {
+            assert!(!highlight_to_spans(source, language, true).is_empty(), "{language}");
+        }
     }
 }
