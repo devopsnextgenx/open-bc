@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
-use syntect::html::highlighted_html_for_string;
 use syntect::highlighting::{FontStyle, ThemeSet};
+use syntect::html::highlighted_html_for_string;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
@@ -53,9 +53,12 @@ pub fn highlight_to_spans(source: &str, language: &str, is_dark_mode: bool) -> V
 
 fn uses_syntect(language: &str) -> bool {
     matches!(
-        language.trim().trim_start_matches('.').to_ascii_lowercase().as_str(),
-        "c"
-            | "c++"
+        language
+            .trim()
+            .trim_start_matches('.')
+            .to_ascii_lowercase()
+            .as_str(),
+        "c" | "c++"
             | "cpp"
             | "cc"
             | "cxx"
@@ -190,7 +193,9 @@ fn parse_rendered_spans(body: &str, css: &str) -> Vec<HighlightSpan> {
                 let tag = &body[cursor..tag_end];
                 if tag.starts_with("<span class=\"tsc-") {
                     let class_start = cursor + "<span class=\"".len();
-                    let class_end = body[class_start..].find('"').map(|index| class_start + index);
+                    let class_end = body[class_start..]
+                        .find('"')
+                        .map(|index| class_start + index);
                     active = class_end.and_then(|end| styles.get(&body[class_start..end]).copied());
                 } else if tag == "</span>" {
                     active = None;
@@ -252,11 +257,20 @@ fn source_byte_offset(body: &str, line_start: usize, html_offset: usize) -> usiz
 fn parse_styles(css: &str) -> std::collections::HashMap<String, SpanStyle> {
     let mut styles = std::collections::HashMap::new();
     for rule in css.split('}') {
-        let Some((selector, declarations)) = rule.split_once('{') else { continue };
-        let Some(class) = selector.trim().strip_prefix('.') else { continue };
-        let Some(color) = declarations.split("color:").nth(1).and_then(|value| value.split(';').next())
+        let Some((selector, declarations)) = rule.split_once('{') else {
+            continue;
+        };
+        let Some(class) = selector.trim().strip_prefix('.') else {
+            continue;
+        };
+        let Some(color) = declarations
+            .split("color:")
+            .nth(1)
+            .and_then(|value| value.split(';').next())
             .and_then(parse_hex_color)
-        else { continue };
+        else {
+            continue;
+        };
         styles.insert(
             class.to_string(),
             SpanStyle {
@@ -271,7 +285,9 @@ fn parse_styles(css: &str) -> std::collections::HashMap<String, SpanStyle> {
 
 fn parse_hex_color(value: &str) -> Option<[u8; 4]> {
     let value = value.trim().strip_prefix('#')?;
-    if value.len() != 6 { return None; }
+    if value.len() != 6 {
+        return None;
+    }
     Some([
         u8::from_str_radix(&value[0..2], 16).ok()?,
         u8::from_str_radix(&value[2..4], 16).ok()?,
@@ -281,8 +297,16 @@ fn parse_hex_color(value: &str) -> Option<[u8; 4]> {
 }
 
 fn decode_entity(value: &str) -> Option<(String, usize)> {
-    for (entity, decoded) in [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'")] {
-        if value.starts_with(entity) { return Some((decoded.to_string(), entity.len())); }
+    for (entity, decoded) in [
+        ("&amp;", "&"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+    ] {
+        if value.starts_with(entity) {
+            return Some((decoded.to_string(), entity.len()));
+        }
     }
     None
 }
@@ -360,9 +384,15 @@ mod tests {
         for (language, source) in [
             ("cpp", "int main() { return 0; }"),
             ("sh", "#!/bin/sh\necho \"hello\""),
-            ("java", "class Main { public static void main(String[] args) {} }"),
+            (
+                "java",
+                "class Main { public static void main(String[] args) {} }",
+            ),
         ] {
-            assert!(!highlight_to_spans(source, language, true).is_empty(), "{language}");
+            assert!(
+                !highlight_to_spans(source, language, true).is_empty(),
+                "{language}"
+            );
         }
     }
 
@@ -375,7 +405,10 @@ mod tests {
             ("xml", "<item enabled=\"true\">OpenBC</item>"),
             ("html", "<main><h1>OpenBC</h1></main>"),
         ] {
-            assert!(!highlight_to_spans(source, language, true).is_empty(), "{language}");
+            assert!(
+                !highlight_to_spans(source, language, true).is_empty(),
+                "{language}"
+            );
         }
     }
 

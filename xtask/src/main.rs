@@ -13,7 +13,10 @@ fn run(command: &str, args: &[&str]) -> Result<()> {
 }
 
 fn cmake_build() -> Result<()> {
-    run("cmake", &["-S", ".", "-B", "build", "-DCMAKE_BUILD_TYPE=Release"])?;
+    run(
+        "cmake",
+        &["-S", ".", "-B", "build", "-DCMAKE_BUILD_TYPE=Release"],
+    )?;
     run("cmake", &["--build", "build", "--target", "OpenBC"])
 }
 

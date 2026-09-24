@@ -1150,10 +1150,10 @@ private:
                 addSelection(leftEditor_, row, QColor(150, 120, 30, 150));
                 addSelection(rightEditor_, row, QColor(150, 120, 30, 150));
             } else if (line.leftNumber > 0) {
-                addSelection(leftEditor_, row, QColor(40, 140, 70, 150));
+                addSelection(leftEditor_, row, QColor(70, 70, 70, 90));
                 addSelection(rightEditor_, row, kHatch);
             } else if (line.rightNumber > 0) {
-                addSelection(rightEditor_, row, QColor(150, 45, 45, 150));
+                addSelection(rightEditor_, row, QColor(70, 70, 70, 90));
                 addSelection(leftEditor_, row, kHatch);
             }
         }

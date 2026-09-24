@@ -77,7 +77,8 @@ protected:
             if (segment.kind == CharSegmentKind::Equal) continue;
             QTextCharFormat format;
             if (segment.kind == CharSegmentKind::Mismatch) {
-                format.setForeground(QGuiApplication::palette().color(QPalette::BrightText));
+                format.setForeground(QColor(0xff, 0x4d, 0x4d));
+                format.setBackground(Qt::NoBrush);
                 format.setFontWeight(QFont::Bold);
             } else {
                 format.setBackground(QGuiApplication::palette().color(QPalette::Highlight));

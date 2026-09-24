@@ -138,14 +138,22 @@ impl TextCompareEngine {
                 ChangeTag::Insert => {
                     let inserted = right_raw[right_index];
                     let inserted_normalized = &right_normalized[right_index];
-                    let match_index = results.iter().rposition(|row| {
-                        row.kind == ChangeKind::Deleted
-                            && row.right_line_num.is_none()
-                            && row.left_line_num.is_some_and(|line| {
+                    let mut deleted_run_start = results.len();
+                    while deleted_run_start > 0 {
+                        let row = &results[deleted_run_start - 1];
+                        if row.kind != ChangeKind::Deleted || row.right_line_num.is_some() {
+                            break;
+                        }
+                        deleted_run_start -= 1;
+                    }
+                    let match_index = (deleted_run_start < results.len())
+                        .then_some(deleted_run_start)
+                        .filter(|&index| {
+                            results[index].left_line_num.is_some_and(|line| {
                                 jaro_winkler(&left_normalized[line - 1], inserted_normalized)
                                     >= options.fuzzy_threshold
                             })
-                    });
+                        });
 
                     if let Some(result_index) = match_index {
                         let left_line = results[result_index]
@@ -196,6 +204,30 @@ mod tests {
             &options,
         );
         assert!(matches!(result[0].kind, ChangeKind::Modified { .. }));
+    }
+
+    #[test]
+    fn does_not_reorder_rows_when_changed_lines_are_reordered() {
+        let options = CompareOptions {
+            fuzzy_threshold: 0.9,
+            ..CompareOptions::default()
+        };
+        let result = TextCompareEngine::compare_buffers("alpha\nbeta", "beta\nalpha", &options);
+
+        assert_eq!(
+            result
+                .iter()
+                .filter_map(|row| row.left_line_num.map(|_| row.left_text.as_str()))
+                .collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
+        assert_eq!(
+            result
+                .iter()
+                .filter_map(|row| row.right_line_num.map(|_| row.right_text.as_str()))
+                .collect::<Vec<_>>(),
+            ["beta", "alpha"]
+        );
     }
 
     #[test]
