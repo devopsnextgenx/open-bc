@@ -68,7 +68,9 @@ public:
     }
 
     QString title() const {
-        return QFileInfo(leftPath_).fileName() + " <-> " + QFileInfo(rightPath_).fileName();
+        const QString leftName = leftPath_.isEmpty() ? "(missing)" : QFileInfo(leftPath_).fileName();
+        const QString rightName = rightPath_.isEmpty() ? "(missing)" : QFileInfo(rightPath_).fileName();
+        return leftName + " <-> " + rightName;
     }
 
     std::function<void()> onHomeRequested;
@@ -202,7 +204,7 @@ private:
             attrsLabel->setText(QString("%1    %2    %3    %4")
                                      .arg(modified, size, "UTF-8", lineEnding));
         } else {
-            attrsLabel->setText("(unsaved)");
+            attrsLabel->setText(path.isEmpty() ? "(missing on this side)" : "(unavailable)");
         }
         if (saveButton) {
             // A side is "unsaved" if it has copied-but-not-saved rows *or* if the

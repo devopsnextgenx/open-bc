@@ -14,12 +14,15 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QFile>
+#include <QFileDialog>
 #include <QKeySequence>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
 #include <QObject>
 #include <QPoint>
+#include <QSettings>
 #include <QStyleFactory>
 #include <QTabBar>
 #include <QTabWidget>
@@ -27,7 +30,9 @@
 #include <functional>
 
 #include "compare_session.h"
+#include "home_view.h"
 #include "qt_style.h"
+#include "session_history.h"
 #include "text_compare_view.h"
 
 namespace openbc::app {
@@ -41,6 +46,8 @@ extern "C" int openbc_run_gui() {
     QApplication::setStyle(QStyleFactory::create("Fusion"));
     application.setPalette(openbc::ui::darkPalette());
     application.setStyleSheet(openbc::ui::applicationStyleSheet(openbc::ui::Theme::Dark));
+    QDir().mkpath(SessionHistory::rootPath());
+    QSettings preferences(SessionHistory::rootPath() + "/preferences.ini", QSettings::IniFormat);
 
     QMainWindow window;
     window.resize(1280, 820);
@@ -61,15 +68,25 @@ extern "C" int openbc_run_gui() {
     tabs->tabBar()->setDrawBase(false);
     window.setCentralWidget(tabs);
 
+    auto* home = new HomeView;
+    const int homeIndex = tabs->addTab(home, "Home");
+    tabs->setTabToolTip(homeIndex, "OpenBC home and session history");
+
     auto currentSession = [&]() { return dynamic_cast<CompareSession*>(tabs->currentWidget()); };
     auto* darkThemeAction = new QAction("Dark Theme", &window);
     darkThemeAction->setCheckable(true);
-    darkThemeAction->setChecked(true);
+    darkThemeAction->setChecked(preferences.value("theme/dark", true).toBool());
     QObject::connect(darkThemeAction, &QAction::toggled, &window, [&](bool dark) {
         const auto theme = dark ? openbc::ui::Theme::Dark : openbc::ui::Theme::Light;
         application.setPalette(dark ? openbc::ui::darkPalette() : openbc::ui::lightPalette());
         application.setStyleSheet(openbc::ui::applicationStyleSheet(theme));
+        preferences.setValue("theme/dark", dark);
     });
+
+    auto closeTextTabOnEscape = new QAction(&window);
+    closeTextTabOnEscape->setShortcut(Qt::Key_Escape);
+    closeTextTabOnEscape->setShortcutContext(Qt::ApplicationShortcut);
+    window.addAction(closeTextTabOnEscape);
 
     // The Actions / Edit / Search / View / Tools menus always show the actions
     // of the tab that is currently selected, so a command can only ever affect
@@ -120,11 +137,17 @@ extern "C" int openbc_run_gui() {
     };
 
     std::function<CompareSession*(const QString&, const QString&, bool)> addSession;
+    std::function<void(const QString&, const QString&, const QString&, const QString&, CompareSession*)>
+        addTextView;
     std::function<void(int)> closeTab;
 
     addSession = [&](const QString& left, const QString& right, bool run) -> CompareSession* {
         auto* session = new CompareSession;
         session->setPaths(left, right);
+        if (run && !left.isEmpty() && !right.isEmpty()) {
+            SessionHistory::record("folder", left, right);
+            home->refreshHistory();
+        }
         const int index =
             tabs->addTab(session, openbc::ui::icons::folderIcon(openbc::ui::color::folderYellow()),
                          session->title());
@@ -153,40 +176,45 @@ extern "C" int openbc_run_gui() {
         };
         session->onTextCompare = [&](const QString& leftPath, const QString& rightPath,
                                      const QString& leftText, const QString& rightText) {
-            auto* textView = new TextCompareView(leftPath, rightPath, leftText, rightText);
-            const int textIndex = tabs->addTab(
-                textView, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Compare),
-                textView->title());
-            tabs->setTabToolTip(textIndex, leftPath + " <-> " + rightPath);
-            auto* textClose = new QToolButton;
-            textClose->setObjectName("tabClose");
-            textClose->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Close));
-            textClose->setToolTip("Close tab (Ctrl+W)");
-            textClose->setFocusPolicy(Qt::NoFocus);
-            textClose->setAutoRaise(true);
-            tabs->tabBar()->setTabButton(textIndex, QTabBar::RightSide, textClose);
-            QObject::connect(textClose, &QToolButton::clicked, textView,
-                             [&, textView]() { closeTab(tabs->indexOf(textView)); });
-            // Home / Sessions both act like Beyond Compare: jump back to the
-            // folder-compare session tab this text view was opened from.
-            textView->onHomeRequested = [&, session]() {
-                const int sessionIndex = tabs->indexOf(session);
-                if (sessionIndex >= 0) tabs->setCurrentIndex(sessionIndex);
-            };
-            textView->onSessionsRequested = textView->onHomeRequested;
-            textView->onTitleChanged = [&, textView]() {
-                const int i = tabs->indexOf(textView);
-                if (i < 0) return;
-                tabs->setTabText(i, textView->title());
-                if (tabs->currentIndex() == i) updateWindowTitle();
-            };
-            tabs->setCurrentIndex(textIndex);
+            addTextView(leftPath, rightPath, leftText, rightText, session);
         };
         tabs->setCurrentIndex(index);
         if (run) {
             session->refresh();
         }
         return session;
+    };
+
+    addTextView = [&](const QString& leftPath, const QString& rightPath, const QString& leftText,
+                      const QString& rightText, CompareSession* origin) {
+        auto* textView = new TextCompareView(leftPath, rightPath, leftText, rightText);
+        const int textIndex = tabs->addTab(
+            textView, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Compare),
+            textView->title());
+        tabs->setTabToolTip(textIndex, leftPath + " <-> " + rightPath);
+        auto* textClose = new QToolButton;
+        textClose->setObjectName("tabClose");
+        textClose->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Close));
+        textClose->setToolTip("Close tab (Ctrl+W)");
+        textClose->setFocusPolicy(Qt::NoFocus);
+        textClose->setAutoRaise(true);
+        tabs->tabBar()->setTabButton(textIndex, QTabBar::RightSide, textClose);
+        QObject::connect(textClose, &QToolButton::clicked, textView,
+                         [&, textView]() { closeTab(tabs->indexOf(textView)); });
+        textView->onHomeRequested = [&, origin]() {
+            const int index = origin ? tabs->indexOf(origin) : homeIndex;
+            if (index >= 0) tabs->setCurrentIndex(index);
+        };
+        textView->onSessionsRequested = textView->onHomeRequested;
+        textView->onTitleChanged = [&, textView]() {
+            const int i = tabs->indexOf(textView);
+            if (i < 0) return;
+            tabs->setTabText(i, textView->title());
+            if (tabs->currentIndex() == i) updateWindowTitle();
+        };
+        SessionHistory::record("text", leftPath, rightPath);
+        home->refreshHistory();
+        tabs->setCurrentIndex(textIndex);
     };
 
     closeTab = [&](int index) {
@@ -197,8 +225,12 @@ extern "C" int openbc_run_gui() {
         if (auto* session = dynamic_cast<CompareSession*>(widget)) {
             session->cancelRun();
         }
+        if (widget == home) {
+            return;
+        }
         tabs->removeTab(index);
         widget->deleteLater();
+        home->refreshHistory();
         if (tabs->count() == 0) {
             addSession(QString(), QString(), false);  // never leave the window empty
         }
@@ -247,6 +279,37 @@ extern "C" int openbc_run_gui() {
     QObject::connect(closeCurrent, &QAction::triggered, [&]() { closeTab(tabs->currentIndex()); });
     QObject::connect(closeOthersAction, &QAction::triggered, [&]() { closeOthers(tabs->currentIndex()); });
     QObject::connect(exitAction, &QAction::triggered, &window, &QWidget::close);
+    QObject::connect(closeTextTabOnEscape, &QAction::triggered, [&]() {
+        if (dynamic_cast<TextCompareView*>(tabs->currentWidget())) {
+            closeTab(tabs->currentIndex());
+        }
+    });
+
+    home->onNewFolderCompare = [&]() { addSession(QString(), QString(), false); };
+    home->onNewTextCompare = [&]() {
+        const QString left = QFileDialog::getOpenFileName(&window, "Open left file");
+        if (left.isEmpty()) return;
+        const QString right = QFileDialog::getOpenFileName(&window, "Open right file");
+        if (right.isEmpty()) return;
+        QFile leftFile(left);
+        QFile rightFile(right);
+        if (!leftFile.open(QIODevice::ReadOnly) || !rightFile.open(QIODevice::ReadOnly)) return;
+        addTextView(left, right, QString::fromUtf8(leftFile.readAll()),
+                    QString::fromUtf8(rightFile.readAll()), nullptr);
+    };
+    home->onOpenHistory = [&](const SessionHistoryEntry& entry) {
+        if (entry.kind == "folder") {
+            addSession(entry.left, entry.right, true);
+        } else if (!entry.left.isEmpty() || !entry.right.isEmpty()) {
+            QFile leftFile(entry.left);
+            QFile rightFile(entry.right);
+            const QString leftText = leftFile.open(QIODevice::ReadOnly)
+                                          ? QString::fromUtf8(leftFile.readAll()) : QString();
+            const QString rightText = rightFile.open(QIODevice::ReadOnly)
+                                           ? QString::fromUtf8(rightFile.readAll()) : QString();
+            addTextView(entry.left, entry.right, leftText, rightText, nullptr);
+        }
+    };
 
     auto* plus = new QToolButton(tabs);
     plus->setObjectName("newTab");
@@ -283,14 +346,7 @@ extern "C" int openbc_run_gui() {
         updateWindowTitle();
     });
 
-    // if linux
-    #ifdef Q_OS_LINUX
-    addSession("/home/kira/tmp/source", "/home/kira/tmp/target", true);
-    #endif
-    // if windows
-    #ifdef Q_OS_WINDOWS
-    addSession("D:/personal/github/devopsnextgenx/open-bc/test/source", "D:/personal/github/devopsnextgenx/open-bc/test/target", true);
-    #endif
+    tabs->setCurrentIndex(homeIndex);
     rebuildMenus();
     updateWindowTitle();
     window.show();

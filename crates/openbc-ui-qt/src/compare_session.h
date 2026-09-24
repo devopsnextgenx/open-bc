@@ -782,8 +782,7 @@ private:
                                         : counterpart ? counterpart->data(0, kPathRole).toString() : QString();
         const QString rightPath = isLeft ? counterpart ? counterpart->data(0, kPathRole).toString() : QString()
                                          : item->data(0, kPathRole).toString();
-        if (leftPath.isEmpty() || rightPath.isEmpty() || !QFileInfo(leftPath).isFile() ||
-            !QFileInfo(rightPath).isFile()) {
+        if (leftPath.isEmpty() && rightPath.isEmpty()) {
             return;
         }
 
@@ -794,13 +793,13 @@ private:
             QString leftText;
             QString rightText;
             QString error;
-            if (!leftFile.open(QIODevice::ReadOnly)) {
+            if (!leftPath.isEmpty() && !leftFile.open(QIODevice::ReadOnly)) {
                 error = "Could not open left file: " + leftPath;
-            } else if (!rightFile.open(QIODevice::ReadOnly)) {
+            } else if (!rightPath.isEmpty() && !rightFile.open(QIODevice::ReadOnly)) {
                 error = "Could not open right file: " + rightPath;
             } else {
-                leftText = QString::fromUtf8(leftFile.readAll());
-                rightText = QString::fromUtf8(rightFile.readAll());
+                if (!leftPath.isEmpty()) leftText = QString::fromUtf8(leftFile.readAll());
+                if (!rightPath.isEmpty()) rightText = QString::fromUtf8(rightFile.readAll());
             }
             QMetaObject::invokeMethod(
                 qApp,

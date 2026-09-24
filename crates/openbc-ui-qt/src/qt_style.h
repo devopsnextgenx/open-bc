@@ -202,6 +202,16 @@ inline QString applicationStyleSheet(Theme theme = Theme::Dark) {
         QToolButton#newTab { background: transparent; border: 0; border-radius: 3px; margin: 6px 4px 0 4px; padding: 3px; }
         QToolButton#newTab:hover { background: #4d4d4d; }
 
+        /* ---- home tab ---- */
+        QWidget#homeView { background: #262833; }
+        QLabel#homeHeading { color: #f8f8f2; font-size: 28px; font-weight: 700; }
+        QLabel#homeSubtitle { color: #b9b9c7; font-size: 14px; padding-bottom: 14px; }
+        QLabel#homeSectionTitle { color: #f8f8f2; font-size: 16px; font-weight: 600; padding-top: 18px; }
+        QTreeWidget#homeHistory { background: #30323d; border: 1px solid #505260; }
+        QTreeWidget#homeHistory::item { height: 28px; padding: 2px 6px; }
+        QTreeWidget#homeHistory::item:selected { background: #44475a; }
+        QTreeWidget#homeHistory::item:hover:!selected { background: #393c49; }
+
         /* ---- per-tab toolbar ---- */
         QToolBar {
             background: #3e3e3e; border: 0; border-top: 1px solid #505050;
