@@ -8,8 +8,10 @@
 #include <QMenu>
 #include <QPainter>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QToolButton>
+#include <QDropEvent>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -19,6 +21,25 @@
 #include "qt_style.h"
 
 namespace openbc::app {
+
+class HistoryTree : public QTreeWidget {
+public:
+    std::function<void(QTreeWidgetItem*, QTreeWidgetItem*)> onSessionDropped;
+
+    explicit HistoryTree(QWidget* parent = nullptr) : QTreeWidget(parent) {}
+
+protected:
+    void dropEvent(QDropEvent* event) override {
+        auto* source = currentItem();
+        auto* target = itemAt(event->position().toPoint());
+        if (source && target && onSessionDropped) {
+            onSessionDropped(source, target);
+            event->acceptProposedAction();
+            return;
+        }
+        QTreeWidget::dropEvent(event);
+    }
+};
 
 inline QIcon historyFileIcon(const QString& path) {
     const QString extension = QFileInfo(path).suffix().toLower();
@@ -63,13 +84,18 @@ public:
         split->setChildrenCollapsible(false);
         root->addWidget(split, 1);
 
-        history_ = new QTreeWidget(split);
+        history_ = new HistoryTree(split);
         history_->setObjectName("homeHistory");
         history_->setHeaderHidden(true);
         history_->setRootIsDecorated(true);
         history_->setUniformRowHeights(true);
         history_->setIndentation(18);
         history_->setSelectionMode(QAbstractItemView::SingleSelection);
+        history_->setEditTriggers(QAbstractItemView::EditKeyPressed);
+        history_->setDragEnabled(true);
+        history_->setAcceptDrops(true);
+        history_->setDropIndicatorShown(true);
+        history_->setDragDropMode(QAbstractItemView::InternalMove);
         history_->setContextMenuPolicy(Qt::CustomContextMenu);
 
         auto* details = new QWidget(split);
@@ -121,6 +147,17 @@ public:
         clearDetails();
 
         connect(history_, &QTreeWidget::itemSelectionChanged, this, [this]() { showSelected(); });
+        connect(history_, &QTreeWidget::itemDoubleClicked, this,
+            [this](QTreeWidgetItem* item, int) {
+                if (!item || !item->data(0, Qt::UserRole + 3).toBool() || !onOpenHistory) return;
+                history_->setCurrentItem(item);
+                onOpenHistory(selected_);
+            });
+        connect(history_, &QTreeWidget::itemChanged, this,
+            [this](QTreeWidgetItem* item, int column) { handleItemRenamed(item, column); });
+        history_->onSessionDropped = [this](QTreeWidgetItem* source, QTreeWidgetItem* target) {
+            moveSession(source, target);
+        };
         connect(open_, &QPushButton::clicked, this, [this]() {
             if (selected_.kind.isEmpty() || !onOpenHistory) return;
             selected_.label = label_->text().trimmed();
@@ -143,6 +180,7 @@ public:
     }
 
     void refreshHistory() {
+        const QSignalBlocker blocker(history_);
         history_->clear();
         auto* recent = new QTreeWidgetItem(history_, {"Recent sessions"});
         recent->setIcon(0, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Refresh));
@@ -150,16 +188,7 @@ public:
         const auto entries = SessionHistory::load();
         for (int index = 0; index < entries.size(); ++index) addSessionItem(recent, entries[index], false, {}, index);
         recent->setExpanded(true);
-        for (const auto& node : SessionHistory::loadSavedNodes()) {
-            auto* nodeItem = new QTreeWidgetItem(history_, {node.name});
-            nodeItem->setIcon(0, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::FolderOpen));
-            nodeItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-            nodeItem->setData(0, Qt::UserRole + 2, node.name);
-            for (int index = 0; index < node.sessions.size(); ++index) {
-                addSessionItem(nodeItem, node.sessions[index], true, node.name, index);
-            }
-            nodeItem->setExpanded(true);
-        }
+        for (const auto& node : SessionHistory::loadSavedNodes()) addNodeItem(nullptr, node);
         history_->expandAll();
     }
 
@@ -176,7 +205,22 @@ private:
         item->setData(0, Qt::UserRole + 1, index);
         item->setData(0, Qt::UserRole + 2, node);
         item->setData(0, Qt::UserRole + 3, true);
-        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable |
+                       Qt::ItemIsDragEnabled);
+    }
+
+    void addNodeItem(QTreeWidgetItem* parent, const SavedSessionNode& node) {
+        auto* item = parent ? new QTreeWidgetItem(parent, {node.name}) : new QTreeWidgetItem(history_, {node.name});
+        item->setIcon(0, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::FolderOpen));
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable |
+                       Qt::ItemIsDropEnabled);
+        item->setData(0, Qt::UserRole + 2, node.path);
+        item->setData(0, Qt::UserRole + 4, true);
+        for (int index = 0; index < node.sessions.size(); ++index) {
+            addSessionItem(item, node.sessions[index], true, node.path, index);
+        }
+        for (const auto& child : node.children) addNodeItem(item, child);
+        item->setExpanded(true);
     }
 
     bool hasSelection() const { return selectedItem_ && selectedItem_->data(0, Qt::UserRole + 3).toBool(); }
@@ -238,17 +282,19 @@ private:
     void contextMenu(const QPoint& position) {
         auto* item = history_->itemAt(position);
         if (!item) return;
+        history_->setCurrentItem(item);
+        const bool isNode = item->data(0, Qt::UserRole + 4).toBool();
         const bool saved = item->data(0, Qt::UserRole).toBool();
         const QString node = item->data(0, Qt::UserRole + 2).toString();
         const int index = item->data(0, Qt::UserRole + 1).toInt();
         if (!item->parent()) {
-            if (node.isEmpty()) return;
-            QMenu menu(history_);
-            QAction* remove = menu.addAction("Remove named node");
-            if (menu.exec(history_->viewport()->mapToGlobal(position)) == remove) {
-                SessionHistory::removeNode(node);
-                refreshHistory();
+            if (isNode) {
+                showNodeMenu(item, node, position);
             }
+            return;
+        }
+        if (isNode) {
+            showNodeMenu(item, node, position);
             return;
         }
         if (!saved && item->parent()->text(0) != "Recent sessions") return;
@@ -258,12 +304,7 @@ private:
         QAction* remove = menu.addAction("Remove from history");
         QAction* chosen = menu.exec(history_->viewport()->mapToGlobal(position));
         if (chosen == rename) {
-            const QString value = QInputDialog::getText(this, "Rename session", "Name", QLineEdit::Normal, item->text(0));
-            if (!value.trimmed().isEmpty()) {
-                if (saved) SessionHistory::renameSaved(node, index, value);
-                else SessionHistory::renameRecent(index, value);
-            }
-            refreshHistory();
+            history_->editItem(item, 0);
         } else if (chosen == save) {
             history_->setCurrentItem(item);
             saveSelected();
@@ -273,7 +314,58 @@ private:
         }
     }
 
-    QTreeWidget* history_ = nullptr;
+    void showNodeMenu(QTreeWidgetItem* item, const QString& node, const QPoint& position) {
+        QMenu menu(history_);
+        QAction* create = menu.addAction("New saved session folder");
+        QAction* rename = menu.addAction("Rename");
+        QAction* remove = menu.addAction("Remove named node");
+        QAction* chosen = menu.exec(history_->viewport()->mapToGlobal(position));
+        if (chosen == create) {
+            bool ok = false;
+            const QString name = QInputDialog::getText(this, "New saved session folder", "Name",
+                                                       QLineEdit::Normal, QString(), &ok);
+            if (ok && SessionHistory::createNode(node, name)) refreshHistory();
+        } else if (chosen == rename) {
+            history_->editItem(item, 0);
+        } else if (chosen == remove) {
+            SessionHistory::removeNode(node);
+            refreshHistory();
+        }
+    }
+
+    void handleItemRenamed(QTreeWidgetItem* item, int column) {
+        if (!item || column != 0) return;
+        const QString value = item->text(0).trimmed();
+        if (item->data(0, Qt::UserRole + 4).toBool()) {
+            const QString oldNode = item->data(0, Qt::UserRole + 2).toString();
+            if (value.isEmpty() || !SessionHistory::renameNode(oldNode, value)) {
+                const QSignalBlocker blocker(history_);
+                item->setText(0, QFileInfo(oldNode).fileName());
+                return;
+            }
+            refreshHistory();
+            return;
+        }
+        if (!item->data(0, Qt::UserRole + 3).toBool() || value.isEmpty()) return;
+        const bool saved = item->data(0, Qt::UserRole).toBool();
+        const QString node = item->data(0, Qt::UserRole + 2).toString();
+        const int index = item->data(0, Qt::UserRole + 1).toInt();
+        if (saved) SessionHistory::renameSaved(node, index, value);
+        else SessionHistory::renameRecent(index, value);
+        refreshHistory();
+    }
+
+    void moveSession(QTreeWidgetItem* source, QTreeWidgetItem* target) {
+        if (!source || !target || !source->data(0, Qt::UserRole + 3).toBool() ||
+            !target->data(0, Qt::UserRole + 4).toBool()) return;
+        const bool saved = source->data(0, Qt::UserRole).toBool();
+        const QString sourceNode = source->data(0, Qt::UserRole + 2).toString();
+        const int index = source->data(0, Qt::UserRole + 1).toInt();
+        const QString targetNode = target->data(0, Qt::UserRole + 2).toString();
+        if (SessionHistory::moveSession(saved, sourceNode, index, targetNode)) refreshHistory();
+    }
+
+    HistoryTree* history_ = nullptr;
     QTreeWidgetItem* selectedItem_ = nullptr;
     QLineEdit* label_ = nullptr;
     QLineEdit* left_ = nullptr;

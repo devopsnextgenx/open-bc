@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QStringList>
 
@@ -23,7 +24,9 @@ struct SessionHistoryEntry {
 
 struct SavedSessionNode {
     QString name;
+    QString path;
     QList<SessionHistoryEntry> sessions;
+    QList<SavedSessionNode> children;
 };
 
 class SessionHistory {
@@ -78,16 +81,38 @@ public:
     static QString savedRootPath() { return rootPath() + "/saved"; }
 
     static QList<SavedSessionNode> loadSavedNodes() {
-        QList<SavedSessionNode> result;
-        QDir root(savedRootPath());
-        for (const auto& name : root.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
-            SavedSessionNode node;
-            node.name = name;
-            const auto sessions = loadSaved(name);
-            node.sessions = sessions;
-            result.push_back(node);
+        return loadSavedNodes(QString());
+    }
+
+    static bool createNode(const QString& parentNode, const QString& name) {
+        const QString node = appendNode(parentNode, name);
+        return !node.isEmpty() && QDir().mkpath(savedRootPath() + "/" + node);
+    }
+
+    static bool renameNode(const QString& nodeName, const QString& newName) {
+        const QString source = cleanNodeName(nodeName);
+        const QString replacement = appendNode(QFileInfo(source).path() == "."
+                                                   ? QString()
+                                                   : QFileInfo(source).path(),
+                                               newName);
+        if (source.isEmpty() || replacement.isEmpty() || source == replacement ||
+            QDir(savedRootPath()).exists(replacement)) {
+            return false;
         }
-        return result;
+        QDir root(savedRootPath());
+        return root.rename(source, replacement);
+    }
+
+    static bool moveSession(bool sourceSaved, const QString& sourceNode, int sourceIndex,
+                            const QString& targetNode) {
+        const QString target = cleanNodeName(targetNode);
+        if (target.isEmpty()) return false;
+        const auto entries = sourceSaved ? loadSaved(sourceNode) : load();
+        if (sourceIndex < 0 || sourceIndex >= entries.size()) return false;
+        if (sourceSaved && cleanNodeName(sourceNode) == target) return false;
+        save(entries[sourceIndex], target, entries[sourceIndex].label);
+        if (sourceSaved) removeSaved(sourceNode, sourceIndex); else removeAt(sourceIndex);
+        return true;
     }
 
     static void save(const SessionHistoryEntry& source, const QString& nodeName,
@@ -199,15 +224,45 @@ public:
     }
 
 private:
+    static QList<SavedSessionNode> loadSavedNodes(const QString& parentNode) {
+        QList<SavedSessionNode> result;
+        const QString directoryPath = parentNode.isEmpty() ? savedRootPath()
+                                                            : savedRootPath() + "/" + parentNode;
+        QDir root(directoryPath);
+        for (const auto& name : root.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+            SavedSessionNode node;
+            node.name = name;
+            node.path = parentNode.isEmpty() ? name : parentNode + "/" + name;
+            node.sessions = loadSaved(node.path);
+            node.children = loadSavedNodes(node.path);
+            result.push_back(node);
+        }
+        return result;
+    }
+
     static QString savedPath(const QString& nodeName) {
         return savedRootPath() + "/" + cleanNodeName(nodeName) + "/sessions.json";
     }
 
     static QString cleanNodeName(const QString& value) {
-        QString result = value.trimmed();
-        result.replace('/', '_');
-        result.replace('\\', '_');
-        return result;
+        QStringList parts = value.trimmed().split(QRegularExpression("[/\\\\]"), Qt::SkipEmptyParts);
+        QStringList clean;
+        for (QString part : parts) {
+            part = part.trimmed();
+            if (part.isEmpty() || part == "." || part == "..") continue;
+            clean.append(part.replace('/', '_').replace('\\', '_'));
+        }
+        return clean.join('/');
+    }
+
+    static QString appendNode(const QString& parent, const QString& name) {
+        const QString child = name.trimmed();
+        if (child.isEmpty() || child.contains('/') || child.contains('\\') || child == "." ||
+            child == "..") {
+            return {};
+        }
+        const QString parentPath = cleanNodeName(parent);
+        return parentPath.isEmpty() ? child : parentPath + "/" + child;
     }
 
     static QJsonArray readArray(const QString& path) {

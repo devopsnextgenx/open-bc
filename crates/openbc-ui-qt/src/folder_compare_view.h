@@ -1,4 +1,4 @@
-// compare_session.h
+// folder_compare_view.h
 // ---------------------------------------------------------------------------
 // Folder-compare engine and UI: ComparisonRun walks both trees on a
 // background thread pool and reports progress/completion; CompareSession is
@@ -42,6 +42,7 @@
 #include <QRunnable>
 #include <QSplitter>
 #include <QThreadPool>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -283,6 +284,7 @@ public:
         bool existsHere = false;  // false on the placeholder row of an orphan
         QString path;             // node on the clicked side (empty if missing)
         QString otherPath;        // its counterpart on the other side (may be empty)
+        QString parentPath;       // folder in which create actions add entries
 
         QString displayPath() const { return existsHere ? path : otherPath; }
     };
@@ -410,6 +412,7 @@ public:
             if (run_.get() != expected) return;
             updateFooter();
             applyViewFilter();
+            focusPendingEdit();
             log("Folder comparison completed");
         };
         log("Load comparison: " + QDir::toNativeSeparators(left) + " <-> " +
@@ -754,7 +757,11 @@ private:
             rightTree_->collapseAll();
         });
         connect(consoleAction_, &QAct::toggled, this, [this](bool visible) { console_->setVisible(visible); });
-        connect(editSelectionAction_, &QAct::triggered, this, [this]() { log("Edit selection requested"); });
+        connect(editSelectionAction_, &QAct::triggered, this, [this]() {
+            if (auto* tree = activeTree()) {
+                renameSelected(tree);
+            }
+        });
         connect(findAction_, &QAct::triggered, this, [this]() { log("Find requested in current folder level"); });
         connect(optionsAction_, &QAct::triggered, this, [this]() { log("Comparison options opened"); });
 
@@ -766,6 +773,10 @@ private:
             tree->setContextMenuPolicy(Qt::CustomContextMenu);
             connect(tree, &QWidget::customContextMenuRequested, this,
                     [this, tree](const QPoint& pos) { showNodeMenu(tree, pos); });
+            connect(tree, &QTreeWidget::itemChanged, this,
+                [this, tree](QTreeWidgetItem* item, int column) {
+                handleItemRenamed(tree, item, column);
+                });
             connect(tree, &QTreeWidget::itemDoubleClicked, this,
                     [this, tree](QTreeWidgetItem* item, int) { openTextCompare(tree, item); });
         }
@@ -856,26 +867,124 @@ private:
     // "File Compare Report...").
     void showNodeMenu(CompareTree* tree, const QPoint& pos) {
         QTreeWidgetItem* item = tree->itemAt(pos);
-        if (!item) {
-            return;  // empty area below the last row
-        }
         const bool isLeft = tree == leftTree_;
-        QTreeWidgetItem* counterpart = pairedItem(item, isLeft ? rightTree_ : leftTree_);
+        QTreeWidgetItem* counterpart = item ? pairedItem(item, isLeft ? rightTree_ : leftTree_) : nullptr;
 
         NodeContext ctx;
         ctx.side = isLeft ? Side::Left : Side::Right;
-        ctx.path = item->data(0, kPathRole).toString();
-        ctx.existsHere = !ctx.path.isEmpty();
-        ctx.otherPath = counterpart ? counterpart->data(0, kPathRole).toString() : QString();
-        // A placeholder row has no data of its own; its counterpart knows the kind.
-        ctx.isDir = item->data(0, kIsDirRole).toBool() ||
-                    (counterpart && counterpart->data(0, kIsDirRole).toBool());
-
-        tree->setCurrentItem(item);  // right-click selects the row, like a left-click
+        if (item) {
+            ctx.path = item->data(0, kPathRole).toString();
+            ctx.existsHere = !ctx.path.isEmpty();
+            ctx.otherPath = counterpart ? counterpart->data(0, kPathRole).toString() : QString();
+            // A placeholder row has no data of its own; its counterpart knows the kind.
+            ctx.isDir = item->data(0, kIsDirRole).toBool() ||
+                        (counterpart && counterpart->data(0, kIsDirRole).toBool());
+            ctx.parentPath = item->parent()
+                                 ? item->parent()->data(0, kPathRole).toString()
+                                 : pathText(isLeft ? leftPath_ : rightPath_);
+            tree->setCurrentItem(item);  // right-click selects the row, like a left-click
+        } else {
+            ctx.isDir = true;
+            ctx.parentPath = pathText(isLeft ? leftPath_ : rightPath_);
+        }
 
         QMenu menu(tree);
         buildNodeMenu(menu, ctx);
         menu.exec(tree->viewport()->mapToGlobal(pos));
+    }
+
+    CompareTree* treeFor(Side side) const { return side == Side::Left ? leftTree_ : rightTree_; }
+
+    CompareTree* activeTree() const {
+        if (leftTree_->hasFocus()) return leftTree_;
+        if (rightTree_->hasFocus()) return rightTree_;
+        return leftTree_->currentItem() ? leftTree_ : rightTree_;
+    }
+
+    void renameSelected(CompareTree* tree) {
+        if (!tree) return;
+        auto* item = tree->currentItem();
+        if (!item || item->data(0, kPathRole).toString().isEmpty()) return;
+        tree->scrollToItem(item);
+        tree->editItem(item, 0);
+    }
+
+    static QTreeWidgetItem* findPath(QTreeWidget* tree, const QString& path) {
+        if (!tree || path.isEmpty()) return nullptr;
+        std::function<QTreeWidgetItem*(QTreeWidgetItem*)> visit = [&](QTreeWidgetItem* item) {
+            if (item->data(0, kPathRole).toString() == path) return item;
+            for (int i = 0; i < item->childCount(); ++i) {
+                if (auto* found = visit(item->child(i))) return found;
+            }
+            return static_cast<QTreeWidgetItem*>(nullptr);
+        };
+        for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+            if (auto* found = visit(tree->topLevelItem(i))) return found;
+        }
+        return nullptr;
+    }
+
+    void focusPendingEdit() {
+        if (pendingEditPath_.isEmpty() || !pendingEditTree_) return;
+        auto* item = findPath(pendingEditTree_, pendingEditPath_);
+        const QString path = pendingEditPath_;
+        pendingEditPath_.clear();
+        pendingEditTree_->clearFocus();
+        if (!item) return;
+        pendingEditTree_->setCurrentItem(item);
+        pendingEditTree_->scrollToItem(item);
+        QTimer::singleShot(0, this, [this, item]() {
+            if (item->treeWidget()) item->treeWidget()->editItem(item, 0);
+        });
+        log("Created " + QDir::toNativeSeparators(path));
+    }
+
+    void handleItemRenamed(CompareTree* tree, QTreeWidgetItem* item, int column) {
+        if (column != 0 || !item) return;
+        const QString oldPath = item->data(0, kPathRole).toString();
+        const QString newName = item->text(0).trimmed();
+        if (oldPath.isEmpty() || newName.isEmpty() || QFileInfo(oldPath).fileName() == newName) {
+            if (!oldPath.isEmpty() && item->text(0) != QFileInfo(oldPath).fileName()) {
+                const QSignalBlocker blocker(tree);
+                item->setText(0, QFileInfo(oldPath).fileName());
+            }
+            return;
+        }
+        const QString newPath = QFileInfo(oldPath).absolutePath() + QDir::separator() + newName;
+        if (!QFileInfo::exists(newPath) && QFile::rename(oldPath, newPath)) {
+            refresh();
+            log("Renamed " + QDir::toNativeSeparators(oldPath) + " to " +
+                QDir::toNativeSeparators(newPath));
+            return;
+        }
+        const QSignalBlocker blocker(tree);
+        item->setText(0, QFileInfo(oldPath).fileName());
+        QMessageBox::warning(this, "Rename failed", "Could not rename " + oldPath);
+    }
+
+    void createEntry(const NodeContext& ctx, bool directory) {
+        const QString parent = QDir::cleanPath(ctx.parentPath);
+        if (parent.isEmpty() || !QFileInfo(parent).isDir()) return;
+        const QString base = directory ? "New Folder" : "New File";
+        QString name = base;
+        int suffix = 2;
+        while (QFileInfo::exists(QDir(parent).filePath(name))) {
+            name = base + " " + QString::number(suffix++);
+        }
+        const QString path = QDir(parent).filePath(name);
+        const bool created = directory ? QDir().mkpath(path) : [&]() {
+            QFile file(path);
+            if (!file.open(QIODevice::WriteOnly)) return false;
+            file.close();
+            return true;
+        }();
+        if (!created) {
+            QMessageBox::warning(this, "Create failed", "Could not create " + path);
+            return;
+        }
+        pendingEditTree_ = treeFor(ctx.side);
+        pendingEditPath_ = path;
+        refresh();
     }
 
     void buildNodeMenu(QMenu& menu, const NodeContext& ctx) {
@@ -910,12 +1019,25 @@ private:
         addNodeAction(&menu, ctx, "Copy to Folder...", mi::copyToFolder());
         addNodeAction(&menu, ctx, "Move to Folder...", mi::moveToFolder());
         addNodeAction(&menu, ctx, "Delete...", mi::remove());
-        addNodeAction(&menu, ctx, "Rename", mi::rename(), "F2");
+        QAction* rename = addNodeAction(&menu, ctx, "Rename", mi::rename(), "F2");
+        connect(rename, &QAction::triggered, this, [this, ctx]() {
+            if (auto* tree = treeFor(ctx.side)) {
+                renameSelected(tree);
+            }
+        });
         addNodeAction(&menu, ctx, "Attributes...");
         addNodeAction(&menu, ctx, "Touch...", mi::touch());
         addNodeAction(&menu, ctx, ctx.isDir ? "Exclude" : "Exclude...");
-        addNodeAction(&menu, ctx, "New Folder...", mi::newFolder(), "Ins", /*needsNode=*/false);
         addNodeAction(&menu, ctx, "Copy Filename");
+
+        QMenu* create = menu.addMenu("Create");
+        QAction* newFolder = addNodeAction(create, ctx, "New Folder", mi::newFolder(), {}, false);
+        QAction* newFile = addNodeAction(create, ctx, "New File", {}, {}, false);
+        create->menuAction()->setEnabled(!ctx.parentPath.isEmpty());
+        connect(newFolder, &QAction::triggered, this,
+            [this, ctx]() { createEntry(ctx, true); });
+        connect(newFile, &QAction::triggered, this,
+            [this, ctx]() { createEntry(ctx, false); });
 
         // "Ignored" shows a green tick while the node is ignored. The state is
         // only remembered for the session so far; it does not affect the compare.
@@ -1178,6 +1300,8 @@ private:
     std::shared_ptr<ComparisonRun> run_;
     bool syncingScroll_ = false;
     QSet<QString> ignoredPaths_;  // paths marked "Ignored" in the context menu
+    QPointer<CompareTree> pendingEditTree_;
+    QString pendingEditPath_;
 };
 
 }  // namespace openbc::app

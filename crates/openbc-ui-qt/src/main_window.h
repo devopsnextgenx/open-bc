@@ -31,7 +31,7 @@
 #include <QToolButton>
 #include <functional>
 
-#include "compare_session.h"
+#include "folder_compare_view.h"
 #include "home_view.h"
 #include "qt_style.h"
 #include "session_history.h"

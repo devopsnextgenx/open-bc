@@ -3,7 +3,7 @@
 // Folder-compare data model: byte/size formatting, name filters, per-side
 // file-system info, entry pairing/classification, and the QTreeWidgetItem
 // helpers that turn an EntryPair into a row. No UI beyond QTreeWidgetItem
-// construction lives here - CompareSession (compare_session.h) owns the
+// construction lives here - CompareSession (folder_compare_view.h) owns the
 // actual panes, toolbars and menus.
 // ---------------------------------------------------------------------------
 #pragma once
@@ -332,6 +332,11 @@ inline QTreeWidgetItem* addRow(QTreeWidget* tree, const SideInfo& side, RowStatu
     item->setData(0, kClassRole, static_cast<int>(pairClass));
     item->setData(0, kPathRole, side.exists ? side.path : QString());
     item->setData(0, kIsDirRole, side.exists && side.isDir);
+    if (!side.exists) {
+        item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+    } else {
+        item->setFlags(item->flags() | Qt::ItemIsEditable);
+    }
     if (side.exists) {
         item->setText(0, side.name);
         item->setText(1, side.ext);

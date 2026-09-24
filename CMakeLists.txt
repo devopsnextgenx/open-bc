@@ -51,7 +51,7 @@ set(OPENBC_HEADERS
     crates/openbc-ui-qt/src/minimap.h
     crates/openbc-ui-qt/src/diff_line_preview.h
     crates/openbc-ui-qt/src/text_compare_view.h
-    crates/openbc-ui-qt/src/compare_session.h
+    crates/openbc-ui-qt/src/folder_compare_view.h
     crates/openbc-ui-qt/src/main_window.h
 )
 

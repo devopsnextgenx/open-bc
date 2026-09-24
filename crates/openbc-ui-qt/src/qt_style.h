@@ -1078,7 +1078,7 @@ public:
         setSelectionMode(QAbstractItemView::SingleSelection);
         setVerticalScrollMode(QAbstractItemView::ScrollPerItem);
         setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-        setEditTriggers(QAbstractItemView::NoEditTriggers);
+        setEditTriggers(QAbstractItemView::EditKeyPressed);
         setFrameShape(QFrame::NoFrame);
         setTextElideMode(Qt::ElideRight);
 
