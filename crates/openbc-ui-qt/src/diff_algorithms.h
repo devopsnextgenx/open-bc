@@ -1,11 +1,9 @@
 // diff_algorithms.h
 // ---------------------------------------------------------------------------
-// Pure, UI-free line-diff and char-diff algorithms shared by the minimap,
-// the line-number gutters and TextCompareView itself:
-//   - alignTextLines/groupDiffRows: the existing line-level LCS alignment.
-//   - computeInlineDiff: a lightweight char-level diff (common prefix/suffix)
-//     used to paint mismatched characters in red and mismatched runs of
-//     spaces/tabs with the VS Code-style whitespace markers.
+// Qt-side presentation helpers for backend-produced diff rows:
+//   - alignTextLines converts openbc-core rows to Qt values.
+//   - computeInlineDiff converts backend UTF-8 spans to QString positions.
+//   - groupDiffRows keeps copy arrows and minimap sections presentational.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -14,6 +12,8 @@
 #include <QStringList>
 #include <QVector>
 #include <QtGlobal>
+
+#include "backend_api.h"
 
 namespace openbc::app {
 
@@ -34,61 +34,33 @@ inline QString normalizedTextLine(const QString& line) {
 }
 
 inline QVector<TextDiffLine> alignTextLines(const QStringList& left, const QStringList& right) {
+    const QByteArray leftBytes = left.join('\n').toUtf8();
+    const QByteArray rightBytes = right.join('\n').toUtf8();
+    OpenBcDiff* handle = openbc_compare_buffers(
+        reinterpret_cast<const std::uint8_t*>(leftBytes.constData()), leftBytes.size(),
+        reinterpret_cast<const std::uint8_t*>(rightBytes.constData()), rightBytes.size(), 0, 0, 0,
+        0.95);
     QVector<TextDiffLine> result;
-    const int leftCount = left.size();
-    const int rightCount = right.size();
-    QVector<QVector<int>> common(leftCount + 1, QVector<int>(rightCount + 1));
-    for (int leftIndex = leftCount - 1; leftIndex >= 0; --leftIndex) {
-        for (int rightIndex = rightCount - 1; rightIndex >= 0; --rightIndex) {
-            common[leftIndex][rightIndex] =
-                left[leftIndex] == right[rightIndex]
-                    ? common[leftIndex + 1][rightIndex + 1] + 1
-                    : qMax(common[leftIndex + 1][rightIndex], common[leftIndex][rightIndex + 1]);
-        }
+    if (!handle) return result;
+    const std::size_t count = openbc_diff_len(handle);
+    result.reserve(static_cast<int>(count));
+    for (std::size_t i = 0; i < count; ++i) {
+        std::size_t leftLength = 0;
+        std::size_t rightLength = 0;
+        const auto* leftText = openbc_diff_left_text(handle, i, &leftLength);
+        const auto* rightText = openbc_diff_right_text(handle, i, &rightLength);
+        const QString leftLine = QString::fromUtf8(reinterpret_cast<const char*>(leftText),
+                                                   static_cast<int>(leftLength));
+        const QString rightLine = QString::fromUtf8(reinterpret_cast<const char*>(rightText),
+                                                     static_cast<int>(rightLength));
+        const int leftNumber = static_cast<int>(openbc_diff_left_line(handle, i));
+        const int rightNumber = static_cast<int>(openbc_diff_right_line(handle, i));
+        const bool changed = openbc_diff_kind(handle, i) != 0;
+        const bool whitespaceOnly = leftNumber > 0 && rightNumber > 0 &&
+                                    normalizedTextLine(leftLine) == normalizedTextLine(rightLine);
+        result.push_back({leftLine, rightLine, leftNumber, rightNumber, changed, whitespaceOnly});
     }
-
-    int leftIndex = 0;
-    int rightIndex = 0;
-    while (leftIndex < leftCount || rightIndex < rightCount) {
-        if (leftIndex < leftCount && rightIndex < rightCount &&
-            left[leftIndex] == right[rightIndex]) {
-            result.push_back({left[leftIndex], right[rightIndex], leftIndex + 1, rightIndex + 1,
-                              false, false});
-            ++leftIndex;
-            ++rightIndex;
-            continue;
-        }
-
-        // Find the next exact anchor and align the changed block before it as
-        // a pair of editor rows. This keeps insertions from shifting every
-        // later matching line onto the wrong row.
-        int anchorLeft = leftCount;
-        int anchorRight = rightCount;
-        for (int candidateLeft = leftIndex; candidateLeft < leftCount; ++candidateLeft) {
-            for (int candidateRight = rightIndex; candidateRight < rightCount; ++candidateRight) {
-                if (left[candidateLeft] == right[candidateRight] &&
-                    common[candidateLeft][candidateRight] == common[leftIndex][rightIndex]) {
-                    if (candidateLeft + candidateRight < anchorLeft + anchorRight) {
-                        anchorLeft = candidateLeft;
-                        anchorRight = candidateRight;
-                    }
-                }
-            }
-        }
-        const int blockLength = qMax(anchorLeft - leftIndex, anchorRight - rightIndex);
-        for (int offset = 0; offset < blockLength; ++offset) {
-            const bool hasLeft = leftIndex + offset < anchorLeft;
-            const bool hasRight = rightIndex + offset < anchorRight;
-            const QString leftText = hasLeft ? left[leftIndex + offset] : QString();
-            const QString rightText = hasRight ? right[rightIndex + offset] : QString();
-            const bool whitespaceOnly = hasLeft && hasRight &&
-                                        normalizedTextLine(leftText) == normalizedTextLine(rightText);
-            result.push_back({leftText, rightText, hasLeft ? leftIndex + offset + 1 : 0,
-                              hasRight ? rightIndex + offset + 1 : 0, true, whitespaceOnly});
-        }
-        leftIndex = anchorLeft;
-        rightIndex = anchorRight;
-    }
+    openbc_diff_destroy(handle);
     return result;
 }
 
@@ -148,42 +120,33 @@ inline bool isBlankChar(QChar c) { return c == ' ' || c == '\t'; }
 // it, on both sides, is spaces/tabs (e.g. two spaces vs. one tab), otherwise
 // as a real content mismatch.
 inline InlineDiff computeInlineDiff(const QString& left, const QString& right) {
-    InlineDiff diff;
-    const int leftLen = left.size();
-    const int rightLen = right.size();
-    int prefix = 0;
-    while (prefix < leftLen && prefix < rightLen && left[prefix] == right[prefix]) {
-        ++prefix;
-    }
-    int suffix = 0;
-    while (suffix < leftLen - prefix && suffix < rightLen - prefix &&
-           left[leftLen - 1 - suffix] == right[rightLen - 1 - suffix]) {
-        ++suffix;
-    }
-    const int leftMidLen = qMax(0, leftLen - prefix - suffix);
-    const int rightMidLen = qMax(0, rightLen - prefix - suffix);
-    const auto isBlankRange = [](const QString& text, int start, int len) {
-        for (int i = start; i < start + len; ++i) {
-            if (!isBlankChar(text[i])) return false;
-        }
-        return true;
-    };
-    const bool whitespaceMismatch =
-        isBlankRange(left, prefix, leftMidLen) && isBlankRange(right, prefix, rightMidLen);
-    const auto buildSide = [&](int midLen) {
+    const QByteArray leftBytes = left.toUtf8();
+    const QByteArray rightBytes = right.toUtf8();
+    OpenBcInline* handle = openbc_inline_diff(
+        reinterpret_cast<const std::uint8_t*>(leftBytes.constData()), leftBytes.size(),
+        reinterpret_cast<const std::uint8_t*>(rightBytes.constData()), rightBytes.size());
+    InlineDiff result;
+    if (!handle) return result;
+    const auto buildSide = [&](std::uint8_t side, const QByteArray& bytes) {
         QVector<CharSegment> segments;
-        if (prefix > 0) segments.push_back({0, prefix, CharSegmentKind::Equal});
-        if (midLen > 0) {
-            segments.push_back({prefix, midLen,
-                                whitespaceMismatch ? CharSegmentKind::WhitespaceMismatch
-                                                    : CharSegmentKind::Mismatch});
+        const std::size_t count = openbc_inline_len(handle, side);
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::size_t byteStart = openbc_inline_start(handle, side, i);
+            const std::size_t byteLength = openbc_inline_length(handle, side, i);
+            const int start = QString::fromUtf8(bytes.constData(), static_cast<int>(byteStart)).size();
+            const int length = QString::fromUtf8(bytes.constData() + byteStart,
+                                                 static_cast<int>(byteLength)).size();
+            const auto kind = openbc_inline_kind(handle, side, i);
+            segments.push_back({start, length, kind == 2 ? CharSegmentKind::WhitespaceMismatch
+                                                         : kind == 1 ? CharSegmentKind::Mismatch
+                                                                     : CharSegmentKind::Equal});
         }
-        if (suffix > 0) segments.push_back({prefix + midLen, suffix, CharSegmentKind::Equal});
         return segments;
     };
-    diff.left = buildSide(leftMidLen);
-    diff.right = buildSide(rightMidLen);
-    return diff;
+    result.left = buildSide(0, leftBytes);
+    result.right = buildSide(1, rightBytes);
+    openbc_inline_destroy(handle);
+    return result;
 }
 
 }  // namespace openbc::app

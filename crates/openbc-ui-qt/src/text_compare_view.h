@@ -118,8 +118,8 @@ private:
     }
 
     void applyLanguageHighlighting() {
-        leftHighlighter_->setLanguage(syntax::forExtension(QFileInfo(leftPath_).suffix()));
-        rightHighlighter_->setLanguage(syntax::forExtension(QFileInfo(rightPath_).suffix()));
+        leftHighlighter_->setLanguage(QFileInfo(leftPath_).suffix());
+        rightHighlighter_->setLanguage(QFileInfo(rightPath_).suffix());
     }
 
     void computeInlineDiffs(const QVector<TextDiffLine>& rows) {

@@ -31,6 +31,37 @@ pub struct LineDiff {
     pub kind: ChangeKind,
 }
 
+/// Classification for a character-level difference inside an aligned row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CharChangeKind {
+    /// The character range is identical on both sides.
+    Equal,
+    /// The range contains changed non-whitespace content.
+    Mismatch,
+    /// The range differs only by spaces or tabs.
+    WhitespaceMismatch,
+}
+
+/// A UTF-8 byte range in one side of an aligned row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CharDiff {
+    /// Zero-based UTF-8 byte offset.
+    pub start: usize,
+    /// Length in UTF-8 bytes.
+    pub length: usize,
+    /// Meaning of this range.
+    pub kind: CharChangeKind,
+}
+
+/// Character-level differences for both sides of one aligned row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InlineDiff {
+    /// Ranges in the left line.
+    pub left: Vec<CharDiff>,
+    /// Ranges in the right line.
+    pub right: Vec<CharDiff>,
+}
+
 /// Policies applied before comparing lines.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompareOptions {

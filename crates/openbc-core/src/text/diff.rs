@@ -1,12 +1,93 @@
 //! Line-oriented text comparison.
 
-use crate::text::models::{ChangeKind, CompareOptions, LineDiff};
+use crate::text::models::{
+    ChangeKind, CharChangeKind, CharDiff, CompareOptions, InlineDiff, LineDiff,
+};
 use crate::text::normalize::LogNormalizer;
 use similar::{ChangeTag, TextDiff};
 use strsim::jaro_winkler;
 
 /// Synchronous text comparison engine with optional log normalization.
 pub struct TextCompareEngine;
+
+/// Compute character ranges for two already-aligned lines.
+#[must_use]
+pub fn compute_inline_diff(left: &str, right: &str) -> InlineDiff {
+    let left_chars: Vec<char> = left.chars().collect();
+    let right_chars: Vec<char> = right.chars().collect();
+    let mut prefix = 0;
+    while prefix < left_chars.len()
+        && prefix < right_chars.len()
+        && left_chars[prefix] == right_chars[prefix]
+    {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < left_chars.len().saturating_sub(prefix)
+        && suffix < right_chars.len().saturating_sub(prefix)
+        && left_chars[left_chars.len() - 1 - suffix] == right_chars[right_chars.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let left_middle = &left_chars[prefix..left_chars.len().saturating_sub(suffix)];
+    let right_middle = &right_chars[prefix..right_chars.len().saturating_sub(suffix)];
+    let whitespace_only = left_middle
+        .iter()
+        .chain(right_middle)
+        .all(|c| *c == ' ' || *c == '\t');
+    let kind = if whitespace_only {
+        CharChangeKind::WhitespaceMismatch
+    } else {
+        CharChangeKind::Mismatch
+    };
+    let left_start: usize = left_chars[..prefix].iter().map(|c| c.len_utf8()).sum();
+    let right_start: usize = right_chars[..prefix].iter().map(|c| c.len_utf8()).sum();
+    let left_middle_len: usize = left_middle.iter().map(|c| c.len_utf8()).sum();
+    let right_middle_len: usize = right_middle.iter().map(|c| c.len_utf8()).sum();
+    let left_suffix_len: usize = left_chars[left_chars.len().saturating_sub(suffix)..]
+        .iter()
+        .map(|c| c.len_utf8())
+        .sum();
+    let right_suffix_len: usize = right_chars[right_chars.len().saturating_sub(suffix)..]
+        .iter()
+        .map(|c| c.len_utf8())
+        .sum();
+    InlineDiff {
+        left: build_inline_ranges(left_start, left_middle_len, left_suffix_len, kind),
+        right: build_inline_ranges(right_start, right_middle_len, right_suffix_len, kind),
+    }
+}
+
+fn build_inline_ranges(
+    start: usize,
+    middle_len: usize,
+    suffix_len: usize,
+    kind: CharChangeKind,
+) -> Vec<CharDiff> {
+    let mut ranges = Vec::new();
+    if start > 0 {
+        ranges.push(CharDiff {
+            start: 0,
+            length: start,
+            kind: CharChangeKind::Equal,
+        });
+    }
+    if middle_len > 0 {
+        ranges.push(CharDiff {
+            start,
+            length: middle_len,
+            kind,
+        });
+    }
+    if suffix_len > 0 {
+        ranges.push(CharDiff {
+            start: start + middle_len,
+            length: suffix_len,
+            kind: CharChangeKind::Equal,
+        });
+    }
+    ranges
+}
 
 impl TextCompareEngine {
     /// Compare two UTF-8 buffers and return aligned rows containing original text.
@@ -115,5 +196,13 @@ mod tests {
             &options,
         );
         assert!(matches!(result[0].kind, ChangeKind::Modified { .. }));
+    }
+
+    #[test]
+    fn inline_diff_uses_utf8_byte_ranges() {
+        let result = compute_inline_diff("préfix old", "préfix new");
+        assert_eq!(result.left[0].kind, CharChangeKind::Equal);
+        assert_eq!(result.left[1].kind, CharChangeKind::Mismatch);
+        assert_eq!(result.left[1].start, "préfix ".len());
     }
 }
