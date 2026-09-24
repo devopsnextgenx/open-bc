@@ -14,6 +14,7 @@
 #include <QIcon>
 #include <QIconEngine>
 #include <QItemSelectionModel>
+#include <QKeyEvent>
 #include <QModelIndex>
 #include <QPainter>
 #include <QPainterPath>
@@ -1099,6 +1100,17 @@ public:
     }
 
 protected:
+    void keyPressEvent(QKeyEvent* event) override {
+        if (event->key() == Qt::Key_F2) {
+            if (auto* item = currentItem()) {
+                editItem(item, 0);
+                event->accept();
+                return;
+            }
+        }
+        QTreeWidget::keyPressEvent(event);
+    }
+
     // Classic tree look: dotted connectors between siblings, small [+]/[-]
     // boxes for expandable folders. Top-level rows get no connectors.
     void drawBranches(QPainter* painter, const QRect& rect,
