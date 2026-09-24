@@ -54,6 +54,7 @@
 #include <memory>
 
 #include "folder_model.h"
+#include "path_selector.h"
 #include "qt_style.h"
 
 namespace openbc::app {
@@ -485,6 +486,7 @@ private:
         QWidget* panel = nullptr;
         QWidget* pathBar = nullptr;
         QWidget* footer = nullptr;
+        PathSelector* selector = nullptr;
         QComboBox* path = nullptr;
         QToolButton* browse = nullptr;
         QToolButton* up = nullptr;
@@ -494,7 +496,6 @@ private:
     };
 
     Pane makePane(const QString& side, QWidget* parent) {
-        using icons::Glyph;
         Pane pane;
         pane.panel = new QWidget(parent);
         auto* layout = new QVBoxLayout(pane.panel);
@@ -506,21 +507,11 @@ private:
         auto* pathLayout = new QHBoxLayout(pathBar);
         pathLayout->setContentsMargins(0, 1, 2, 1);
         pathLayout->setSpacing(0);
-        pane.path = new QComboBox(pathBar);
-        pane.path->setEditable(true);
-        pane.path->setInsertPolicy(QComboBox::NoInsert);
-        pane.path->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-        pane.path->setMinimumContentsLength(10);
-        pane.path->lineEdit()->setPlaceholderText(side + " folder path");
-        pane.browse = new QToolButton(pathBar);
-        pane.browse->setIcon(icons::glyph(Glyph::FolderOpen));
-        pane.browse->setToolTip("Select " + side.toLower() + " folder");
-        pane.up = new QToolButton(pathBar);
-        pane.up->setIcon(icons::glyph(Glyph::FolderUp));
-        pane.up->setToolTip("Go to parent folder");
-        pathLayout->addWidget(pane.path, 1);
-        pathLayout->addWidget(pane.browse);
-        pathLayout->addWidget(pane.up);
+        pane.selector = new PathSelector(PathSelector::Mode::Folder, side, pathBar, /*showUp=*/true);
+        pane.path = pane.selector->combo();
+        pane.browse = pane.selector->browseButton();
+        pane.up = pane.selector->upButton();
+        pathLayout->addWidget(pane.selector, 1);
 
         pane.tree = new CompareTree(pane.panel);
 
@@ -635,12 +626,29 @@ private:
 
         Pane left = makePane("Left", nullptr);
         Pane right = makePane("Right", nullptr);
+        leftSelector_ = left.selector;
+        rightSelector_ = right.selector;
         leftPath_ = left.path;
         rightPath_ = right.path;
         leftBrowse_ = left.browse;
         rightBrowse_ = right.browse;
         leftUp_ = left.up;
         rightUp_ = right.up;
+
+        // Browsing or going up inside the path row itself should behave
+        // exactly like it always did: refresh the compare, and (browse
+        // only, matching the old chooseFolder()) log which folder was
+        // picked.
+        leftSelector_->onBrowsed = [this](const QString& path) {
+            refresh();
+            log("left resource selected: " + path);
+        };
+        rightSelector_->onBrowsed = [this](const QString& path) {
+            refresh();
+            log("right resource selected: " + path);
+        };
+        leftSelector_->onWentUp = [this](const QString&) { refresh(); };
+        rightSelector_->onWentUp = [this](const QString&) { refresh(); };
         leftTree_ = left.tree;
         rightTree_ = right.tree;
         leftCount_ = left.count;
@@ -691,12 +699,10 @@ private:
             refresh();
             log("Left and right resources swapped");
         });
-        connect(selectLeftAction_, &QAct::triggered, this, [this]() { chooseFolder(leftPath_, "left"); });
-        connect(selectRightAction_, &QAct::triggered, this, [this]() { chooseFolder(rightPath_, "right"); });
-        connect(leftBrowse_, &QToolButton::clicked, this, [this]() { chooseFolder(leftPath_, "left"); });
-        connect(rightBrowse_, &QToolButton::clicked, this, [this]() { chooseFolder(rightPath_, "right"); });
-        connect(leftUp_, &QToolButton::clicked, this, [this]() { goUp(leftPath_); });
-        connect(rightUp_, &QToolButton::clicked, this, [this]() { goUp(rightPath_); });
+        connect(selectLeftAction_, &QAct::triggered, this,
+                [this]() { chooseFolder(leftSelector_, "left"); });
+        connect(selectRightAction_, &QAct::triggered, this,
+                [this]() { chooseFolder(rightSelector_, "right"); });
         connect(bothUp_, &QToolButton::clicked, this, [this]() { goUpBoth(); });
         connect(leftPath_->lineEdit(), &QLineEdit::returnPressed, this, [this]() { refresh(); });
         connect(rightPath_->lineEdit(), &QLineEdit::returnPressed, this, [this]() { refresh(); });
@@ -1059,21 +1065,15 @@ private:
 
     static void setPath(QComboBox* combo, const QString& text) { combo->setEditText(text); }
 
-    void chooseFolder(QComboBox* combo, const QString& side) {
-        const QString selected =
-            QFileDialog::getExistingDirectory(this, "Select " + side + " folder", pathText(combo));
+    // Used by the "Select Left/Right folder..." menu actions, which need
+    // the same picking dialog as the path row's own Browse button but are
+    // triggered from the menu bar rather than a click on that button.
+    void chooseFolder(PathSelector* selector, const QString& side) {
+        const QString selected = selector->pickPath();
         if (!selected.isEmpty()) {
-            setPath(combo, selected);
+            selector->setText(selected);
             refresh();
             log(side + " resource selected: " + selected);
-        }
-    }
-
-    void goUp(QComboBox* combo) {
-        QDir dir(pathText(combo));
-        if (!pathText(combo).isEmpty() && dir.cdUp()) {
-            setPath(combo, dir.absolutePath());
-            refresh();
         }
     }
 
@@ -1139,6 +1139,8 @@ private:
 
     // ---------------------------------------------------------------- members
     QToolBar* toolbar_ = nullptr;
+    PathSelector* leftSelector_ = nullptr;
+    PathSelector* rightSelector_ = nullptr;
     QComboBox* leftPath_ = nullptr;
     QComboBox* rightPath_ = nullptr;
     QToolButton* leftBrowse_ = nullptr;

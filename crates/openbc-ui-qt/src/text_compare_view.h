@@ -53,6 +53,7 @@
 #include "find_replace_bar.h"
 #include "line_number_editor.h"
 #include "minimap.h"
+#include "path_selector.h"
 #include "qt_style.h"
 #include "syntax_highlighter.h"
 
@@ -130,12 +131,14 @@ private:
         }
     }
 
-    // Per-side header: file name (with full path as a tooltip) plus a save
-    // icon on the top row, and a smaller line of file attributes - modified
-    // date, size, text encoding, and line-ending style ("PC" for CRLF,
-    // matching the reference app's own label for Windows-style endings, vs
-    // "Unix"/"Mac" for LF/CR-only) - on the row below, the same layout the
-    // reference screenshot uses just under each side's path.
+    // Per-side header: an editable path row (combo box + Browse button -
+    // the same PathSelector CompareSession's folder pickers use, in
+    // Mode::File here) plus a save icon on the top row, and a smaller line
+    // of file attributes - modified date, size, text encoding, and
+    // line-ending style ("PC" for CRLF, matching the reference app's own
+    // label for Windows-style endings, vs "Unix"/"Mac" for LF/CR-only) - on
+    // the row below, the same layout the reference screenshot uses just
+    // under each side's path.
     QWidget* buildSideHeader(bool left) {
         auto* frame = new QFrame(this);
         frame->setObjectName("sideHeader");
@@ -146,11 +149,14 @@ private:
         auto* pathRow = new QHBoxLayout;
         pathRow->setContentsMargins(0, 0, 0, 0);
         pathRow->setSpacing(4);
-        QLabel*& pathLabel = left ? leftPathLabel_ : rightPathLabel_;
+        PathSelector*& selector = left ? leftSelector_ : rightSelector_;
         QToolButton*& saveButton = left ? leftSaveButton_ : rightSaveButton_;
-        pathLabel = new QLabel(frame);
-        pathLabel->setObjectName("sidePath");
-        pathRow->addWidget(pathLabel, 1);
+        selector = new PathSelector(PathSelector::Mode::File, left ? "Left" : "Right", frame);
+        selector->combo()->setObjectName("sidePath");
+        // Browsing picks a different file for this side entirely - load it
+        // in place of whatever was being compared here before.
+        selector->onBrowsed = [this, left](const QString& path) { loadSide(left, path); };
+        pathRow->addWidget(selector, 1);
         saveButton = new QToolButton(frame);
         saveButton->setObjectName("saveSideBtn");
         saveButton->setIcon(icons::glyph(icons::Glyph::Save));
@@ -180,14 +186,16 @@ private:
     // shown always matches what is actually on disk right now.
     void refreshSideHeader(bool left) {
         const QString& path = left ? leftPath_ : rightPath_;
-        QLabel* pathLabel = left ? leftPathLabel_ : rightPathLabel_;
+        PathSelector* selector = left ? leftSelector_ : rightSelector_;
         QLabel* attrsLabel = left ? leftAttrsLabel_ : rightAttrsLabel_;
         QToolButton* saveButton = left ? leftSaveButton_ : rightSaveButton_;
-        if (!pathLabel || !attrsLabel) return;
+        if (!selector || !attrsLabel) return;
 
         const QFileInfo info(path);
-        pathLabel->setText(info.fileName().isEmpty() ? "(no file)" : info.fileName());
-        pathLabel->setToolTip(path);
+        // Full path, editable, same as CompareSession's folder pickers -
+        // rather than just the file name a plain label used to show.
+        selector->setText(path);
+        selector->combo()->setToolTip(path);
 
         if (info.exists()) {
             const QString modified = info.lastModified().toString("M/d/yyyy h:mm:ss AP");
@@ -247,7 +255,7 @@ private:
             action->setCheckable(true);
             viewGroup->addAction(action);
         }
-        contextAction_->setChecked(true);
+        showAllAction_->setChecked(true);
         toolbar_->addSeparator();
 
         minorAction_ = toolbar_->addAction(icons::glyph(Glyph::Minor), "Minor");
@@ -524,6 +532,9 @@ private:
     void jumpToRow(int row) {
         leftEditor_->setTextCursor(cursorAtRow(leftEditor_, row));
         rightEditor_->setTextCursor(cursorAtRow(rightEditor_, row));
+        leftEditor_->ensureCursorVisible();
+        rightEditor_->ensureCursorVisible();
+        updateMinimapViewport();
     }
 
     void jumpToSection(int direction) {
@@ -949,16 +960,13 @@ private:
     }
 
     // Maps the editor's current vertical-scrollbar position onto the
-    // fraction-of-whole-file the mini-map needs, so its black viewport
-    // rectangle always matches what is actually on screen.
+    // fraction-of-whole-file the mini-map needs. DifferenceOverview itself
+    // decides how tall to paint the sliding box (capping it on short files
+    // so a document that fits on screen does not produce a full-height
+    // indicator); here we only report the true scrollbar start/span.
     void updateMinimapViewport() {
         const QScrollBar* bar = leftEditor_->verticalScrollBar();
         const qreal pageStep = qMax(1, bar->pageStep());
-        // bar->maximum() is how far the *top* of the viewport can still
-        // travel, so maximum()+pageStep() is the full scrollable extent in
-        // the scrollbar's own units - this holds regardless of whether a
-        // "unit" happens to be one text line (NoWrap) or something coarser
-        // (word-wrap on), so the box always matches what's really on screen.
         const qreal total = qMax<qreal>(1.0, bar->maximum() + pageStep);
         const qreal start = static_cast<qreal>(bar->value()) / total;
         const qreal span = pageStep / total;
@@ -975,6 +983,34 @@ private:
         } else {
             status_->setText("Click into a pane first, then Ctrl+S saves that side.");
         }
+    }
+
+    // Loads a different file into one side, replacing whatever was being
+    // compared there before - what the side header's Browse button does.
+    // Mirrors what the constructor does for the initial two files, just
+    // re-run later for a single side.
+    void loadSide(bool left, const QString& path) {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            status_->setText("Could not open " + path);
+            return;
+        }
+        const QString text = QTextStream(&file).readAll();
+        file.close();
+
+        syncFromEditors();  // keep whatever the other side's editor currently holds
+        (left ? leftPath_ : rightPath_) = path;
+        (left ? leftOriginal_ : rightOriginal_) = text.split('\n');
+        (left ? leftDirtyLines_ : rightDirtyLines_).clear();
+        (left ? leftStructurallyEdited_ : rightStructurallyEdited_) = false;
+
+        applyLanguageHighlighting();
+        rebuild();
+        refreshSideHeader(true);
+        refreshSideHeader(false);
+        refreshDirtyIndicators();
+        if (onTitleChanged) onTitleChanged();
+        status_->setText(QFileInfo(path).fileName() + " loaded.");
     }
 
     void saveSide(bool left) {
@@ -1029,8 +1065,8 @@ private:
     QAction* swapAction_ = nullptr;
     QAction* reloadAction_ = nullptr;
 
-    QLabel* leftPathLabel_ = nullptr;
-    QLabel* rightPathLabel_ = nullptr;
+    PathSelector* leftSelector_ = nullptr;
+    PathSelector* rightSelector_ = nullptr;
     QLabel* leftAttrsLabel_ = nullptr;
     QLabel* rightAttrsLabel_ = nullptr;
     QToolButton* leftSaveButton_ = nullptr;
