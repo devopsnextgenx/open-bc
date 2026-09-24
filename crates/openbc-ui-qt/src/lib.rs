@@ -1,5 +1,5 @@
 use openbc_core::text::{compute_inline_diff, ChangeKind, CompareOptions, InlineDiff, LineDiff};
-use openbc_core::text::{HighlightEngine, HighlightSpan};
+use openbc_core::text::{HighlightEngine, HighlightSpan, HighlightTheme};
 
 pub struct DiffHandle {
     rows: Vec<LineDiff>,
@@ -248,6 +248,26 @@ pub extern "C" fn openbc_highlight_buffer(
     trace_backend(format_args!("highlight complete spans={}", spans.len()));
     Box::into_raw(Box::new(HighlightHandle {
         spans,
+    }))
+}
+
+#[no_mangle]
+pub extern "C" fn openbc_highlight_buffer_with_theme(
+    extension: *const u8,
+    extension_length: usize,
+    source: *const u8,
+    source_length: usize,
+    theme: u8,
+) -> *mut HighlightHandle {
+    let extension = unsafe { input_text(extension, extension_length) };
+    let source = unsafe { input_text(source, source_length) };
+    let theme = if theme == 1 {
+        HighlightTheme::VsCodeDark
+    } else {
+        HighlightTheme::Base16OceanDark
+    };
+    Box::into_raw(Box::new(HighlightHandle {
+        spans: HighlightEngine::default().highlight_buffer_with_theme(&extension, &source, theme),
     }))
 }
 

@@ -28,6 +28,9 @@ std::uint8_t openbc_inline_kind(const OpenBcInline*, std::uint8_t, std::size_t);
 
 OpenBcHighlight* openbc_highlight_buffer(const std::uint8_t*, std::size_t, const std::uint8_t*,
                                          std::size_t);
+OpenBcHighlight* openbc_highlight_buffer_with_theme(const std::uint8_t*, std::size_t,
+                                                    const std::uint8_t*, std::size_t,
+                                                    std::uint8_t);
 void openbc_highlight_destroy(OpenBcHighlight*);
 std::size_t openbc_highlight_len(const OpenBcHighlight*);
 std::size_t openbc_highlight_line(const OpenBcHighlight*, std::size_t);

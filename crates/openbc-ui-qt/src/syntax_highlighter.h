@@ -29,7 +29,7 @@ struct BackendHighlightSpan {
 
 class SyntaxHighlighter : public QSyntaxHighlighter {
 public:
-    enum class Style { Vibrant, Classic, HighContrast };
+    enum class Style { Vibrant, Classic, HighContrast, VsCodeDark };
     explicit SyntaxHighlighter(QTextDocument* document) : QSyntaxHighlighter(document) {
         connect(document, &QTextDocument::contentsChanged, this, [this]() {
             refreshAndRehighlight();
@@ -66,9 +66,6 @@ protected:
             if (span.line != line || span.start >= text.size()) continue;
             QTextCharFormat format;
             format.setForeground(styledForeground(span.foreground));
-            if (span.background.alpha() > 0 && span.background != QColor(0, 0, 0, 255)) {
-                format.setBackground(span.background);
-            }
             if (span.bold) format.setFontWeight(QFont::Bold);
             if (span.italic) format.setFontItalic(true);
             setFormat(span.start, qMin(span.length, text.size() - span.start), format);
@@ -103,9 +100,13 @@ private:
         spans_.clear();
         const QByteArray extension = extension_.toUtf8();
         const QByteArray source = document()->toPlainText().toUtf8();
-        OpenBcHighlight* handle = openbc_highlight_buffer(
-            reinterpret_cast<const std::uint8_t*>(extension.constData()), extension.size(),
-            reinterpret_cast<const std::uint8_t*>(source.constData()), source.size());
+          OpenBcHighlight* handle = style_ == Style::VsCodeDark
+            ? openbc_highlight_buffer_with_theme(
+                reinterpret_cast<const std::uint8_t*>(extension.constData()), extension.size(),
+                reinterpret_cast<const std::uint8_t*>(source.constData()), source.size(), 1)
+            : openbc_highlight_buffer(
+                reinterpret_cast<const std::uint8_t*>(extension.constData()), extension.size(),
+                reinterpret_cast<const std::uint8_t*>(source.constData()), source.size());
         if (!handle) return;
         const std::size_t count = openbc_highlight_len(handle);
         spans_.reserve(static_cast<int>(count));
@@ -131,7 +132,7 @@ private:
     }
 
     QColor styledForeground(const QColor& color) const {
-        if (!color.isValid() || style_ == Style::Classic) return color;
+        if (!color.isValid() || style_ == Style::Classic || style_ == Style::VsCodeDark) return color;
         QColor result = color.toHsv();
         const int hue = result.hue() < 0 ? 0 : result.hue();
         if (style_ == Style::Vibrant) {

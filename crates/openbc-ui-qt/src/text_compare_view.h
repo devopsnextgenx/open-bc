@@ -365,11 +365,13 @@ private:
         vibrantStyleAction_ = styleMenu->addAction("Vibrant");
         classicStyleAction_ = styleMenu->addAction("Classic");
         contrastStyleAction_ = styleMenu->addAction("High Contrast");
-        for (QAction* action : {vibrantStyleAction_, classicStyleAction_, contrastStyleAction_}) {
+        vscodeDarkStyleAction_ = styleMenu->addAction("VS Code Dark");
+        for (QAction* action : {vibrantStyleAction_, classicStyleAction_, contrastStyleAction_,
+                    vscodeDarkStyleAction_}) {
             action->setCheckable(true);
             styleGroup->addAction(action);
         }
-        vibrantStyleAction_->setChecked(true);
+        vscodeDarkStyleAction_->setChecked(true);
 
         editors->addWidget(leftPane);
         editors->addWidget(rightPane);
@@ -538,6 +540,9 @@ private:
         });
         connect(contrastStyleAction_, &QAction::triggered, this, [this]() {
             setHighlightStyle(SyntaxHighlighter::Style::HighContrast);
+        });
+        connect(vscodeDarkStyleAction_, &QAction::triggered, this, [this]() {
+            setHighlightStyle(SyntaxHighlighter::Style::VsCodeDark);
         });
         connect(minorAction_, &QAction::toggled, this, [this](bool) { rebuild(); });
         connect(formatAction_, &QAction::toggled, this, [this](bool checked) {
@@ -1355,6 +1360,7 @@ private:
     QAction* vibrantStyleAction_ = nullptr;
     QAction* classicStyleAction_ = nullptr;
     QAction* contrastStyleAction_ = nullptr;
+    QAction* vscodeDarkStyleAction_ = nullptr;
 
     SyntaxHighlighter* leftHighlighter_ = nullptr;
     SyntaxHighlighter* rightHighlighter_ = nullptr;
