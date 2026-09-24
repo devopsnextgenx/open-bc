@@ -40,7 +40,7 @@ extern "C" int openbc_run_gui() {
 
     QApplication::setStyle(QStyleFactory::create("Fusion"));
     application.setPalette(openbc::ui::darkPalette());
-    application.setStyleSheet(openbc::ui::applicationStyleSheet());
+    application.setStyleSheet(openbc::ui::applicationStyleSheet(openbc::ui::Theme::Dark));
 
     QMainWindow window;
     window.resize(1280, 820);
@@ -62,6 +62,14 @@ extern "C" int openbc_run_gui() {
     window.setCentralWidget(tabs);
 
     auto currentSession = [&]() { return dynamic_cast<CompareSession*>(tabs->currentWidget()); };
+    auto* darkThemeAction = new QAction("Dark Theme", &window);
+    darkThemeAction->setCheckable(true);
+    darkThemeAction->setChecked(true);
+    QObject::connect(darkThemeAction, &QAction::toggled, &window, [&](bool dark) {
+        const auto theme = dark ? openbc::ui::Theme::Dark : openbc::ui::Theme::Light;
+        application.setPalette(dark ? openbc::ui::darkPalette() : openbc::ui::lightPalette());
+        application.setStyleSheet(openbc::ui::applicationStyleSheet(theme));
+    });
 
     // The Actions / Edit / Search / View / Tools menus always show the actions
     // of the tab that is currently selected, so a command can only ever affect
@@ -95,6 +103,9 @@ extern "C" int openbc_run_gui() {
         fill(viewMenu, session   ? session->viewMenuItems()
                        : textView ? textView->viewMenuItems()
                                   : QList<QAction*>());
+        viewMenu->addSeparator();
+        viewMenu->addAction(darkThemeAction);
+        if (textView) viewMenu->addAction(textView->syntaxStyleMenuAction());
         fill(toolsMenu, session ? session->toolsMenuItems() : QList<QAction*>());
     };
     auto updateWindowTitle = [&]() {

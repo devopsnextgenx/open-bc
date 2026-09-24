@@ -81,6 +81,7 @@ public:
         return {showAllAction_, showDiffsAction_, contextAction_, minorAction_,
                 pixelMinimapAction_, formatAction_};
     }
+    QAction* syntaxStyleMenuAction() const { return syntaxStyleMenu_->menuAction(); }
     QList<QAction*> actionsMenuItems() const { return {copyAction_, swapAction_, reloadAction_}; }
 
 protected:
@@ -120,6 +121,11 @@ private:
     void applyLanguageHighlighting() {
         leftHighlighter_->setLanguage(QFileInfo(leftPath_).suffix());
         rightHighlighter_->setLanguage(QFileInfo(rightPath_).suffix());
+    }
+
+    void setHighlightStyle(SyntaxHighlighter::Style style) {
+        leftHighlighter_->setStyle(style);
+        rightHighlighter_->setStyle(style);
     }
 
     void computeInlineDiffs(const QVector<TextDiffLine>& rows) {
@@ -341,6 +347,30 @@ private:
         });
         applyLanguageHighlighting();
 
+        syntaxStyleMenu_ = new QMenu("Syntax & Style", this);
+        auto* syntaxMenu = syntaxStyleMenu_->addMenu("Syntax Highlighting");
+        auto* syntaxGroup = new QActionGroup(this);
+        syntaxGroup->setExclusive(true);
+        syntaxAutoAction_ = syntaxMenu->addAction("Automatic");
+        syntaxAutoAction_->setCheckable(true);
+        syntaxAutoAction_->setChecked(true);
+        syntaxPlainAction_ = syntaxMenu->addAction("Plain Text");
+        syntaxPlainAction_->setCheckable(true);
+        syntaxGroup->addAction(syntaxAutoAction_);
+        syntaxGroup->addAction(syntaxPlainAction_);
+
+        auto* styleMenu = syntaxStyleMenu_->addMenu("Editor Style");
+        auto* styleGroup = new QActionGroup(this);
+        styleGroup->setExclusive(true);
+        vibrantStyleAction_ = styleMenu->addAction("Vibrant");
+        classicStyleAction_ = styleMenu->addAction("Classic");
+        contrastStyleAction_ = styleMenu->addAction("High Contrast");
+        for (QAction* action : {vibrantStyleAction_, classicStyleAction_, contrastStyleAction_}) {
+            action->setCheckable(true);
+            styleGroup->addAction(action);
+        }
+        vibrantStyleAction_->setChecked(true);
+
         editors->addWidget(leftPane);
         editors->addWidget(rightPane);
         editors->setStretchFactor(0, 1);
@@ -355,7 +385,7 @@ private:
         root->addWidget(preview_);
 
         status_ = new QLabel(this);
-        status_->setStyleSheet("background:#3e3e3e; border-top:1px solid #505050; padding:3px 8px;");
+        status_->setObjectName("compareStatus");
         root->addWidget(status_);
 
         leftEditor_->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -492,6 +522,23 @@ private:
         connect(showAllAction_, &QAction::triggered, this, [this]() { rebuild(); });
         connect(showDiffsAction_, &QAction::triggered, this, [this]() { rebuild(); });
         connect(contextAction_, &QAction::triggered, this, [this]() { rebuild(); });
+        connect(syntaxAutoAction_, &QAction::triggered, this, [this]() {
+            leftHighlighter_->setEnabled(true);
+            rightHighlighter_->setEnabled(true);
+        });
+        connect(syntaxPlainAction_, &QAction::triggered, this, [this]() {
+            leftHighlighter_->setEnabled(false);
+            rightHighlighter_->setEnabled(false);
+        });
+        connect(vibrantStyleAction_, &QAction::triggered, this, [this]() {
+            setHighlightStyle(SyntaxHighlighter::Style::Vibrant);
+        });
+        connect(classicStyleAction_, &QAction::triggered, this, [this]() {
+            setHighlightStyle(SyntaxHighlighter::Style::Classic);
+        });
+        connect(contrastStyleAction_, &QAction::triggered, this, [this]() {
+            setHighlightStyle(SyntaxHighlighter::Style::HighContrast);
+        });
         connect(minorAction_, &QAction::toggled, this, [this](bool) { rebuild(); });
         connect(formatAction_, &QAction::toggled, this, [this](bool checked) {
             const auto mode = checked ? QPlainTextEdit::WidgetWidth : QPlainTextEdit::NoWrap;
@@ -1302,6 +1349,12 @@ private:
     QAction* redoAction_ = nullptr;
     QAction* findAction_ = nullptr;
     QAction* pixelMinimapAction_ = nullptr;
+    QMenu* syntaxStyleMenu_ = nullptr;
+    QAction* syntaxAutoAction_ = nullptr;
+    QAction* syntaxPlainAction_ = nullptr;
+    QAction* vibrantStyleAction_ = nullptr;
+    QAction* classicStyleAction_ = nullptr;
+    QAction* contrastStyleAction_ = nullptr;
 
     SyntaxHighlighter* leftHighlighter_ = nullptr;
     SyntaxHighlighter* rightHighlighter_ = nullptr;

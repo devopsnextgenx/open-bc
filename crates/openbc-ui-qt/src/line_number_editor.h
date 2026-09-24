@@ -5,6 +5,7 @@
 #pragma once
 
 #include <QEvent>
+#include <QGuiApplication>
 #include <QFontMetrics>
 #include <QMouseEvent>
 #include <QPainter>
@@ -53,12 +54,12 @@ public:
         connect(this, &QPlainTextEdit::cursorPositionChanged, this,
                 [this]() { lineNumberArea_->update(); });
         lineNumberArea_ = new QWidget(this);
-        lineNumberArea_->setStyleSheet("background:#232323; color:#777b8f;");
+        lineNumberArea_->setObjectName("lineNumberGutter");
         lineNumberArea_->setCursor(Qt::ArrowCursor);
         lineNumberArea_->installEventFilter(this);
         if (arrowSide_ != GutterSide::None) {
             arrowArea_ = new QWidget(this);
-            arrowArea_->setStyleSheet("background:#232323;");
+            arrowArea_->setObjectName("diffArrowGutter");
             arrowArea_->setCursor(Qt::PointingHandCursor);
             arrowArea_->setToolTip(arrowSide_ == GutterSide::Right
                                         ? "Copy this change to the right"
@@ -211,11 +212,13 @@ private:
 
     void paintLineNumbers(QPaintEvent* event) {
         QPainter painter(lineNumberArea_);
-        painter.fillRect(event->rect(), QColor("#232323"));
+        painter.fillRect(event->rect(), QGuiApplication::palette().color(QPalette::Base));
         const int textMargin = numberSide_ == GutterSide::Left ? 8 : 6;
         forEachVisibleBlock(event, [&](int blockNumber, int top, int bottom) {
             const int number = blockNumber < lineNumbers_.size() ? lineNumbers_[blockNumber] : 0;
-            painter.setPen(number ? QColor("#a6adc8") : QColor("#555a6b"));
+            painter.setPen(number ? QGuiApplication::palette().color(QPalette::Text)
+                                  : QGuiApplication::palette().color(QPalette::Disabled,
+                                                                      QPalette::Text));
             painter.drawText(0, top, lineNumberArea_->width() - textMargin, bottom - top,
                              Qt::AlignRight, number ? QString::number(number) : QString());
         });
@@ -223,7 +226,7 @@ private:
 
     void paintArrows(QPaintEvent* event) {
         QPainter painter(arrowArea_);
-        painter.fillRect(event->rect(), QColor("#232323"));
+        painter.fillRect(event->rect(), QGuiApplication::palette().color(QPalette::Base));
         painter.setRenderHint(QPainter::Antialiasing, true);
         for (const DiffGroup& group : diffGroups_) {
             if (!groupHasSource(group)) continue;

@@ -32,6 +32,8 @@
 
 namespace openbc::ui {
 
+enum class Theme { Dark, Light };
+
 // ---------------------------------------------------------------------------
 // Comparison vocabulary shared by the UI and the comparison engine
 // ---------------------------------------------------------------------------
@@ -132,12 +134,34 @@ inline QPalette darkPalette() {
     return p;
 }
 
+inline QPalette lightPalette() {
+    QPalette p;
+    p.setColor(QPalette::Window, QColor("#f4f6fb"));
+    p.setColor(QPalette::WindowText, QColor("#202330"));
+    p.setColor(QPalette::Base, QColor("#ffffff"));
+    p.setColor(QPalette::AlternateBase, QColor("#eef1f7"));
+    p.setColor(QPalette::ToolTipBase, QColor("#ffffff"));
+    p.setColor(QPalette::ToolTipText, QColor("#202330"));
+    p.setColor(QPalette::Text, QColor("#202330"));
+    p.setColor(QPalette::Button, QColor("#e5e9f2"));
+    p.setColor(QPalette::ButtonText, QColor("#202330"));
+    p.setColor(QPalette::BrightText, QColor("#11131a"));
+    p.setColor(QPalette::Highlight, QColor("#c9dcff"));
+    p.setColor(QPalette::HighlightedText, QColor("#17213b"));
+    p.setColor(QPalette::Link, QColor("#1666c5"));
+    p.setColor(QPalette::PlaceholderText, QColor("#7b8499"));
+    p.setColor(QPalette::Disabled, QPalette::Text, QColor("#a1a8b8"));
+    p.setColor(QPalette::Disabled, QPalette::ButtonText, QColor("#a1a8b8"));
+    p.setColor(QPalette::Disabled, QPalette::WindowText, QColor("#a1a8b8"));
+    return p;
+}
+
 // ---------------------------------------------------------------------------
 // Application style sheet
 // ---------------------------------------------------------------------------
 
-inline QString applicationStyleSheet() {
-    return QStringLiteral(R"(
+inline QString applicationStyleSheet(Theme theme = Theme::Dark) {
+    QString sheet = QStringLiteral(R"(
         QMainWindow, QDialog { background: #2d2d2d; }
         QWidget { color: #f8f8f2; }
         QToolTip {
@@ -245,6 +269,10 @@ inline QString applicationStyleSheet() {
             border-top: 1px solid #505050; padding: 3px 6px;
             selection-background-color: #44475a;
         }
+        QLabel#compareStatus {
+            background: #3e3e3e; color: #f8f8f2;
+            border-top: 1px solid #505050; padding: 3px 8px;
+        }
 
         QWidget#textCompareView { background: #262833; }
         QWidget#textCompareView QPlainTextEdit {
@@ -303,6 +331,24 @@ inline QString applicationStyleSheet() {
         QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
         QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
     )");
+    if (theme == Theme::Light) {
+        const QVector<QPair<QString, QString>> colors = {
+            {"#2d2d2d", "#f4f6fb"}, {"#3e3e3e", "#e5e9f2"},
+            {"#232323", "#ffffff"}, {"#363636", "#e9edf5"},
+            {"#262833", "#eef1f7"}, {"#1f2028", "#ffffff"},
+            {"#1b1b1b", "#e4e8f0"}, {"#333333", "#e9edf5"},
+            {"#3a3a3a", "#dfe5ef"}, {"#44475a", "#c9dcff"},
+            {"#4d4d4d", "#d8e0ed"}, {"#505050", "#c4cad6"},
+            {"#5a5a5a", "#b7bfce"}, {"#5f5f5f", "#aab5c7"},
+            {"#5f637f", "#829dcc"}, {"#6272a4", "#4d78b8"},
+            {"#f8f8f2", "#202330"}, {"#d8dae6", "#39435a"},
+            {"#b9b9b9", "#58647a"}, {"#e0e0e0", "#28344a"},
+            {"#8b90a6", "#667085"}, {"#777b8f", "#8c96a8"},
+            {"#a6adc8", "#59657a"}, {"#555a6b", "#9aa3b3"}
+        };
+        for (const auto& color : colors) sheet.replace(color.first, color.second);
+    }
+    return sheet;
 }
 
 // ---------------------------------------------------------------------------

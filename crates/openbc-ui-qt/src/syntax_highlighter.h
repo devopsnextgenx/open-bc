@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <QFont>
+#include <QGuiApplication>
 #include <QString>
 #include <QSyntaxHighlighter>
 #include <QTextBlock>
@@ -28,6 +29,7 @@ struct BackendHighlightSpan {
 
 class SyntaxHighlighter : public QSyntaxHighlighter {
 public:
+    enum class Style { Vibrant, Classic, HighContrast };
     explicit SyntaxHighlighter(QTextDocument* document) : QSyntaxHighlighter(document) {
         connect(document, &QTextDocument::contentsChanged, this, [this]() {
             refreshAndRehighlight();
@@ -40,17 +42,30 @@ public:
         refreshAndRehighlight();
     }
 
+    void setEnabled(bool enabled) {
+        if (enabled_ == enabled) return;
+        enabled_ = enabled;
+        refreshAndRehighlight();
+    }
+
+    void setStyle(Style style) {
+        if (style_ == style) return;
+        style_ = style;
+        refreshAndRehighlight();
+    }
+
     void setInlineDiffProvider(std::function<QVector<CharSegment>(int)> provider) {
         inlineDiffProvider_ = std::move(provider);
     }
 
 protected:
     void highlightBlock(const QString& text) override {
+        if (!enabled_) return;
         const int line = currentBlock().blockNumber();
         for (const BackendHighlightSpan& span : spans_) {
             if (span.line != line || span.start >= text.size()) continue;
             QTextCharFormat format;
-            format.setForeground(span.foreground);
+            format.setForeground(styledForeground(span.foreground));
             if (span.background.alpha() > 0 && span.background != QColor(0, 0, 0, 255)) {
                 format.setBackground(span.background);
             }
@@ -65,11 +80,11 @@ protected:
             if (segment.kind == CharSegmentKind::Equal) continue;
             QTextCharFormat format;
             if (segment.kind == CharSegmentKind::Mismatch) {
-                format.setForeground(QColor(0xff, 0x6b, 0x6b));
+                format.setForeground(QGuiApplication::palette().color(QPalette::BrightText));
                 format.setFontWeight(QFont::Bold);
             } else {
-                format.setBackground(QColor(0x3a, 0x4a, 0x63));
-                format.setForeground(QColor(0x9d, 0xb4, 0xd1));
+                format.setBackground(QGuiApplication::palette().color(QPalette::Highlight));
+                format.setForeground(QGuiApplication::palette().color(QPalette::HighlightedText));
             }
             setFormat(segment.start, segment.length, format);
         }
@@ -115,6 +130,19 @@ private:
         openbc_highlight_destroy(handle);
     }
 
+    QColor styledForeground(const QColor& color) const {
+        if (!color.isValid() || style_ == Style::Classic) return color;
+        QColor result = color.toHsv();
+        const int hue = result.hue() < 0 ? 0 : result.hue();
+        if (style_ == Style::Vibrant) {
+            result.setHsv(hue, qMax(125, result.saturation()),
+                          qBound(80, result.value() + 12, 255));
+        } else {
+            result.setHsv(hue, 255, result.value() < 145 ? 220 : result.value());
+        }
+        return result.toRgb();
+    }
+
     static QColor backendColor(const OpenBcHighlight* handle, std::size_t index, bool foreground) {
         const auto channel = [handle, index, foreground](std::uint8_t value) {
             return foreground ? openbc_highlight_foreground(handle, index, value)
@@ -126,6 +154,8 @@ private:
     QString extension_;
     QVector<BackendHighlightSpan> spans_;
     std::function<QVector<CharSegment>(int)> inlineDiffProvider_;
+    Style style_ = Style::Vibrant;
+    bool enabled_ = true;
     bool refreshing_ = false;
 };
 
