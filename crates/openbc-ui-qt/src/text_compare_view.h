@@ -7,6 +7,7 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include <algorithm>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -23,6 +24,7 @@
 #include <QLocale>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QSet>
 #include <QSplitter>
@@ -92,9 +94,29 @@ protected:
     // routed to the focused pane's own history, so undoing the left pane
     // never touches the right pane's state.
     bool eventFilter(QObject* watched, QEvent* event) override {
+        if (manualAlignmentPending_ &&
+            (watched == leftEditor_ || watched == rightEditor_ ||
+             watched == leftEditor_->viewport() || watched == rightEditor_->viewport()) &&
+            event->type() == QEvent::MouseButtonPress) {
+            auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->button() == Qt::LeftButton) {
+                LineNumberEditor* editor = watched == rightEditor_ || watched == rightEditor_->viewport()
+                                                ? rightEditor_ : leftEditor_;
+                const QPoint position = mouse->position().toPoint();
+                const QPoint viewportPos = watched == editor->viewport()
+                                               ? position
+                                               : editor->viewport()->mapFrom(editor, position);
+                completeManualAlignment(editor, editor->cursorForPosition(viewportPos).blockNumber());
+                return true;
+            }
+        }
         if ((watched == leftEditor_ || watched == rightEditor_) &&
             event->type() == QEvent::KeyPress) {
             auto* ke = static_cast<QKeyEvent*>(event);
+            if (manualAlignmentPending_ && ke->key() == Qt::Key_Escape) {
+                cancelManualAlignment();
+                return true;
+            }
             const QKeySequence seq(ke->key() | ke->modifiers());
             if (seq == QKeySequence::Undo) {
                 undoFocusedSide();
@@ -118,6 +140,84 @@ private:
         if (leftEditor_ && leftEditor_->hasFocus()) return leftEditor_;
         if (lastFocusedEditor_) return lastFocusedEditor_;
         return leftEditor_;
+    }
+
+    struct ManualAlignment {
+        int leftNumber = 0;
+        int rightNumber = 0;
+    };
+
+    void setManualAlignmentCursor(bool active) {
+        const Qt::CursorShape shape = active ? Qt::CrossCursor : Qt::IBeamCursor;
+        leftEditor_->setCursor(shape);
+        rightEditor_->setCursor(shape);
+        leftEditor_->viewport()->setCursor(shape);
+        rightEditor_->viewport()->setCursor(shape);
+    }
+
+    void beginManualAlignment(bool sourceIsLeft, int row) {
+        if (row < 0 || row >= rows_.size()) return;
+        const int sourceNumber = sourceIsLeft ? rows_[row].leftNumber : rows_[row].rightNumber;
+        if (sourceNumber == 0) {
+            status_->setText("Align Manually: select a real line, not an inserted blank.");
+            return;
+        }
+        manualAlignmentPending_ = true;
+        manualAlignmentSourceIsLeft_ = sourceIsLeft;
+        manualAlignmentSourceNumber_ = sourceNumber;
+        setManualAlignmentCursor(true);
+        status_->setText(sourceIsLeft ? "Align Manually: select the matching line on the right."
+                                      : "Align Manually: select the matching line on the left.");
+    }
+
+    void cancelManualAlignment() {
+        manualAlignmentPending_ = false;
+        setManualAlignmentCursor(false);
+        status_->setText("Align Manually cancelled.");
+    }
+
+    void completeManualAlignment(LineNumberEditor* editor, int row) {
+        const bool targetIsLeft = editor == leftEditor_;
+        if (targetIsLeft == manualAlignmentSourceIsLeft_) {
+            status_->setText("Align Manually: select the other editor.");
+            return;
+        }
+        if (row < 0 || row >= rows_.size()) return;
+        const int targetNumber = targetIsLeft ? rows_[row].leftNumber : rows_[row].rightNumber;
+        if (targetNumber == 0) {
+            status_->setText("Align Manually: select a real line, not an inserted blank.");
+            return;
+        }
+
+        ManualAlignment alignment;
+        alignment.leftNumber = manualAlignmentSourceIsLeft_ ? manualAlignmentSourceNumber_ : targetNumber;
+        alignment.rightNumber = manualAlignmentSourceIsLeft_ ? targetNumber : manualAlignmentSourceNumber_;
+
+        QVector<ManualAlignment> proposed;
+        for (const ManualAlignment& existing : manualAlignments_) {
+            if (existing.leftNumber != alignment.leftNumber &&
+                existing.rightNumber != alignment.rightNumber) {
+                proposed.push_back(existing);
+            }
+        }
+        proposed.push_back(alignment);
+        std::sort(proposed.begin(), proposed.end(), [](const ManualAlignment& first,
+                                                       const ManualAlignment& second) {
+            return first.leftNumber < second.leftNumber;
+        });
+        for (int i = 1; i < proposed.size(); ++i) {
+            if (proposed[i - 1].rightNumber >= proposed[i].rightNumber) {
+                status_->setText("Align Manually: that match would cross an existing alignment.");
+                return;
+            }
+        }
+
+        manualAlignments_ = proposed;
+        manualAlignmentPending_ = false;
+        setManualAlignmentCursor(false);
+        rebuild();
+        status_->setText(QString("Manual alignment added: left %1 to right %2.")
+                             .arg(alignment.leftNumber).arg(alignment.rightNumber));
     }
 
     void applyLanguageHighlighting() {
@@ -332,6 +432,8 @@ private:
         // their own keyPressEvent can swallow them.
         leftEditor_->installEventFilter(this);
         rightEditor_->installEventFilter(this);
+        leftEditor_->viewport()->installEventFilter(this);
+        rightEditor_->viewport()->installEventFilter(this);
 
         // Undo/redo is driven by this view's own per-side snapshot
         // histories, which survive rebuild()'s setPlainText() calls.
@@ -573,6 +675,13 @@ private:
             std::swap(leftPath_, rightPath_);
             std::swap(leftDirtyLines_, rightDirtyLines_);
             std::swap(leftUnsaved_, rightUnsaved_);                      // <-- new
+            for (ManualAlignment& alignment : manualAlignments_) {
+                std::swap(alignment.leftNumber, alignment.rightNumber);
+            }
+            std::sort(manualAlignments_.begin(), manualAlignments_.end(),
+                      [](const ManualAlignment& first, const ManualAlignment& second) {
+                          return first.leftNumber < second.leftNumber;
+                      });
             refreshSideHeader(true);
             refreshSideHeader(false);
             applyLanguageHighlighting();
@@ -676,7 +785,7 @@ private:
         // state after - so Ctrl+Z from that pane can always walk back.
         const bool sideIsLeft = (editor == leftEditor_);
         if (chosen == alignManually) {
-            status_->setText("Align Manually: pick the matching line on the other side.");
+            beginManualAlignment(sideIsLeft, row);
         } else if (chosen == isolate) {
             status_->setText("Isolate: showing only this difference section.");
             if (!showDiffsAction_->isChecked() && !contextAction_->isChecked()) {
@@ -1068,11 +1177,49 @@ private:
         });
     }
 
+    QVector<TextDiffLine> alignWithManualOverrides() const {
+        QVector<TextDiffLine> result;
+        int leftStart = 0;
+        int rightStart = 0;
+        const auto appendAutomatic = [&](int leftEnd, int rightEnd) {
+            if (leftStart >= leftEnd && rightStart >= rightEnd) return;
+            const QStringList leftPart = leftOriginal_.mid(leftStart, leftEnd - leftStart);
+            const QStringList rightPart = rightOriginal_.mid(rightStart, rightEnd - rightStart);
+            QVector<TextDiffLine> segment = alignTextLines(leftPart, rightPart);
+            for (TextDiffLine& row : segment) {
+                if (row.leftNumber > 0) row.leftNumber += leftStart;
+                if (row.rightNumber > 0) row.rightNumber += rightStart;
+                result.push_back(row);
+            }
+        };
+
+        for (const ManualAlignment& alignment : manualAlignments_) {
+            if (alignment.leftNumber <= leftStart || alignment.rightNumber <= rightStart ||
+                alignment.leftNumber > leftOriginal_.size() ||
+                alignment.rightNumber > rightOriginal_.size()) {
+                continue;
+            }
+            appendAutomatic(alignment.leftNumber - 1, alignment.rightNumber - 1);
+            const QString& leftLine = leftOriginal_[alignment.leftNumber - 1];
+            const QString& rightLine = rightOriginal_[alignment.rightNumber - 1];
+            result.push_back({leftLine,
+                              rightLine,
+                              alignment.leftNumber,
+                              alignment.rightNumber,
+                              leftLine != rightLine,
+                              normalizedTextLine(leftLine) == normalizedTextLine(rightLine)});
+            leftStart = alignment.leftNumber;
+            rightStart = alignment.rightNumber;
+        }
+        appendAutomatic(leftOriginal_.size(), rightOriginal_.size());
+        return result;
+    }
+
     void rebuild() {
         const CursorSnapshot leftSnap = captureCursor(leftEditor_);
         const CursorSnapshot rightSnap = captureCursor(rightEditor_);
 
-        QVector<TextDiffLine> all = alignTextLines(leftOriginal_, rightOriginal_);
+        QVector<TextDiffLine> all = alignWithManualOverrides();
         if (minorAction_->isChecked()) {
             for (auto& row : all) {
                 if (row.whitespaceOnly) row.changed = false;
@@ -1250,6 +1397,9 @@ private:
         (left ? leftPath_ : rightPath_) = path;
         (left ? leftOriginal_ : rightOriginal_) = text.split('\n');
         (left ? leftDirtyLines_ : rightDirtyLines_).clear();
+        manualAlignments_.clear();
+        manualAlignmentPending_ = false;
+        setManualAlignmentCursor(false);
         if (left) leftUnsaved_ = false; else rightUnsaved_ = false;
         (left ? leftStructurallyEdited_ : rightStructurallyEdited_) = false;
 
@@ -1345,6 +1495,11 @@ private:
     bool autoReloadPending_ = false;
     bool leftStructurallyEdited_ = false;
     bool rightStructurallyEdited_ = false;
+
+    QVector<ManualAlignment> manualAlignments_;
+    bool manualAlignmentPending_ = false;
+    bool manualAlignmentSourceIsLeft_ = true;
+    int manualAlignmentSourceNumber_ = 0;
 
     QSet<int> leftDirtyLines_;
     QSet<int> rightDirtyLines_;
