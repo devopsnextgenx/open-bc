@@ -49,6 +49,43 @@ unsafe fn input_text(pointer: *const u8, length: usize) -> String {
     String::from_utf8_lossy(std::slice::from_raw_parts(pointer, length)).into_owned()
 }
 
+fn parse_ignore_samples(input: &str) -> Vec<String> {
+    let mut samples = Vec::new();
+    let mut current = String::new();
+    let mut characters = input.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == ',' {
+            if characters.peek() == Some(&',') {
+                current.push(',');
+                characters.next();
+            } else {
+                if !current.is_empty() {
+                    samples.push(std::mem::take(&mut current));
+                }
+            }
+        } else {
+            current.push(character);
+        }
+    }
+    if !current.is_empty() {
+        samples.push(current);
+    }
+    samples
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_ignore_samples;
+
+    #[test]
+    fn parses_multiple_samples_and_escaped_commas() {
+        assert_eq!(
+            parse_ignore_samples("timestamp,correlation-id,a,,b"),
+            vec!["timestamp", "correlation-id", "a,b"]
+        );
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn openbc_compare_buffers(
     left: *const u8,
@@ -72,11 +109,7 @@ pub extern "C" fn openbc_compare_buffers(
         ignore_whitespace: ignore_whitespace != 0,
         ignore_timestamps: ignore_timestamps != 0,
         ignore_container_ids: ignore_container_ids != 0,
-        ignore_samples: if ignore_sample.is_empty() {
-            Vec::new()
-        } else {
-            vec![ignore_sample]
-        },
+        ignore_samples: parse_ignore_samples(&ignore_sample),
         fuzzy_threshold,
     };
     let rows = openbc_core::text::TextCompareEngine::compare_buffers(&left, &right, &options);

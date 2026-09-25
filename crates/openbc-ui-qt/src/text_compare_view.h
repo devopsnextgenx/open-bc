@@ -20,6 +20,7 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QList>
 #include <QLocale>
 #include <QMenu>
@@ -279,7 +280,7 @@ private:
         const QString leftText = leftRaw_.isNull() ? leftOriginal_.join('\n') : leftRaw_;
         const QString rightText = rightRaw_.isNull() ? rightOriginal_.join('\n') : rightRaw_;
         const bool minor = minorAction_->isChecked();
-        const QString ignoreSample = ignoreSample_;
+        const QString ignoreSample = activeIgnoreSample();
         const bool deferHighlighting = leftText.size() + rightText.size() > 4 * 1024 * 1024;
         progress_->show();
         status_->setText(QString("Loading comparison... %1 / %2 line(s) read")
@@ -505,7 +506,7 @@ private:
         minorAction_->setToolTip("Treat whitespace-only differences as unimportant");
         rulesAction_ = toolbar_->addAction(icons::glyph(Glyph::Rules), "Rules");
         rulesAction_->setCheckable(true);
-        rulesAction_->setToolTip("Enter a sample date or timestamp to ignore while comparing");
+        rulesAction_->setToolTip("Ignore matching samples such as timestamps, UUIDs, or pod IDs");
         formatAction_ = toolbar_->addAction(icons::glyph(Glyph::Format), "Format");
         formatAction_->setCheckable(true);
         formatAction_->setToolTip("Wrap long lines");
@@ -626,6 +627,25 @@ private:
 
         preview_ = new DiffLinePreview(this);
         root->addWidget(preview_);
+
+        ruleBar_ = new QFrame(this);
+        ruleBar_->setObjectName("compareRuleBar");
+        auto* ruleLayout = new QHBoxLayout(ruleBar_);
+        ruleLayout->setContentsMargins(8, 4, 8, 4);
+        ruleLayout->setSpacing(6);
+        ruleLayout->addWidget(new QLabel("Rules:", ruleBar_));
+        ruleEdit_ = new QLineEdit(ruleBar_);
+        ruleEdit_->setObjectName("compareRuleInput");
+        ruleEdit_->setPlaceholderText("timestamp, correlation-id, pod-123, or a,,b for a literal comma");
+        ruleEdit_->setToolTip("Separate samples with commas; use two commas for a literal comma");
+        ruleLayout->addWidget(ruleEdit_, 1);
+        ruleClose_ = new QToolButton(ruleBar_);
+        ruleClose_->setText(QString::fromUtf8("\u2715"));
+        ruleClose_->setToolTip("Close rules");
+        ruleClose_->setAutoRaise(true);
+        ruleLayout->addWidget(ruleClose_);
+        root->addWidget(ruleBar_);
+        ruleBar_->hide();
 
         status_ = new QLabel(this);
         status_->setObjectName("compareStatus");
@@ -797,16 +817,25 @@ private:
             setHighlightStyle(SyntaxHighlighter::Style::VsCodeDark);
         });
         connect(minorAction_, &QAction::toggled, this, [this](bool) { rebuild(); });
-        connect(rulesAction_, &QAction::triggered, this, [this]() {
-            bool accepted = false;
-            const QString sample = QInputDialog::getText(
-                this, "Ignore sample", "Sample date or timestamp:", QLineEdit::Normal,
-                ignoreSample_, &accepted);
-            if (accepted) {
-                ignoreSample_ = sample;
-                beginAsyncRebuild();
+        connect(rulesAction_, &QAction::toggled, this, [this](bool checked) {
+            ruleBar_->setVisible(checked);
+            if (checked) ruleEdit_->setFocus();
+            beginAsyncRebuild();
+        });
+        connect(ruleEdit_, &QLineEdit::textChanged, this, [this](const QString& text) {
+            ignoreSample_ = text;
+            if (rulesAction_->isChecked()) {
+                if (ruleEditTimer_) ruleEditTimer_->start();
             }
-            rulesAction_->setChecked(!ignoreSample_.isEmpty());
+        });
+        connect(ruleClose_, &QToolButton::clicked, this, [this]() {
+            rulesAction_->setChecked(false);
+        });
+        ruleEditTimer_ = new QTimer(this);
+        ruleEditTimer_->setSingleShot(true);
+        ruleEditTimer_->setInterval(250);
+        connect(ruleEditTimer_, &QTimer::timeout, this, [this]() {
+            if (rulesAction_->isChecked()) beginAsyncRebuild();
         });
         connect(formatAction_, &QAction::toggled, this, [this](bool checked) {
             const auto mode = checked ? QPlainTextEdit::WidgetWidth : QPlainTextEdit::NoWrap;
@@ -1330,6 +1359,10 @@ private:
         });
     }
 
+    QString activeIgnoreSample() const {
+        return rulesAction_ && rulesAction_->isChecked() ? ignoreSample_ : QString();
+    }
+
     QVector<TextDiffLine> alignWithManualOverrides() const {
         QVector<TextDiffLine> result;
         int leftStart = 0;
@@ -1338,7 +1371,8 @@ private:
             if (leftStart >= leftEnd && rightStart >= rightEnd) return;
             const QStringList leftPart = leftOriginal_.mid(leftStart, leftEnd - leftStart);
             const QStringList rightPart = rightOriginal_.mid(rightStart, rightEnd - rightStart);
-            QVector<TextDiffLine> segment = alignTextLines(leftPart, rightPart);
+            QVector<TextDiffLine> segment =
+                alignTextLines(leftPart, rightPart, activeIgnoreSample());
             for (TextDiffLine& row : segment) {
                 if (row.leftNumber > 0) row.leftNumber += leftStart;
                 if (row.rightNumber > 0) row.rightNumber += rightStart;
@@ -1696,6 +1730,10 @@ private:
     QVector<QVector<CharSegment>> leftInline_;
     QVector<QVector<CharSegment>> rightInline_;
     FindReplaceBar* findBar_ = nullptr;
+    QFrame* ruleBar_ = nullptr;
+    QLineEdit* ruleEdit_ = nullptr;
+    QToolButton* ruleClose_ = nullptr;
+    QTimer* ruleEditTimer_ = nullptr;
 
     // Per-side undo/redo history. Each side is an independent stack of
     // historical versions of that side; Ctrl+Z / Ctrl+Y walk only the

@@ -63,3 +63,26 @@ fn sample_pattern(sample: &str) -> Option<Regex> {
     }
     Regex::new(&pattern).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::LogNormalizer;
+    use crate::text::models::CompareOptions;
+
+    #[test]
+    fn sample_uses_the_current_string_shape() {
+        let options = CompareOptions {
+            ignore_samples: vec!["35,964".to_owned()],
+            ..CompareOptions::default()
+        };
+
+        assert_eq!(
+            LogNormalizer::normalize("value=35,964", &options),
+            "value=<SAMPLE>"
+        );
+        assert_eq!(
+            LogNormalizer::normalize("value=00:29:35,964", &options),
+            "value=00:29:<SAMPLE>"
+        );
+    }
+}

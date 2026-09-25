@@ -291,6 +291,14 @@ inline QString applicationStyleSheet(Theme theme = Theme::Dark) {
             background: #3e3e3e; color: #f8f8f2;
             border-top: 1px solid #505050; padding: 3px 8px;
         }
+        QFrame#compareRuleBar {
+            background: #2b2b2b; border-top: 1px solid #505050;
+        }
+        QFrame#compareRuleBar QLabel { color: #c7cbe0; }
+        QLineEdit#compareRuleInput {
+            background: #1e1e1e; color: #f8f8f2; border: 1px solid #505050;
+            border-radius: 3px; padding: 2px 6px;
+        }
 
         QWidget#textCompareView { background: #262833; }
         QWidget#textCompareView QPlainTextEdit {
