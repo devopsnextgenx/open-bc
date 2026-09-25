@@ -71,6 +71,8 @@ pub struct CompareOptions {
     pub ignore_timestamps: bool,
     /// Mask pod names and hexadecimal container identifiers before comparison.
     pub ignore_container_ids: bool,
+    /// Sample values whose date/number shape should be masked before comparison.
+    pub ignore_samples: Vec<String>,
     /// Minimum Jaro-Winkler score for pairing deleted and added lines as a modification.
     pub fuzzy_threshold: f64,
 }
@@ -81,6 +83,7 @@ impl Default for CompareOptions {
             ignore_whitespace: false,
             ignore_timestamps: false,
             ignore_container_ids: false,
+            ignore_samples: Vec::new(),
             fuzzy_threshold: 0.80,
         }
     }

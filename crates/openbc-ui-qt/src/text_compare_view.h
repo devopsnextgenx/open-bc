@@ -279,6 +279,7 @@ private:
         const QString leftText = leftRaw_.isNull() ? leftOriginal_.join('\n') : leftRaw_;
         const QString rightText = rightRaw_.isNull() ? rightOriginal_.join('\n') : rightRaw_;
         const bool minor = minorAction_->isChecked();
+        const QString ignoreSample = ignoreSample_;
         const bool deferHighlighting = leftText.size() + rightText.size() > 4 * 1024 * 1024;
         progress_->show();
         status_->setText(QString("Loading comparison... %1 / %2 line(s) read")
@@ -286,10 +287,10 @@ private:
 
         const QPointer<TextCompareView> view(this);
         QThreadPool::globalInstance()->start(
-            [view, generation, leftText, rightText, minor, deferHighlighting]() {
+            [view, generation, leftText, rightText, minor, ignoreSample, deferHighlighting]() {
             const QStringList left = leftText.split('\n');
             const QStringList right = rightText.split('\n');
-            QVector<TextDiffLine> rows = alignTextLines(left, right);
+            QVector<TextDiffLine> rows = alignTextLines(left, right, ignoreSample);
             if (minor) {
                 for (auto& row : rows) {
                     if (row.whitespaceOnly) row.changed = false;
@@ -504,6 +505,7 @@ private:
         minorAction_->setToolTip("Treat whitespace-only differences as unimportant");
         rulesAction_ = toolbar_->addAction(icons::glyph(Glyph::Rules), "Rules");
         rulesAction_->setCheckable(true);
+        rulesAction_->setToolTip("Enter a sample date or timestamp to ignore while comparing");
         formatAction_ = toolbar_->addAction(icons::glyph(Glyph::Format), "Format");
         formatAction_->setCheckable(true);
         formatAction_->setToolTip("Wrap long lines");
@@ -795,6 +797,17 @@ private:
             setHighlightStyle(SyntaxHighlighter::Style::VsCodeDark);
         });
         connect(minorAction_, &QAction::toggled, this, [this](bool) { rebuild(); });
+        connect(rulesAction_, &QAction::triggered, this, [this]() {
+            bool accepted = false;
+            const QString sample = QInputDialog::getText(
+                this, "Ignore sample", "Sample date or timestamp:", QLineEdit::Normal,
+                ignoreSample_, &accepted);
+            if (accepted) {
+                ignoreSample_ = sample;
+                beginAsyncRebuild();
+            }
+            rulesAction_->setChecked(!ignoreSample_.isEmpty());
+        });
         connect(formatAction_, &QAction::toggled, this, [this](bool checked) {
             const auto mode = checked ? QPlainTextEdit::WidgetWidth : QPlainTextEdit::NoWrap;
             leftEditor_->setLineWrapMode(mode);
@@ -1602,6 +1615,7 @@ private:
     QString rightPath_;
     QString leftRaw_;
     QString rightRaw_;
+    QString ignoreSample_;
     QStringList leftOriginal_;
     QStringList rightOriginal_;
     QVector<TextDiffLine> rows_;

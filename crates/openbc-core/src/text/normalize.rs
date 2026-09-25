@@ -32,9 +32,34 @@ impl LogNormalizer {
                 .replace_all(&result, "<CONTAINER>")
                 .into_owned();
         }
+        for sample in &options.ignore_samples {
+            if let Some(pattern) = sample_pattern(sample) {
+                result = pattern.replace_all(&result, "<SAMPLE>").into_owned();
+            }
+        }
         if options.ignore_whitespace {
             result = result.split_whitespace().collect::<Vec<_>>().join(" ");
         }
         result
     }
+}
+
+fn sample_pattern(sample: &str) -> Option<Regex> {
+    if sample.is_empty() {
+        return None;
+    }
+    let mut pattern = String::new();
+    let mut digits = false;
+    for character in sample.chars() {
+        if character.is_ascii_digit() {
+            if !digits {
+                pattern.push_str(r"\d+");
+                digits = true;
+            }
+        } else {
+            pattern.push_str(&regex::escape(&character.to_string()));
+            digits = false;
+        }
+    }
+    Regex::new(&pattern).ok()
 }

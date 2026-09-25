@@ -12,7 +12,7 @@ int openbc_initialize_observability();
 void openbc_log_message(const std::uint8_t*, std::size_t);
 OpenBcDiff* openbc_compare_buffers(const std::uint8_t*, std::size_t, const std::uint8_t*,
                                    std::size_t, std::uint8_t, std::uint8_t, std::uint8_t,
-                                   double);
+                                   double, const std::uint8_t*, std::size_t);
 void openbc_diff_destroy(OpenBcDiff*);
 std::size_t openbc_diff_len(const OpenBcDiff*);
 std::uint8_t openbc_diff_kind(const OpenBcDiff*, std::size_t);

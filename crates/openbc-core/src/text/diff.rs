@@ -259,6 +259,22 @@ mod tests {
     }
 
     #[test]
+    fn masks_date_sample_with_different_digits() {
+        let options = CompareOptions {
+            ignore_samples: vec!["2026-09-21T10:00:00Z".to_owned()],
+            ..CompareOptions::default()
+        };
+        let result = TextCompareEngine::compare_buffers(
+            "2026-09-21T10:00:00Z started task",
+            "2027-12-31T23:59:59Z started task",
+            &options,
+        );
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].kind, ChangeKind::Unchanged);
+    }
+
+    #[test]
     fn pairs_config_value_replacement_for_inline_diff() {
         let result = TextCompareEngine::compare_buffers(
             "{\n  \"server\": \"staging\",\n  \"port\": 8080\n}",

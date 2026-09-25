@@ -59,16 +59,24 @@ pub extern "C" fn openbc_compare_buffers(
     ignore_timestamps: u8,
     ignore_container_ids: u8,
     fuzzy_threshold: f64,
+    ignore_sample: *const u8,
+    ignore_sample_length: usize,
 ) -> *mut DiffHandle {
     trace_backend(format_args!(
         "compare start left_bytes={left_length} right_bytes={right_length}"
     ));
     let left = unsafe { input_text(left, left_length) };
     let right = unsafe { input_text(right, right_length) };
+    let ignore_sample = unsafe { input_text(ignore_sample, ignore_sample_length) };
     let options = CompareOptions {
         ignore_whitespace: ignore_whitespace != 0,
         ignore_timestamps: ignore_timestamps != 0,
         ignore_container_ids: ignore_container_ids != 0,
+        ignore_samples: if ignore_sample.is_empty() {
+            Vec::new()
+        } else {
+            vec![ignore_sample]
+        },
         fuzzy_threshold,
     };
     let rows = openbc_core::text::TextCompareEngine::compare_buffers(&left, &right, &options);
