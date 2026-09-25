@@ -1,6 +1,0 @@
-Refer text-edit-minimap-details.png, with comments (in red bold text) about minimap (size, indicators, thickness, color, style of sliding window over minimap showing current page position), indicators for edited (dirty, saved block colors) scrollbar style/size, just below file path locations, we have file attributes with date, size, encoding, and PC (Not sure what PC means here). Add save icon besides file path locations on both sides. When showing blank space or tab indicators when Minor mode is on, the indicators are not very visible, and dot is pushed to too right with very small spacing around, for tab we see right direction arrow with good size but the spacing around it is none, which kind of mixes with next charactor.
-
-- Fix the ui as per comment from text-edit-minimap-details.png, you can actually guess the file length from the scrollbar position and size and relate minimap length and have sliding position on minimap for reference.
-- Fix save icon besides file path, fix minor mode space/tab indicators
-- Fix DiffLinePreview as well to be exactly like in snapshot, also dont make line number and the line text both editable, only line text should be editable on double click line number is not part of line text for edit.
-- Line number area for right editor is getting squeezed behind scrollbar, fix this as well.
