@@ -30,25 +30,51 @@ pub struct HighlightSpan {
 /// Highlight source code as a self-contained HTML fragment.
 #[must_use]
 pub fn highlight_to_html(source: &str, language: &str, is_dark_mode: bool) -> String {
-    if uses_syntect(language) {
-        return syntect_html(source, language, is_dark_mode);
-    }
-    let Some((body, css)) = render_source(source, language, is_dark_mode) else {
-        return plain_html(source);
+    let started = std::time::Instant::now();
+    let result = if uses_syntect(language) {
+        syntect_html(source, language, is_dark_mode)
+    } else {
+        let Some((body, css)) = render_source(source, language, is_dark_mode) else {
+            return plain_html(source);
+        };
+        format!("<style>{css}</style><pre class=\"tsc-bg\">{body}</pre>")
     };
-    format!("<style>{css}</style><pre class=\"tsc-bg\">{body}</pre>")
+    openbc_observability::record(
+        "openbc-core",
+        "syntax_highlighting_html",
+        started.elapsed(),
+        Some((source.len(), 0)),
+        Some((source.lines().count(), 0)),
+        None,
+        None,
+        Some(language.to_owned()),
+    );
+    result
 }
 
 /// Highlight source code for native editors that apply `QTextCharFormat` spans.
 #[must_use]
 pub fn highlight_to_spans(source: &str, language: &str, is_dark_mode: bool) -> Vec<HighlightSpan> {
-    if uses_syntect(language) {
-        return syntect_spans(source, language, is_dark_mode);
-    }
-    let Some((body, css)) = render_source(source, language, is_dark_mode) else {
-        return Vec::new();
+    let started = std::time::Instant::now();
+    let result = if uses_syntect(language) {
+        syntect_spans(source, language, is_dark_mode)
+    } else {
+        let Some((body, css)) = render_source(source, language, is_dark_mode) else {
+            return Vec::new();
+        };
+        parse_rendered_spans(&body, &css)
     };
-    parse_rendered_spans(&body, &css)
+    openbc_observability::record(
+        "openbc-core",
+        "syntax_highlighting_spans",
+        started.elapsed(),
+        Some((source.len(), 0)),
+        Some((source.lines().count(), 0)),
+        None,
+        None,
+        Some(language.to_owned()),
+    );
+    result
 }
 
 fn uses_syntect(language: &str) -> bool {

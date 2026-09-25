@@ -14,6 +14,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QKeySequence>
@@ -32,6 +33,7 @@
 #include <functional>
 
 #include "folder_compare_view.h"
+#include "backend_api.h"
 #include "home_view.h"
 #include "qt_style.h"
 #include "session_history.h"
@@ -80,6 +82,9 @@ private:
 };
 
 extern "C" int openbc_run_gui() {
+    if (openbc_initialize_observability() != 0) {
+        return 1;
+    }
     int argc = 1;
     char application_name[] = "openbc-qt";
     char* argv[] = {application_name, nullptr};
@@ -99,7 +104,38 @@ extern "C" int openbc_run_gui() {
     auto* searchMenu = window.menuBar()->addMenu("&Search");
     auto* viewMenu = window.menuBar()->addMenu("&View");
     auto* toolsMenu = window.menuBar()->addMenu("&Tools");
-    window.menuBar()->addMenu("&Help");
+    auto* helpMenu = window.menuBar()->addMenu("&Help");
+    auto* downloadLog = helpMenu->addAction("Download Log...");
+    auto* downloadInstrumentation = helpMenu->addAction("Download Instrumentation Report...");
+
+    auto copyReport = [&](const QString& source, const QString& title, const QString& filter) {
+        const QString destination = QFileDialog::getSaveFileName(&window, title, QDir::homePath(), filter);
+        if (destination.isEmpty()) {
+            return;
+        }
+        QFile::remove(destination);
+        if (!QFile::copy(source, destination)) {
+            openbc_log_message(reinterpret_cast<const std::uint8_t*>("report download failed"), 23);
+        } else {
+            openbc_log_message(reinterpret_cast<const std::uint8_t*>("report downloaded"), 17);
+        }
+    };
+    QObject::connect(downloadLog, &QAction::triggered, [&]() {
+        const QString username = qEnvironmentVariable("USER", "unknown");
+        QString logPath = "/var/log/open-bc-" + username + ".log";
+        if (!QFile::exists(logPath)) {
+            logPath = QDir::homePath() + "/.config/open-bc/open-bc-" + username + ".log";
+        }
+        copyReport(logPath, "Download OpenBC log", "Log files (*.log)");
+    });
+    QObject::connect(downloadInstrumentation, &QAction::triggered, [&]() {
+        const QString directory = QDir::homePath() + "/.config/open-bc/instrumentation";
+        const QStringList reports = QDir(directory).entryList({"*.yml"}, QDir::Files, QDir::Time);
+        if (!reports.isEmpty()) {
+            copyReport(directory + "/" + reports.constFirst(), "Download instrumentation report", "YAML files (*.yml)");
+        }
+    });
+    openbc_log_message(reinterpret_cast<const std::uint8_t*>("Qt GUI initialized"), 18);
 
     auto* tabs = new QTabWidget(&window);
     tabs->setDocumentMode(true);

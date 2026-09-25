@@ -78,9 +78,11 @@ impl AsyncTextCompareTask {
         options: CompareOptions,
         sender: UnboundedSender<Vec<LineDiff>>,
     ) -> Result<(), TextCompareError> {
+        let started = std::time::Instant::now();
         let left_read = read_small_file(left_vfs.as_ref(), &left_path);
         let right_read = read_small_file(right_vfs.as_ref(), &right_path);
         let (left_bytes, right_bytes) = tokio::try_join!(left_read, right_read)?;
+        let sizes = (left_bytes.len(), right_bytes.len());
         let left =
             String::from_utf8(left_bytes).map_err(|source| TextCompareError::InvalidUtf8 {
                 side: "left",
@@ -97,6 +99,17 @@ impl AsyncTextCompareTask {
             cpu_pool.install(|| TextCompareEngine::compare_buffers(&left, &right, &options))
         })
         .await?;
+
+        openbc_observability::record(
+            "openbc-engine",
+            "async_text_compare",
+            started.elapsed(),
+            Some(sizes),
+            None,
+            None,
+            None,
+            Some("VFS + Rayon".to_owned()),
+        );
 
         for chunk in diffs.chunks(self.chunk_size) {
             sender

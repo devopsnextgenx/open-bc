@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 openbc-compute = { path = "../openbc-compute" }
 openbc-core = { path = "../openbc-core" }
+openbc-observability = { path = "../openbc-observability" }
 openbc-vfs = { path = "../openbc-vfs" }
 rayon.workspace = true
 thiserror.workspace = true

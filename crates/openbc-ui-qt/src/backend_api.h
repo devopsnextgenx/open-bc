@@ -8,6 +8,8 @@ struct OpenBcInline;
 struct OpenBcHighlight;
 
 extern "C" {
+int openbc_initialize_observability();
+void openbc_log_message(const std::uint8_t*, std::size_t);
 OpenBcDiff* openbc_compare_buffers(const std::uint8_t*, std::size_t, const std::uint8_t*,
                                    std::size_t, std::uint8_t, std::uint8_t, std::uint8_t,
                                    double);

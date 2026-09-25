@@ -35,6 +35,7 @@ unsafe extern "C" {
 }
 
 fn main() -> Result<()> {
+    openbc_observability::init().map_err(anyhow::Error::msg)?;
     #[cfg(feature = "qt")]
     {
         let exit_code = unsafe { openbc_run_gui() };

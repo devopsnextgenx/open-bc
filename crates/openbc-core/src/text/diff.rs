@@ -152,6 +152,7 @@ impl TextCompareEngine {
     /// Compare two UTF-8 buffers and return aligned rows containing original text.
     #[must_use]
     pub fn compare_buffers(left: &str, right: &str, options: &CompareOptions) -> Vec<LineDiff> {
+        let started = std::time::Instant::now();
         let left_raw: Vec<&str> = left.lines().collect();
         let right_raw: Vec<&str> = right.lines().collect();
         let left_normalized: Vec<String> = left_raw
@@ -217,6 +218,22 @@ impl TextCompareEngine {
             &left_normalized,
             &right_normalized,
             options.fuzzy_threshold,
+        );
+        openbc_observability::log(
+            "openbc-core",
+            "TextCompareEngine::compare_buffers",
+            "INFO",
+            "text comparison complete",
+        );
+        openbc_observability::record(
+            "openbc-core",
+            "file_compare",
+            started.elapsed(),
+            Some((left.len(), right.len())),
+            Some((left_raw.len(), right_raw.len())),
+            None,
+            None,
+            Some("CPU diff".to_owned()),
         );
         results
     }

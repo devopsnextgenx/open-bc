@@ -64,6 +64,7 @@ impl LocalVfs {
 #[async_trait]
 impl AsyncVfs for LocalVfs {
     async fn read_dir(&self, path: &EntryPath) -> Result<Vec<DirectoryEntry>, VfsError> {
+        let started = std::time::Instant::now();
         let base = self.resolve(path);
         let mut entries = tokio::fs::read_dir(&base)
             .await
@@ -98,6 +99,16 @@ impl AsyncVfs for LocalVfs {
                 },
             });
         }
+        openbc_observability::record(
+            "openbc-vfs",
+            "read_dir",
+            started.elapsed(),
+            None,
+            None,
+            Some(result.iter().map(|entry| entry.metadata.size).sum()),
+            Some(path.0.components().count()),
+            Some("local filesystem".to_owned()),
+        );
         Ok(result)
     }
 

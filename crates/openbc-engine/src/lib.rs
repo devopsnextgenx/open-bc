@@ -47,14 +47,38 @@ pub async fn compare_folder_level(
     right_vfs: Arc<dyn AsyncVfs>,
     right_path: EntryPath,
 ) -> Result<FolderComparison, ScanError> {
+    let started = std::time::Instant::now();
     let (left_metadata, left_entries) = read_folder_level(left_vfs.as_ref(), &left_path).await?;
     let (right_metadata, right_entries) =
         read_folder_level(right_vfs.as_ref(), &right_path).await?;
-    Ok(FolderComparison {
+    let comparison = FolderComparison {
         left: left_metadata,
         right: right_metadata,
         entries: compare_directory_entries(&left_entries, &right_entries),
-    })
+    };
+    openbc_observability::log(
+        "openbc-engine",
+        "compare_folder_level",
+        "INFO",
+        "folder comparison complete",
+    );
+    openbc_observability::record(
+        "openbc-engine",
+        "folder_compare",
+        started.elapsed(),
+        None,
+        None,
+        Some(comparison.left.size + comparison.right.size),
+        Some(
+            left_path
+                .0
+                .components()
+                .count()
+                .max(right_path.0.components().count()),
+        ),
+        Some("Tokio orchestration".to_owned()),
+    );
+    Ok(comparison)
 }
 
 /// Scan exactly one expanded directory level and schedule file hashing.
@@ -66,7 +90,18 @@ pub async fn scan_level(
     compute: Arc<ComputeDispatcher>,
     events: mpsc::Sender<ScanEvent>,
 ) -> Result<(), ScanError> {
+    let started = std::time::Instant::now();
     let entries = vfs.read_dir(&path).await?;
+    openbc_observability::record(
+        "openbc-engine",
+        "scan_level",
+        started.elapsed(),
+        None,
+        None,
+        Some(entries.iter().map(|entry| entry.metadata.size).sum()),
+        Some(path.0.components().count()),
+        Some("Tokio + bounded events".to_owned()),
+    );
     events
         .send(ScanEvent::Directory {
             path: path.clone(),
@@ -114,6 +149,7 @@ async fn hash_entry(
     compute: Arc<ComputeDispatcher>,
     entry: DirectoryEntry,
 ) -> Result<Vec<u8>, ScanError> {
+    let started = std::time::Instant::now();
     let mut reader = vfs.open_file(&entry.path).await?;
     let mut bytes = Vec::with_capacity(entry.metadata.size as usize);
     reader
@@ -124,6 +160,17 @@ async fn hash_entry(
             path: entry.path.0.clone(),
             source,
         })?;
+    let byte_count = bytes.len();
     let result = tokio::task::spawn_blocking(move || compute.hash_bytes(&bytes)).await?;
+    openbc_observability::record(
+        "openbc-engine",
+        "file_hash",
+        started.elapsed(),
+        Some((byte_count, 0)),
+        None,
+        None,
+        Some(entry.path.0.components().count()),
+        Some("Tokio read + compute".to_owned()),
+    );
     Ok(result.digest.to_vec())
 }

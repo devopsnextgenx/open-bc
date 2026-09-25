@@ -21,6 +21,7 @@ cxx = { version = "1.0", optional = true }
 cxx-qt = { workspace = true, optional = true }
 openbc-core = { path = "../openbc-core" }
 openbc-engine = { path = "../openbc-engine" }
+openbc-observability = { path = "../openbc-observability" }
 tokio.workspace = true
 
 [build-dependencies]

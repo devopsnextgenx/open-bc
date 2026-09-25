@@ -20,9 +20,26 @@ pub struct HighlightHandle {
 }
 
 fn trace_backend(message: impl std::fmt::Display) {
-    if std::env::var_os("OPENBC_TRACE_TEXT_BACKEND").is_some() {
-        eprintln!("[openbc-text-backend] {message}");
+    openbc_observability::log(
+        "openbc-ui-qt",
+        "trace_backend",
+        "INFO",
+        &message.to_string(),
+    );
+}
+
+#[no_mangle]
+pub extern "C" fn openbc_initialize_observability() -> i32 {
+    match openbc_observability::init() {
+        Ok(()) => 0,
+        Err(_) => 1,
     }
+}
+
+#[no_mangle]
+pub extern "C" fn openbc_log_message(message: *const u8, length: usize) {
+    let message = unsafe { input_text(message, length) };
+    openbc_observability::log("openbc-ui-qt", "qt_action", "INFO", &message);
 }
 
 unsafe fn input_text(pointer: *const u8, length: usize) -> String {

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
+openbc-observability = { path = "../openbc-observability" }
 regex = "1.10"
 similar = "2.4"
 strsim = "0.11"
