@@ -26,7 +26,10 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QProgressBar>
+#include <QPointer>
 #include <QSet>
+#include <QThreadPool>
 #include <QSplitter>
 #include <QStringList>
 #include <QStyle>
@@ -59,14 +62,12 @@ public:
     TextCompareView(const QString& leftPath, const QString& rightPath,
                     const QString& leftText, const QString& rightText, QWidget* parent = nullptr)
         : QWidget(parent), leftPath_(leftPath), rightPath_(rightPath),
-          leftOriginal_(leftText.split('\n')), rightOriginal_(rightText.split('\n')) {
+                    leftRaw_(leftText), rightRaw_(rightText) {
         setObjectName("textCompareView");
         buildUi();
         connectSignals();
-        rebuild();
-        // Each side starts with its own single-entry history ("as loaded").
-        pushSideHistory(/*left=*/true);
-        pushSideHistory(/*left=*/false);
+        showRawText();
+        beginAsyncRebuild();
     }
 
     QString title() const {
@@ -233,20 +234,152 @@ private:
     }
 
     void computeInlineDiffs(const QVector<TextDiffLine>& rows) {
-        leftInline_.clear();
-        rightInline_.clear();
-        leftInline_.reserve(rows.size());
-        rightInline_.reserve(rows.size());
+        const auto diffs = computeInlineDiffsForRows(rows);
+        leftInline_ = diffs.first;
+        rightInline_ = diffs.second;
+    }
+
+    static QPair<QVector<QVector<CharSegment>>, QVector<QVector<CharSegment>>>
+    computeInlineDiffsForRows(const QVector<TextDiffLine>& rows) {
+        QPair<QVector<QVector<CharSegment>>, QVector<QVector<CharSegment>>> result;
+        auto& left = result.first;
+        auto& right = result.second;
+        left.reserve(rows.size());
+        right.reserve(rows.size());
         for (const TextDiffLine& row : rows) {
             if (row.changed && row.leftNumber > 0 && row.rightNumber > 0) {
                 const InlineDiff diff = computeInlineDiff(row.left, row.right);
-                leftInline_.push_back(diff.left);
-                rightInline_.push_back(diff.right);
+                left.push_back(diff.left);
+                right.push_back(diff.right);
             } else {
-                leftInline_.push_back({});
-                rightInline_.push_back({});
+                left.push_back({});
+                right.push_back({});
             }
         }
+        return result;
+    }
+
+    void showRawText() {
+        applyingProgrammaticUpdate_ = true;
+        leftHighlighter_->setDeferred(true);
+        rightHighlighter_->setDeferred(true);
+        leftEditor_->setPlainText(leftRaw_.isNull() ? leftOriginal_.join('\n') : leftRaw_);
+        rightEditor_->setPlainText(rightRaw_.isNull() ? rightOriginal_.join('\n') : rightRaw_);
+        leftEditor_->setLineNumbers(QVector<int>::fromList(
+            [&]() { QList<int> values; for (int i = 1; i <= leftOriginal_.size(); ++i) values << i; return values; }()));
+        rightEditor_->setLineNumbers(QVector<int>::fromList(
+            [&]() { QList<int> values; for (int i = 1; i <= rightOriginal_.size(); ++i) values << i; return values; }()));
+        leftEditor_->setDiffData({}, {});
+        rightEditor_->setDiffData({}, {});
+        applyingProgrammaticUpdate_ = false;
+    }
+
+    void beginAsyncRebuild() {
+        const int generation = ++loadGeneration_;
+        const QString leftText = leftRaw_.isNull() ? leftOriginal_.join('\n') : leftRaw_;
+        const QString rightText = rightRaw_.isNull() ? rightOriginal_.join('\n') : rightRaw_;
+        const bool minor = minorAction_->isChecked();
+        const bool deferHighlighting = leftText.size() + rightText.size() > 4 * 1024 * 1024;
+        progress_->show();
+        status_->setText(QString("Loading comparison... %1 / %2 line(s) read")
+                             .arg("pending").arg("pending"));
+
+        const QPointer<TextCompareView> view(this);
+        QThreadPool::globalInstance()->start(
+            [view, generation, leftText, rightText, minor, deferHighlighting]() {
+            const QStringList left = leftText.split('\n');
+            const QStringList right = rightText.split('\n');
+            QVector<TextDiffLine> rows = alignTextLines(left, right);
+            if (minor) {
+                for (auto& row : rows) {
+                    if (row.whitespaceOnly) row.changed = false;
+                }
+            }
+            const auto inlineDiffs = computeInlineDiffsForRows(rows);
+            if (!view) return;
+            QMetaObject::invokeMethod(view, [view, generation, deferHighlighting, left, right,
+                                             rows = std::move(rows),
+                                             inlineDiffs = std::move(inlineDiffs)]() mutable {
+                if (!view || generation != view->loadGeneration_) return;
+                view->leftOriginal_ = left;
+                view->rightOriginal_ = right;
+                view->leftRaw_.clear();
+                view->rightRaw_.clear();
+                view->rows_ = view->visibleRows(rows);
+                view->leftInline_ = inlineDiffs.first;
+                view->rightInline_ = inlineDiffs.second;
+                if (view->rows_.size() != inlineDiffs.first.size()) {
+                    view->computeInlineDiffs(view->rows_);
+                }
+                view->applyRows();
+                if (!deferHighlighting) {
+                    view->leftHighlighter_->setDeferred(false);
+                    view->rightHighlighter_->setDeferred(false);
+                }
+                view->progress_->hide();
+                view->pushSideHistory(/*left=*/true);
+                view->pushSideHistory(/*left=*/false);
+            }, Qt::QueuedConnection);
+        });
+    }
+
+    void applyRows() {
+        const CursorSnapshot leftSnap = captureCursor(leftEditor_);
+        const CursorSnapshot rightSnap = captureCursor(rightEditor_);
+        groups_ = groupDiffRows(rows_);
+
+        QStringList leftLines;
+        QStringList rightLines;
+        QVector<int> leftNumbers;
+        QVector<int> rightNumbers;
+        int differenceCount = 0;
+        int sectionCount = 0;
+        bool inSection = false;
+        for (const auto& row : rows_) {
+            leftLines << row.left;
+            rightLines << row.right;
+            leftNumbers << row.leftNumber;
+            rightNumbers << row.rightNumber;
+            if (row.changed) {
+                ++differenceCount;
+                if (!inSection) ++sectionCount;
+                inSection = true;
+            } else {
+                inSection = false;
+            }
+        }
+
+        applyingProgrammaticUpdate_ = true;
+        leftEditor_->setPlainText(leftLines.join('\n'));
+        rightEditor_->setPlainText(rightLines.join('\n'));
+        leftStructurallyEdited_ = false;
+        rightStructurallyEdited_ = false;
+        leftEditor_->document()->setModified(false);
+        rightEditor_->document()->setModified(false);
+        currentRow_ = -1;
+        preview_->clear();
+        restoreCursor(leftEditor_, leftSnap);
+        restoreCursor(rightEditor_, rightSnap);
+        leftEditor_->setLineNumbers(leftNumbers);
+        rightEditor_->setLineNumbers(rightNumbers);
+        leftEditor_->setDiffData(rows_, groups_);
+        rightEditor_->setDiffData(rows_, groups_);
+        leftEditor_->setInlineDiffs(leftInline_);
+        rightEditor_->setInlineDiffs(rightInline_);
+        leftHighlighter_->refreshInlineDiffs();
+        rightHighlighter_->refreshInlineDiffs();
+        applyingProgrammaticUpdate_ = false;
+        leftHighlighter_->setDeferred(false);
+        rightHighlighter_->setDeferred(false);
+        computeDiffSelections(rows_);
+        miniMap_->setRows(rows_);
+        miniMap_->setCurrentRow(currentRow_);
+        refreshDirtyIndicators();
+        updateMinimapViewport();
+        refreshSideHeader(true);
+        refreshSideHeader(false);
+        status_->setText(QString("%1 difference section(s)   |   %2 line(s)   |   %3 changed row(s)")
+                             .arg(sectionCount).arg(rows_.size()).arg(differenceCount));
     }
 
     QWidget* buildSideHeader(bool left) {
@@ -495,6 +628,13 @@ private:
         status_ = new QLabel(this);
         status_->setObjectName("compareStatus");
         root->addWidget(status_);
+        progress_ = new QProgressBar(this);
+        progress_->setObjectName("compareProgress");
+        progress_->setRange(0, 0);
+        progress_->setTextVisible(false);
+        progress_->setFixedHeight(3);
+        progress_->hide();
+        root->addWidget(progress_);
 
         leftEditor_->setContextMenuPolicy(Qt::CustomContextMenu);
         rightEditor_->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -1384,35 +1524,41 @@ private:
     }
 
     void loadSide(bool left, const QString& path) {
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            status_->setText("Could not open " + path);
-            return;
-        }
-        const QString text = QTextStream(&file).readAll();
-        file.close();
-
-        flushPendingEdits();
-        syncFromEditors();
-        (left ? leftPath_ : rightPath_) = path;
-        (left ? leftOriginal_ : rightOriginal_) = text.split('\n');
-        (left ? leftDirtyLines_ : rightDirtyLines_).clear();
-        manualAlignments_.clear();
-        manualAlignmentPending_ = false;
-        setManualAlignmentCursor(false);
-        if (left) leftUnsaved_ = false; else rightUnsaved_ = false;
-        (left ? leftStructurallyEdited_ : rightStructurallyEdited_) = false;
-
-        applyLanguageHighlighting();
-        rebuild();
-        refreshSideHeader(true);
-        refreshSideHeader(false);
-        refreshDirtyIndicators();
-        if (onTitleChanged) onTitleChanged();
-        status_->setText(QFileInfo(path).fileName() + " loaded.");
-        // Only the side that was reloaded gets a history entry - Ctrl+Z
-        // there will bring back the file that was previously compared.
-        pushSideHistory(left);
+        const QPointer<TextCompareView> view(this);
+        progress_->show();
+        status_->setText("Loading " + QFileInfo(path).fileName() + "...");
+        QThreadPool::globalInstance()->start([view, left, path]() {
+            QFile file(path);
+            const bool opened = file.open(QIODevice::ReadOnly | QIODevice::Text);
+            const QString text = opened ? QTextStream(&file).readAll() : QString();
+            if (!view) return;
+            QMetaObject::invokeMethod(view, [view, left, path, opened, text]() {
+                if (!view) return;
+                if (!opened) {
+                    view->progress_->hide();
+                    view->status_->setText("Could not open " + path);
+                    return;
+                }
+                view->flushPendingEdits();
+                view->syncFromEditors();
+                (left ? view->leftPath_ : view->rightPath_) = path;
+                (left ? view->leftRaw_ : view->rightRaw_) = text;
+                (left ? view->leftDirtyLines_ : view->rightDirtyLines_).clear();
+                view->manualAlignments_.clear();
+                view->manualAlignmentPending_ = false;
+                view->setManualAlignmentCursor(false);
+                if (left) view->leftUnsaved_ = false; else view->rightUnsaved_ = false;
+                (left ? view->leftStructurallyEdited_ : view->rightStructurallyEdited_) = false;
+                view->applyLanguageHighlighting();
+                view->showRawText();
+                view->beginAsyncRebuild();
+                view->refreshSideHeader(true);
+                view->refreshSideHeader(false);
+                view->refreshDirtyIndicators();
+                if (view->onTitleChanged) view->onTitleChanged();
+                view->status_->setText(QFileInfo(path).fileName() + " loaded; comparing...");
+            }, Qt::QueuedConnection);
+        });
     }
 
     void saveSide(bool left) {
@@ -1454,6 +1600,8 @@ private:
 
     QString leftPath_;
     QString rightPath_;
+    QString leftRaw_;
+    QString rightRaw_;
     QStringList leftOriginal_;
     QStringList rightOriginal_;
     QVector<TextDiffLine> rows_;
@@ -1485,6 +1633,8 @@ private:
     DifferenceOverview* miniMap_ = nullptr;
     DiffLinePreview* preview_ = nullptr;
     QLabel* status_ = nullptr;
+    QProgressBar* progress_ = nullptr;
+    int loadGeneration_ = 0;
     bool syncing_ = false;
 
     int currentRow_ = -1;

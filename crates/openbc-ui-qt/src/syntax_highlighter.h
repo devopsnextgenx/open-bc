@@ -48,6 +48,12 @@ public:
         refreshAndRehighlight();
     }
 
+    void setDeferred(bool deferred) {
+        if (deferred_ == deferred) return;
+        deferred_ = deferred;
+        if (!deferred_) refreshAndRehighlight();
+    }
+
     void setStyle(Style style) {
         if (style_ == style) return;
         style_ = style;
@@ -58,11 +64,13 @@ public:
         inlineDiffProvider_ = std::move(provider);
     }
 
-    void refreshInlineDiffs() { rehighlight(); }
+    void refreshInlineDiffs() {
+        if (!deferred_) rehighlight();
+    }
 
 protected:
     void highlightBlock(const QString& text) override {
-        if (!enabled_) return;
+        if (!enabled_ || deferred_) return;
         const int line = currentBlock().blockNumber();
         for (const BackendHighlightSpan& span : spans_) {
             if (span.line != line || span.start >= text.size()) continue;
@@ -92,7 +100,7 @@ protected:
 
 private:
     void refreshAndRehighlight() {
-        if (refreshing_) return;
+        if (refreshing_ || deferred_) return;
         refreshing_ = true;
         refreshBackendSpans();
         rehighlight();
@@ -171,6 +179,7 @@ private:
     std::function<QVector<CharSegment>(int)> inlineDiffProvider_;
     Style style_ = Style::VsCodeDark;
     bool enabled_ = true;
+    bool deferred_ = false;
     bool refreshing_ = false;
 };
 

@@ -24,8 +24,11 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QObject>
+#include <QPointer>
 #include <QPoint>
+#include <QThreadPool>
 #include <QSettings>
+#include <QStatusBar>
 #include <QStyleFactory>
 #include <QTabBar>
 #include <QTabWidget>
@@ -375,13 +378,22 @@ extern "C" int openbc_run_gui() {
         if (entry.kind == "folder") {
             addSession(entry.left, entry.right, true);
         } else if (!entry.left.isEmpty() || !entry.right.isEmpty()) {
-            QFile leftFile(entry.left);
-            QFile rightFile(entry.right);
-            const QString leftText = leftFile.open(QIODevice::ReadOnly)
-                                          ? QString::fromUtf8(leftFile.readAll()) : QString();
-            const QString rightText = rightFile.open(QIODevice::ReadOnly)
-                                           ? QString::fromUtf8(rightFile.readAll()) : QString();
-            addTextView(entry.left, entry.right, leftText, rightText, nullptr);
+            const QPointer<PersistedMainWindow> mainWindow(&window);
+            window.statusBar()->showMessage("Loading comparison files...");
+            QThreadPool::globalInstance()->start([&, entry, mainWindow]() {
+                QFile leftFile(entry.left);
+                QFile rightFile(entry.right);
+                const QString leftText = leftFile.open(QIODevice::ReadOnly)
+                                             ? QString::fromUtf8(leftFile.readAll()) : QString();
+                const QString rightText = rightFile.open(QIODevice::ReadOnly)
+                                              ? QString::fromUtf8(rightFile.readAll()) : QString();
+                if (!mainWindow) return;
+                QMetaObject::invokeMethod(mainWindow, [&, entry, leftText, rightText, mainWindow]() {
+                    if (!mainWindow) return;
+                    addTextView(entry.left, entry.right, leftText, rightText, nullptr);
+                    mainWindow->statusBar()->clearMessage();
+                }, Qt::QueuedConnection);
+            });
         }
     };
 
