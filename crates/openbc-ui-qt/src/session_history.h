@@ -45,17 +45,11 @@ public:
             entries = QJsonDocument::fromJson(file.readAll()).array();
             file.close();
         }
-        const QDate today = QDate::currentDate();
-        for (int index = entries.size() - 1; index >= 0; --index) {
-            const auto existing = entries[index].toObject();
-            if (existing["kind"].toString() != kind || existing["left"].toString() != left ||
-                existing["right"].toString() != right) {
-                continue;
-            }
-            const QDate existingDate = QDateTime::fromString(existing["openedAt"].toString(), Qt::ISODate)
-                                           .date();
-            if (existingDate == today) {
-                entries.removeAt(index);
+        for (const auto& value : entries) {
+            const auto existing = value.toObject();
+            if (existing["kind"].toString() == kind && existing["left"].toString() == left &&
+                existing["right"].toString() == right) {
+                return;
             }
         }
         QJsonObject entry;
