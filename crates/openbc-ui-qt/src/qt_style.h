@@ -14,6 +14,7 @@
 #include <QIcon>
 #include <QIconEngine>
 #include <QItemSelectionModel>
+#include <QKeyEvent>
 #include <QModelIndex>
 #include <QPainter>
 #include <QPainterPath>
@@ -31,6 +32,8 @@
 #include <vector>
 
 namespace openbc::ui {
+
+enum class Theme { Dark, Light };
 
 // ---------------------------------------------------------------------------
 // Comparison vocabulary shared by the UI and the comparison engine
@@ -132,12 +135,34 @@ inline QPalette darkPalette() {
     return p;
 }
 
+inline QPalette lightPalette() {
+    QPalette p;
+    p.setColor(QPalette::Window, QColor("#f4f6fb"));
+    p.setColor(QPalette::WindowText, QColor("#202330"));
+    p.setColor(QPalette::Base, QColor("#ffffff"));
+    p.setColor(QPalette::AlternateBase, QColor("#eef1f7"));
+    p.setColor(QPalette::ToolTipBase, QColor("#ffffff"));
+    p.setColor(QPalette::ToolTipText, QColor("#202330"));
+    p.setColor(QPalette::Text, QColor("#202330"));
+    p.setColor(QPalette::Button, QColor("#e5e9f2"));
+    p.setColor(QPalette::ButtonText, QColor("#202330"));
+    p.setColor(QPalette::BrightText, QColor("#11131a"));
+    p.setColor(QPalette::Highlight, QColor("#c9dcff"));
+    p.setColor(QPalette::HighlightedText, QColor("#17213b"));
+    p.setColor(QPalette::Link, QColor("#1666c5"));
+    p.setColor(QPalette::PlaceholderText, QColor("#7b8499"));
+    p.setColor(QPalette::Disabled, QPalette::Text, QColor("#a1a8b8"));
+    p.setColor(QPalette::Disabled, QPalette::ButtonText, QColor("#a1a8b8"));
+    p.setColor(QPalette::Disabled, QPalette::WindowText, QColor("#a1a8b8"));
+    return p;
+}
+
 // ---------------------------------------------------------------------------
 // Application style sheet
 // ---------------------------------------------------------------------------
 
-inline QString applicationStyleSheet() {
-    return QStringLiteral(R"(
+inline QString applicationStyleSheet(Theme theme = Theme::Dark) {
+    QString sheet = QStringLiteral(R"(
         QMainWindow, QDialog { background: #2d2d2d; }
         QWidget { color: #f8f8f2; }
         QToolTip {
@@ -177,6 +202,23 @@ inline QString applicationStyleSheet() {
         QToolButton#tabClose:hover { background: #55585f; }
         QToolButton#newTab { background: transparent; border: 0; border-radius: 3px; margin: 6px 4px 0 4px; padding: 3px; }
         QToolButton#newTab:hover { background: #4d4d4d; }
+
+        /* ---- home tab ---- */
+        QWidget#homeView { background: #262833; }
+        QLabel#homeHeading { color: #f8f8f2; font-size: 28px; font-weight: 700; }
+        QLabel#homeSubtitle { color: #b9b9c7; font-size: 14px; padding-bottom: 14px; }
+        QLabel#homeSectionTitle { color: #f8f8f2; font-size: 16px; font-weight: 600; padding-top: 18px; }
+        QTreeWidget#homeHistory { background: #30323d; border: 1px solid #505260; }
+        QTreeWidget#homeHistory::item { height: 28px; padding: 2px 6px; }
+        QTreeWidget#homeHistory::item:selected { background: #44475a; }
+        QTreeWidget#homeHistory::item:hover:!selected { background: #393c49; }
+        QSplitter#homeSplit::handle { background: #505260; width: 2px; }
+        QToolButton#homeAction {
+            background: #30323d; border: 1px solid #505260; border-radius: 4px;
+            color: #f8f8f2; padding: 10px 16px; min-width: 108px;
+        }
+        QToolButton#homeAction:hover { background: #3d4050; border-color: #72779a; }
+        QToolButton#homeAction:pressed { background: #23242c; }
 
         /* ---- per-tab toolbar ---- */
         QToolBar {
@@ -225,6 +267,10 @@ inline QString applicationStyleSheet() {
         QFrame#footer { background: #3e3e3e; border: 0; border-top: 1px solid #505050; }
         QFrame#footer QLabel { background: transparent; padding: 3px 6px; }
         QFrame#footerDivider { background: #5a5a5a; max-width: 1px; }
+        QFrame#gutterHeader {
+            background: #363636; border: 0; border-bottom: 1px solid #505050;
+        }
+        QFrame#gutterBody { background: #262833; border: 0; }
 
         QTreeView, QTreeWidget {
             background: #262833; border: 0; outline: 0;
@@ -241,15 +287,86 @@ inline QString applicationStyleSheet() {
             border-top: 1px solid #505050; padding: 3px 6px;
             selection-background-color: #44475a;
         }
+        QLabel#compareStatus {
+            background: #3e3e3e; color: #f8f8f2;
+            border-top: 1px solid #505050; padding: 3px 8px;
+        }
 
-        QScrollBar:vertical { background: #232323; width: 13px; margin: 0; border: 0; }
-        QScrollBar:horizontal { background: #232323; height: 13px; margin: 0; border: 0; }
-        QScrollBar::handle:vertical { background: #555a6b; min-height: 28px; border-radius: 4px; margin: 2px; }
-        QScrollBar::handle:horizontal { background: #555a6b; min-width: 28px; border-radius: 4px; margin: 2px; }
-        QScrollBar::handle:hover { background: #6b7189; }
+        QWidget#textCompareView { background: #262833; }
+        QWidget#textCompareView QPlainTextEdit {
+            background: #1f2028; color: #f8f8f2; border: 0;
+            padding: 4px 8px; selection-background-color: #44475a;
+        }
+        QWidget#textCompareView QSplitter::handle:horizontal { background: #505050; width: 2px; }
+        QToolBar#textCompareToolbar {
+            background: #3e3e3e; border: 0; border-top: 1px solid #505050;
+            border-bottom: 1px solid #505050; spacing: 2px; padding: 3px 5px;
+        }
+        QToolBar#textCompareToolbar QToolButton {
+            background: transparent; border: 1px solid transparent; border-radius: 3px;
+            padding: 3px 6px; color: #d8dae6; font-size: 11px;
+        }
+        QToolBar#textCompareToolbar QToolButton:hover { background: #4d4d4d; border-color: #5f5f5f; }
+        QToolBar#textCompareToolbar QToolButton:checked { background: #232323; border-color: #232323; }
+        QFrame#diffLinePreview { background: #232323; border: 0; border-top: 1px solid #505050; }
+        QFrame#diffLinePreview QLabel { font-family: "Consolas", "Courier New", monospace; }
+        QLineEdit#previewText {
+            font-family: "Consolas", "Courier New", monospace; border-radius: 0;
+        }
+        QLabel#previewLineNo {
+            font-family: "Consolas", "Courier New", monospace; color: #8b90a6;
+            background: #1b1b1b; padding: 0 6px; border: 1px solid transparent;
+        }
+
+        QFrame#sideHeader { background: #232323; border: 0; border-bottom: 1px solid #3a3a3a; }
+        QLabel#sidePath {
+            font-weight: 700; color: #f8f8f2; background: transparent; padding: 0;
+        }
+        QLabel#sideAttrs {
+            color: #8b90a6; background: transparent; padding: 0; font-size: 11px;
+        }
+        QToolButton#saveSideBtn {
+            background: transparent; border: 1px solid transparent; border-radius: 3px; padding: 2px;
+        }
+        QToolButton#saveSideBtn:hover { background: #4d4d4d; border-color: #5f5f5f; }
+        QToolButton#saveSideBtn:disabled { background: transparent; }
+        /* Blue = this side has copied/edited lines that are not yet written to
+        disk. Kept distinct from the green row-highlight used by the minimap
+        and the dirty-row gutter bars, so the button reads as "action needed"
+        rather than "state". */
+        QToolButton#saveSideBtn[dirty="true"] {
+            background: rgba(78, 156, 255, 45); border-color: #4e9cff;
+        }
+        QToolButton#saveSideBtn[dirty="true"]:hover { background: rgba(78, 156, 255, 80); }
+        QToolButton#saveSideBtn[dirty="true"]:pressed { background: rgba(78, 156, 255, 110); }
+
+        QScrollBar:vertical { background: #1b1b1b; width: 15px; margin: 0; border-left: 1px solid #3a3a3a; }
+        QScrollBar:horizontal { background: #1b1b1b; height: 15px; margin: 0; border-top: 1px solid #3a3a3a; }
+        QScrollBar::handle:vertical { background: #5f6479; min-height: 32px; border-radius: 4px; margin: 2px 3px; }
+        QScrollBar::handle:horizontal { background: #5f6479; min-width: 32px; border-radius: 4px; margin: 3px 2px; }
+        QScrollBar::handle:hover { background: #7880a0; }
+        QScrollBar::handle:pressed { background: #8b93bd; }
         QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
         QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
     )");
+    if (theme == Theme::Light) {
+        const QVector<QPair<QString, QString>> colors = {
+            {"#2d2d2d", "#f4f6fb"}, {"#3e3e3e", "#e5e9f2"},
+            {"#232323", "#ffffff"}, {"#363636", "#e9edf5"},
+            {"#262833", "#eef1f7"}, {"#1f2028", "#ffffff"},
+            {"#1b1b1b", "#e4e8f0"}, {"#333333", "#e9edf5"},
+            {"#3a3a3a", "#dfe5ef"}, {"#44475a", "#c9dcff"},
+            {"#4d4d4d", "#d8e0ed"}, {"#505050", "#c4cad6"},
+            {"#5a5a5a", "#b7bfce"}, {"#5f5f5f", "#aab5c7"},
+            {"#5f637f", "#829dcc"}, {"#6272a4", "#4d78b8"},
+            {"#f8f8f2", "#202330"}, {"#d8dae6", "#39435a"},
+            {"#b9b9b9", "#58647a"}, {"#e0e0e0", "#28344a"},
+            {"#8b90a6", "#667085"}, {"#777b8f", "#8c96a8"},
+            {"#a6adc8", "#59657a"}, {"#555a6b", "#9aa3b3"}
+        };
+        for (const auto& color : colors) sheet.replace(color.first, color.second);
+    }
+    return sheet;
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +539,20 @@ enum class Glyph {
     FolderUp,
     Plus,
     Close,
+    Home,
+    Sessions,
+    ShowAll,
+    ShowDiffs,
+    Context,
+    Minor,
+    Rules,
+    Format,
+    CopyLine,
+    NextSection,
+    PrevSection,
+    Find,
+    MinimapPixel,
+    Save,
 };
 
 inline QIcon glyph(Glyph which) {
@@ -556,9 +687,310 @@ inline QIcon glyph(Glyph which) {
             p.drawLine(QPointF(4.4, 4.4), QPointF(11.6, 11.6));
             p.drawLine(QPointF(11.6, 4.4), QPointF(4.4, 11.6));
         });
+    case Glyph::Home:
+        return make([ink](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(ink);
+            p.drawPolygon(QPolygonF({QPointF(8.0, 1.8), QPointF(14.6, 7.4), QPointF(12.4, 7.4),
+                                     QPointF(12.4, 14.0), QPointF(3.6, 14.0), QPointF(3.6, 7.4),
+                                     QPointF(1.4, 7.4)}));
+            p.setBrush(QColor(0x2d, 0x2d, 0x2d));
+            p.drawRect(QRectF(6.6, 9.6, 2.8, 4.4));
+        });
+    case Glyph::Sessions:
+        return make([ink](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0x62, 0x72, 0xa4));
+            p.drawRoundedRect(QRectF(2.0, 2.0, 10.0, 6.4), 1.0, 1.0);
+            p.setBrush(ink);
+            p.drawRoundedRect(QRectF(4.0, 7.4, 10.0, 6.4), 1.0, 1.0);
+        });
+    case Glyph::ShowAll:
+        return make([ink](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(QPen(ink, 1.6, Qt::SolidLine, Qt::RoundCap));
+            for (const qreal y : {3.2, 8.0, 12.8}) {
+                p.drawLine(QPointF(2.0, y), QPointF(14.0, y));
+            }
+        });
+    case Glyph::ShowDiffs:
+        return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(QPen(color::different(), 1.6, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(2.0, 3.2), QPointF(14.0, 3.2));
+            p.drawLine(QPointF(2.0, 12.8), QPointF(14.0, 12.8));
+            p.setPen(QPen(QColor(0x6a, 0x6f, 0x82), 1.4, Qt::DashLine));
+            p.drawLine(QPointF(2.0, 8.0), QPointF(14.0, 8.0));
+        });
+    case Glyph::Context:
+        return make([ink](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(QPen(QColor(0x6a, 0x6f, 0x82), 1.4, Qt::DashLine));
+            p.drawLine(QPointF(2.0, 3.2), QPointF(14.0, 3.2));
+            p.drawLine(QPointF(2.0, 12.8), QPointF(14.0, 12.8));
+            p.setPen(QPen(ink, 1.6, Qt::SolidLine));
+            p.drawLine(QPointF(2.0, 8.0), QPointF(14.0, 8.0));
+        });
+    case Glyph::Minor:
+        return make([](QPainter& p, QIcon::Mode, QIcon::State state) {
+            p.setPen(QPen(QColor(0x4e, 0xa1, 0xff), 1.6, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(2.4, 5.4), QPointF(13.6, 5.4));
+            p.drawLine(QPointF(2.4, 10.6), QPointF(9.0, 10.6));
+            if (state == QIcon::On) {
+                p.setPen(QPen(color::different(), 1.9, Qt::SolidLine, Qt::RoundCap));
+                p.drawLine(QPointF(2.0, 14.0), QPointF(14.0, 2.0));
+            }
+        });
+    case Glyph::Rules:
+        return make([ink](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(QPen(ink, 1.5, Qt::SolidLine, Qt::RoundCap));
+            for (const qreal y : {3.6, 8.0, 12.4}) {
+                p.drawLine(QPointF(1.6, y), QPointF(14.4, y));
+            }
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0xf2, 0xc0, 0x4a));
+            p.drawEllipse(QPointF(10.5, 3.6), 1.7, 1.7);
+            p.drawEllipse(QPointF(5.5, 8.0), 1.7, 1.7);
+            p.drawEllipse(QPointF(9.0, 12.4), 1.7, 1.7);
+        });
+    case Glyph::Format:
+        return make([ink](QPainter& p, QIcon::Mode, QIcon::State) {
+            QFont font;
+            font.setPixelSize(11);
+            font.setBold(true);
+            p.setFont(font);
+            p.setPen(ink);
+            p.drawText(QRectF(0.5, 0.5, 15.0, 15.0), Qt::AlignCenter, QStringLiteral("Abc"));
+        });
+    case Glyph::CopyLine:
+        return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0xf2, 0xc0, 0x4a));
+            p.drawPolygon(QPolygonF({QPointF(1.5, 5.8), QPointF(8.2, 5.8), QPointF(8.2, 2.8),
+                                     QPointF(14.5, 8.0), QPointF(8.2, 13.2), QPointF(8.2, 10.2),
+                                     QPointF(1.5, 10.2)}));
+        });
+    case Glyph::NextSection:
+    case Glyph::PrevSection: {
+        return make([next = which == Glyph::NextSection, ink](QPainter& p, QIcon::Mode,
+                                                               QIcon::State) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(ink);
+            if (next) {
+                p.drawPolygon(QPolygonF({QPointF(3.0, 4.5), QPointF(13.0, 4.5), QPointF(8.0, 11.5)}));
+            } else {
+                p.drawPolygon(QPolygonF({QPointF(3.0, 11.5), QPointF(13.0, 11.5), QPointF(8.0, 4.5)}));
+            }
+        });
+    case Glyph::Find:
+        return make([ink](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(QPen(ink, 1.7, Qt::SolidLine, Qt::RoundCap));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(QPointF(6.6, 6.6), 4.4, 4.4);
+            p.drawLine(QPointF(10.0, 10.0), QPointF(14.2, 14.2));
+        });
+    case Glyph::MinimapPixel:
+        return make([ink](QPainter& p, QIcon::Mode, QIcon::State state) {
+            p.setPen(QPen(ink, state == QIcon::On ? 1.1 : 2.6, Qt::SolidLine, Qt::FlatCap));
+            for (const qreal y : {2.4, 5.2, 8.0, 10.8, 13.6}) {
+                p.drawLine(QPointF(2.0, y), QPointF(14.0, y));
+            }
+        });
+    case Glyph::Save:
+        // Classic floppy-disk glyph: body, dark shutter block top-left, and a
+        // small paper-label rectangle lower half - drawn with the same "gold"
+        // accent as Refresh/Swap so an unsaved side reads as actionable.
+        return make([gold, ink](QPainter& p, QIcon::Mode, QIcon::State state) {
+            const QColor body = state == QIcon::On ? gold : ink;
+            p.setPen(Qt::NoPen);
+            p.setBrush(body);
+            QPainterPath shell;
+            shell.addRoundedRect(QRectF(2.2, 1.8, 11.6, 12.4), 1.4, 1.4);
+            p.drawPath(shell);
+            p.setBrush(QColor(0x23, 0x23, 0x23));
+            p.drawRect(QRectF(4.4, 2.6, 6.0, 3.6));
+            p.setBrush(body.darker(160));
+            p.drawRect(QRectF(4.6, 8.2, 6.8, 4.6));
+        });
+    }
     }
     return QIcon();
 }
+
+// Colour-parameterised floppy-disk glyph, for callers that need to draw
+// the save icon in an "attention" colour (e.g. the per-side save buttons
+// when that side has copied-but-unsaved lines). Glyph::Save itself paints
+// in the generic ink / gold palette used by the toolbar; this variant lets
+// the caller pick the body colour directly.
+inline QIcon saveIcon(const QColor& body) {
+    return make([body](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(body);
+        QPainterPath shell;
+        shell.addRoundedRect(QRectF(2.2, 1.8, 11.6, 12.4), 1.4, 1.4);
+        p.drawPath(shell);
+        // Dark shutter block top-left.
+        p.setBrush(QColor(0x23, 0x23, 0x23));
+        p.drawRect(QRectF(4.4, 2.6, 6.0, 3.6));
+        // Slightly darker paper-label rectangle lower half.
+        p.setBrush(body.darker(160));
+        p.drawRect(QRectF(4.6, 8.2, 6.8, 4.6));
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Context-menu icons. Same 16x16 design space as the toolbar glyphs, drawn in
+// code so the menus need no image resources.
+// ---------------------------------------------------------------------------
+namespace menuicons {
+
+enum class SyncDir { Right, Left, Both };
+
+// Solid block arrow; `right` = false mirrors it.
+inline void paintArrow(QPainter& p, const QColor& fill, bool right) {
+    p.save();
+    if (!right) {
+        p.translate(16.0, 0.0);
+        p.scale(-1.0, 1.0);
+    }
+    p.setPen(Qt::NoPen);
+    p.setBrush(fill);
+    p.drawPolygon(QPolygonF({QPointF(1.5, 5.8), QPointF(8.2, 5.8), QPointF(8.2, 2.8),
+                             QPointF(14.5, 8.0), QPointF(8.2, 13.2), QPointF(8.2, 10.2),
+                             QPointF(1.5, 10.2)}));
+    p.restore();
+}
+
+// "Copy to ..." (yellow) and "Move to ..." (red) share the arrow shape.
+inline QIcon arrow(const QColor& fill, bool right) {
+    return make([fill, right](QPainter& p, QIcon::Mode, QIcon::State) { paintArrow(p, fill, right); });
+}
+inline QIcon copyArrow(bool right) { return arrow(QColor(0xf5, 0xc2, 0x3d), right); }
+inline QIcon moveArrow(bool right) { return arrow(QColor(0xe8, 0x4a, 0x4a), right); }
+
+// Folder with a small up-arrow badge (Copy to Folder / Move to Folder).
+inline QIcon folderWithArrow(const QColor& badge) {
+    const QIcon folder = folderIcon(color::folderYellow());
+    return make([folder, badge](QPainter& p, QIcon::Mode, QIcon::State) {
+        folder.paint(&p, QRect(0, 0, 16, 16), Qt::AlignCenter, QIcon::Normal, QIcon::Off);
+        p.setPen(QPen(QColor(0x1e, 0x1e, 0x1e), 0.7));
+        p.setBrush(badge);
+        p.drawPolygon(QPolygonF({QPointF(4.5, 6.0), QPointF(8.2, 10.0), QPointF(5.9, 10.0),
+                                 QPointF(5.9, 14.6), QPointF(3.1, 14.6), QPointF(3.1, 10.0),
+                                 QPointF(0.8, 10.0)}));
+    });
+}
+inline QIcon copyToFolder() { return folderWithArrow(QColor(0xf5, 0xc2, 0x3d)); }
+inline QIcon moveToFolder() { return folderWithArrow(QColor(0xe8, 0x4a, 0x4a)); }
+
+// Folder with a green "+" (New Folder).
+inline QIcon newFolder() {
+    const QIcon folder = folderIcon(color::folderYellow());
+    return make([folder](QPainter& p, QIcon::Mode, QIcon::State) {
+        folder.paint(&p, QRect(0, 0, 16, 16), Qt::AlignCenter, QIcon::Normal, QIcon::Off);
+        p.setPen(QPen(QColor(0x2f, 0xc4, 0x4f), 2.2, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(11.5, 8.5), QPointF(11.5, 14.5));
+        p.drawLine(QPointF(8.5, 11.5), QPointF(14.5, 11.5));
+    });
+}
+
+// "=?" (Compare Contents)
+inline QIcon compareContents() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(QPen(QColor(0xdd, 0xe0, 0xee), 1.5, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(1.5, 6.0), QPointF(7.0, 6.0));
+        p.drawLine(QPointF(1.5, 10.0), QPointF(7.0, 10.0));
+        QFont font;
+        font.setPixelSize(13);
+        font.setBold(true);
+        p.setFont(font);
+        p.setPen(QColor(0xf2, 0xc0, 0x4a));
+        p.drawText(QRectF(7.5, 0.5, 8.0, 15.0), Qt::AlignCenter, QStringLiteral("?"));
+    });
+}
+
+// Red cross (Delete)
+inline QIcon remove() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(QPen(QColor(0xe8, 0x3f, 0x3f), 2.0, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(3.5, 3.5), QPointF(12.5, 12.5));
+        p.drawLine(QPointF(12.5, 3.5), QPointF(3.5, 12.5));
+    });
+}
+
+// Text box with a caret (Rename)
+inline QIcon rename() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(QPen(QColor(0xdd, 0xe0, 0xee), 1.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(QRectF(1.5, 4.5, 13.0, 7.0), 1.0, 1.0);
+        p.setPen(QPen(QColor(0x5a, 0xa9, 0xff), 1.4, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(8.0, 2.5), QPointF(8.0, 13.5));
+    });
+}
+
+// Calendar + clock (Touch = change timestamp)
+inline QIcon touch() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        const QColor outline(0x1e, 0x1e, 0x1e);
+        p.setPen(QPen(outline, 0.7));
+        p.setBrush(QColor(0xe6, 0xe8, 0xf2));
+        p.drawRoundedRect(QRectF(1.5, 2.5, 10.0, 11.0), 1.0, 1.0);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x3b, 0x8e, 0xea));
+        p.drawRect(QRectF(2.0, 3.0, 9.0, 2.6));
+        p.setPen(QPen(outline, 0.8));
+        p.setBrush(Qt::white);
+        p.drawEllipse(QPointF(11.5, 11.5), 3.6, 3.6);
+        p.drawLine(QPointF(11.5, 11.5), QPointF(11.5, 9.3));
+        p.drawLine(QPointF(11.5, 11.5), QPointF(13.0, 12.3));
+    });
+}
+
+// Green tick (Ignored, when active)
+inline QIcon check() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(QPen(QColor(0x2f, 0xc4, 0x4f), 2.0, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(3.0, 8.6), QPointF(6.6, 12.2));
+        p.drawLine(QPointF(6.6, 12.2), QPointF(13.2, 4.6));
+    });
+}
+
+// Printer (File Compare Report)
+inline QIcon report() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        const QColor outline(0x1e, 0x1e, 0x1e);
+        p.setPen(QPen(outline, 0.7));
+        p.setBrush(Qt::white);
+        p.drawRect(QRectF(4.0, 1.8, 8.0, 5.0));    // paper in
+        p.setBrush(QColor(0x9a, 0xa0, 0xb8));
+        p.drawRoundedRect(QRectF(1.5, 6.0, 13.0, 6.0), 1.0, 1.0);  // body
+        p.setBrush(Qt::white);
+        p.drawRect(QRectF(4.0, 10.0, 8.0, 4.2));   // paper out
+        p.setPen(QPen(QColor(0x80, 0x84, 0x98), 0.7));
+        p.drawLine(QPointF(5.2, 11.8), QPointF(10.8, 11.8));
+        p.drawLine(QPointF(5.2, 13.2), QPointF(9.0, 13.2));
+    });
+}
+
+// Double arrowheads (Synchronize submenu). Green = update, red = mirror.
+inline QIcon chevrons(const QColor& fill, SyncDir dir) {
+    return make([fill, dir](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(fill);
+        auto head = [&p](double x, bool right) {  // 6 wide, 9 tall
+            const double tip = right ? x + 6.0 : x;
+            const double base = right ? x : x + 6.0;
+            p.drawPolygon(QPolygonF({QPointF(base, 3.5), QPointF(tip, 8.0), QPointF(base, 12.5)}));
+        };
+        switch (dir) {
+        case SyncDir::Right: head(1.5, true); head(8.0, true); break;
+        case SyncDir::Left: head(1.5, false); head(8.0, false); break;
+        case SyncDir::Both: head(1.5, false); head(8.5, true); break;
+        }
+    });
+}
+inline QIcon update(SyncDir dir) { return chevrons(QColor(0x3f, 0xe0, 0x4a), dir); }
+inline QIcon mirror(SyncDir dir) { return chevrons(QColor(0xf0, 0x50, 0x50), dir); }
+
+}  // namespace menuicons
 
 }  // namespace icons
 
@@ -647,7 +1079,7 @@ public:
         setSelectionMode(QAbstractItemView::SingleSelection);
         setVerticalScrollMode(QAbstractItemView::ScrollPerItem);
         setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-        setEditTriggers(QAbstractItemView::NoEditTriggers);
+        setEditTriggers(QAbstractItemView::EditKeyPressed);
         setFrameShape(QFrame::NoFrame);
         setTextElideMode(Qt::ElideRight);
 
@@ -668,6 +1100,17 @@ public:
     }
 
 protected:
+    void keyPressEvent(QKeyEvent* event) override {
+        if (event->key() == Qt::Key_F2) {
+            if (auto* item = currentItem()) {
+                editItem(item, 0);
+                event->accept();
+                return;
+            }
+        }
+        QTreeWidget::keyPressEvent(event);
+    }
+
     // Classic tree look: dotted connectors between siblings, small [+]/[-]
     // boxes for expandable folders. Top-level rows get no connectors.
     void drawBranches(QPainter* painter, const QRect& rect,

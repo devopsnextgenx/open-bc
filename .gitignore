@@ -22,3 +22,5 @@ Thumbs.db
 # Keep repository configuration and automation checked in
 !.vscode/
 !.github/
+
+build/

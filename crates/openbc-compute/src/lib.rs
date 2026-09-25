@@ -68,6 +68,7 @@ impl ComputeDispatcher {
 
     /// Hash bytes using the CPU pool, or mark large eligible inputs for a GPU backend.
     pub fn hash_bytes(&self, bytes: &[u8]) -> HashResult {
+        let started = std::time::Instant::now();
         let backend = if bytes.len() >= GPU_MIN_BYTES {
             #[cfg(feature = "gpu")]
             {
@@ -89,6 +90,20 @@ impl ComputeDispatcher {
             hasher.update(bytes);
             hasher.finalize().into()
         });
+        let backend_name = match backend {
+            BackendKind::Cpu => "CPU",
+            BackendKind::Gpu => "GPU",
+        };
+        openbc_observability::record(
+            "openbc-compute",
+            "hash_bytes",
+            started.elapsed(),
+            Some((bytes.len(), 0)),
+            None,
+            None,
+            None,
+            Some(backend_name.to_owned()),
+        );
         HashResult { digest, backend }
     }
 }

@@ -12,6 +12,7 @@ smb = []
 [dependencies]
 async-trait.workspace = true
 openbc-core = { path = "../openbc-core" }
+openbc-observability = { path = "../openbc-observability" }
 ssh2 = { version = "0.9", optional = true }
 thiserror.workspace = true
 tokio.workspace = true

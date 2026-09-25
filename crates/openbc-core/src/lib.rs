@@ -1,5 +1,8 @@
 //! Domain types and pure comparison contracts for OpenBC.
 
+/// Pure text and log comparison algorithms.
+pub mod text;
+
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -103,11 +106,12 @@ pub fn compare_directory_entries(
     left: &[DirectoryEntry],
     right: &[DirectoryEntry],
 ) -> Vec<FolderEntryComparison> {
+    let started = std::time::Instant::now();
     let mut names = std::collections::BTreeSet::new();
     names.extend(left.iter().map(|entry| entry.name.clone()));
     names.extend(right.iter().map(|entry| entry.name.clone()));
 
-    names
+    let result: Vec<_> = names
         .into_iter()
         .map(|name| {
             let left_entry = left.iter().find(|entry| entry.name == name).cloned();
@@ -129,5 +133,32 @@ pub fn compare_directory_entries(
                 status,
             }
         })
-        .collect()
+        .collect();
+    openbc_observability::log(
+        "openbc-core",
+        "compare_directory_entries",
+        "INFO",
+        "folder level aligned",
+    );
+    openbc_observability::record(
+        "openbc-core",
+        "folder_compare",
+        started.elapsed(),
+        None,
+        None,
+        Some(
+            left.iter()
+                .chain(right)
+                .map(|entry| entry.metadata.size)
+                .sum(),
+        ),
+        Some(
+            left.iter()
+                .chain(right)
+                .filter(|entry| entry.metadata.is_dir)
+                .count(),
+        ),
+        Some("metadata alignment".to_owned()),
+    );
+    result
 }

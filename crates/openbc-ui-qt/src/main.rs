@@ -35,10 +35,14 @@ unsafe extern "C" {
 }
 
 fn main() -> Result<()> {
+    openbc_observability::init().map_err(anyhow::Error::msg)?;
     #[cfg(feature = "qt")]
     {
         let exit_code = unsafe { openbc_run_gui() };
-        anyhow::ensure!(exit_code == 0, "Qt application exited with code {exit_code}");
+        anyhow::ensure!(
+            exit_code == 0,
+            "Qt application exited with code {exit_code}"
+        );
         return Ok(());
     }
 

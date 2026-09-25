@@ -8,6 +8,7 @@ default = []
 gpu = ["dep:wgpu"]
 
 [dependencies]
+openbc-observability = { path = "../openbc-observability" }
 rayon.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
