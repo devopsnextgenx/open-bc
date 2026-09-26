@@ -521,6 +521,7 @@ private:
         pixelMinimapAction_->setCheckable(true);
         pixelMinimapAction_->setToolTip(
             "Minimap: one pixel-thin line per differing row, instead of one bar per change block");
+        pixelMinimapAction_->setChecked(true);
         findAction_ = toolbar_->addAction(icons::glyph(Glyph::Find), "Find");
         findAction_->setShortcut(QKeySequence::Find);
         findAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);

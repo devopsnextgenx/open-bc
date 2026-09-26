@@ -295,7 +295,7 @@ private:
     static constexpr int kFullScaleLines = 400;
     // Floor for the content-region fraction of the strip (avoids a near-
     // invisible region for very tiny files).
-    static constexpr qreal kMinContentFraction = 0.08;
+    static constexpr qreal kMinContentFraction = 0.05;
 
     QVector<TextDiffLine> rows_;
     QVector<DiffGroup> blocks_;
