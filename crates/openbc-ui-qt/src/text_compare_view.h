@@ -29,6 +29,7 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPointer>
+#include <QUuid>
 #include <QSet>
 #include <QThreadPool>
 #include <QSplitter>
@@ -76,6 +77,8 @@ public:
         const QString rightName = rightPath_.isEmpty() ? "(missing)" : QFileInfo(rightPath_).fileName();
         return leftName + " <-> " + rightName;
     }
+
+    QString instrumentationSessionId() const { return instrumentationSessionId_; }
 
     std::function<void()> onHomeRequested;
     std::function<void()> onSessionsRequested;
@@ -235,13 +238,13 @@ private:
     }
 
     void computeInlineDiffs(const QVector<TextDiffLine>& rows) {
-        const auto diffs = computeInlineDiffsForRows(rows);
+        const auto diffs = computeInlineDiffsForRows(rows, instrumentationSessionId_);
         leftInline_ = diffs.first;
         rightInline_ = diffs.second;
     }
 
     static QPair<QVector<QVector<CharSegment>>, QVector<QVector<CharSegment>>>
-    computeInlineDiffsForRows(const QVector<TextDiffLine>& rows) {
+    computeInlineDiffsForRows(const QVector<TextDiffLine>& rows, const QString& sessionId) {
         QPair<QVector<QVector<CharSegment>>, QVector<QVector<CharSegment>>> result;
         auto& left = result.first;
         auto& right = result.second;
@@ -249,7 +252,7 @@ private:
         right.reserve(rows.size());
         for (const TextDiffLine& row : rows) {
             if (row.changed && row.leftNumber > 0 && row.rightNumber > 0) {
-                const InlineDiff diff = computeInlineDiff(row.left, row.right);
+                const InlineDiff diff = computeInlineDiff(row.left, row.right, sessionId);
                 left.push_back(diff.left);
                 right.push_back(diff.right);
             } else {
@@ -281,6 +284,7 @@ private:
         const QString rightText = rightRaw_.isNull() ? rightOriginal_.join('\n') : rightRaw_;
         const bool minor = minorAction_->isChecked();
         const QString ignoreSample = activeIgnoreSample();
+        const QString sessionId = instrumentationSessionId_;
         const bool deferHighlighting = leftText.size() + rightText.size() > 4 * 1024 * 1024;
         progress_->show();
         status_->setText(QString("Loading comparison... %1 / %2 line(s) read")
@@ -288,16 +292,17 @@ private:
 
         const QPointer<TextCompareView> view(this);
         QThreadPool::globalInstance()->start(
-            [view, generation, leftText, rightText, minor, ignoreSample, deferHighlighting]() {
+            [view, generation, leftText, rightText, minor, ignoreSample, deferHighlighting,
+             sessionId]() {
             const QStringList left = leftText.split('\n');
             const QStringList right = rightText.split('\n');
-            QVector<TextDiffLine> rows = alignTextLines(left, right, ignoreSample);
+            QVector<TextDiffLine> rows = alignTextLines(left, right, ignoreSample, sessionId);
             if (minor) {
                 for (auto& row : rows) {
                     if (row.whitespaceOnly) row.changed = false;
                 }
             }
-            const auto inlineDiffs = computeInlineDiffsForRows(rows);
+            const auto inlineDiffs = computeInlineDiffsForRows(rows, sessionId);
             if (!view) return;
             QMetaObject::invokeMethod(view, [view, generation, deferHighlighting, left, right,
                                              rows = std::move(rows),
@@ -577,8 +582,8 @@ private:
         leftEditor_->setUndoRedoEnabled(false);
         rightEditor_->setUndoRedoEnabled(false);
 
-        leftHighlighter_ = new SyntaxHighlighter(leftEditor_->document());
-        rightHighlighter_ = new SyntaxHighlighter(rightEditor_->document());
+        leftHighlighter_ = new SyntaxHighlighter(leftEditor_->document(), instrumentationSessionId_);
+        rightHighlighter_ = new SyntaxHighlighter(rightEditor_->document(), instrumentationSessionId_);
         leftHighlighter_->setInlineDiffProvider([this](int block) {
             return block >= 0 && block < leftInline_.size() ? leftInline_[block]
                                                              : QVector<CharSegment>();
@@ -1052,7 +1057,8 @@ private:
         }
         const QStringList clipboardLines = clipboard.split('\n');
         const QStringList& fileLines = isLeft ? leftOriginal_ : rightOriginal_;
-        const QVector<TextDiffLine> comparison = alignTextLines(fileLines, clipboardLines);
+        const QVector<TextDiffLine> comparison =
+            alignTextLines(fileLines, clipboardLines, QString(), instrumentationSessionId_);
         int differences = 0;
         for (const auto& line : comparison) {
             if (line.changed) ++differences;
@@ -1372,7 +1378,7 @@ private:
             const QStringList leftPart = leftOriginal_.mid(leftStart, leftEnd - leftStart);
             const QStringList rightPart = rightOriginal_.mid(rightStart, rightEnd - rightStart);
             QVector<TextDiffLine> segment =
-                alignTextLines(leftPart, rightPart, activeIgnoreSample());
+                alignTextLines(leftPart, rightPart, activeIgnoreSample(), instrumentationSessionId_);
             for (TextDiffLine& row : segment) {
                 if (row.leftNumber > 0) row.leftNumber += leftStart;
                 if (row.rightNumber > 0) row.rightNumber += rightStart;
@@ -1645,6 +1651,7 @@ private:
         refreshSideHeader(left);
     }
 
+    QString instrumentationSessionId_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QString leftPath_;
     QString rightPath_;
     QString leftRaw_;

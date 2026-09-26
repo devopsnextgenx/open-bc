@@ -15,8 +15,10 @@
 #include <QAction>
 #include <QApplication>
 #include <QDir>
+#include <QDialog>
 #include <QFile>
 #include <QFileDialog>
+#include <QFontDatabase>
 #include <QKeySequence>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -26,6 +28,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QPoint>
+#include <QPlainTextEdit>
 #include <QThreadPool>
 #include <QSettings>
 #include <QStatusBar>
@@ -33,6 +36,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QToolButton>
+#include <QVBoxLayout>
 #include <functional>
 
 #include "folder_compare_view.h"
@@ -153,6 +157,13 @@ extern "C" int openbc_run_gui() {
     tabs->setTabToolTip(homeIndex, "OpenBC home and session history");
 
     auto currentSession = [&]() { return dynamic_cast<CompareSession*>(tabs->currentWidget()); };
+    auto registerInstrumentationSession = [](const QString& sessionId, const QString& label) {
+        const QByteArray idBytes = sessionId.toUtf8();
+        const QByteArray labelBytes = label.toUtf8();
+        openbc_register_instrumentation_session(
+            reinterpret_cast<const std::uint8_t*>(idBytes.constData()), idBytes.size(),
+            reinterpret_cast<const std::uint8_t*>(labelBytes.constData()), labelBytes.size());
+    };
     auto* darkThemeAction = new QAction("Dark Theme", &window);
     darkThemeAction->setCheckable(true);
     darkThemeAction->setChecked(preferences.value("theme/dark", true).toBool());
@@ -224,6 +235,7 @@ extern "C" int openbc_run_gui() {
     addSession = [&](const QString& left, const QString& right, bool run) -> CompareSession* {
         auto* session = new CompareSession(&preferences);
         session->setPaths(left, right);
+        registerInstrumentationSession(session->instrumentationSessionId(), session->title());
         if (run && !left.isEmpty() && !right.isEmpty()) {
             SessionHistory::record("folder", left, right);
             home->refreshHistory();
@@ -244,6 +256,7 @@ extern "C" int openbc_run_gui() {
                          [&, session]() { closeTab(tabs->indexOf(session)); });
 
         session->onTitleChanged = [&, session]() {
+            registerInstrumentationSession(session->instrumentationSessionId(), session->title());
             const int i = tabs->indexOf(session);
             if (i < 0) {
                 return;
@@ -268,6 +281,7 @@ extern "C" int openbc_run_gui() {
     addTextView = [&](const QString& leftPath, const QString& rightPath, const QString& leftText,
                       const QString& rightText, CompareSession* origin) {
         auto* textView = new TextCompareView(leftPath, rightPath, leftText, rightText);
+        registerInstrumentationSession(textView->instrumentationSessionId(), textView->title());
         const int textIndex = tabs->addTab(
             textView, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Compare),
             textView->title());
@@ -287,6 +301,7 @@ extern "C" int openbc_run_gui() {
         };
         textView->onSessionsRequested = textView->onHomeRequested;
         textView->onTitleChanged = [&, textView]() {
+            registerInstrumentationSession(textView->instrumentationSessionId(), textView->title());
             const int i = tabs->indexOf(textView);
             if (i < 0) return;
             tabs->setTabText(i, textView->title());
@@ -405,6 +420,45 @@ extern "C" int openbc_run_gui() {
     tabs->setCornerWidget(plus, Qt::TopRightCorner);
     QObject::connect(plus, &QToolButton::clicked, [&]() { addSession(QString(), QString(), false); });
 
+    auto activeInstrumentationSessionId = [&]() {
+        if (auto* session = currentSession()) return session->instrumentationSessionId();
+        if (auto* textView = dynamic_cast<TextCompareView*>(tabs->currentWidget())) {
+            return textView->instrumentationSessionId();
+        }
+        return QString();
+    };
+    auto* instrumentationButton = new QToolButton(&window);
+    instrumentationButton->setText("Instrumentation");
+    instrumentationButton->setToolTip("Open the current tab's instrumentation report");
+    instrumentationButton->setAutoRaise(true);
+    window.statusBar()->addPermanentWidget(instrumentationButton);
+    QObject::connect(instrumentationButton, &QToolButton::clicked, [&]() {
+        const QString sessionId = activeInstrumentationSessionId();
+        if (sessionId.isEmpty()) return;
+        const QByteArray sessionIdBytes = sessionId.toUtf8();
+        std::size_t reportLength = 0;
+        char* report = openbc_instrumentation_session_report(
+            reinterpret_cast<const std::uint8_t*>(sessionIdBytes.constData()),
+            sessionIdBytes.size(), &reportLength);
+        QString reportText = report
+                                 ? QString::fromUtf8(report, static_cast<int>(reportLength))
+                                 : QString("No instrumentation report is available for this tab.");
+        if (report) openbc_instrumentation_report_destroy(report);
+
+        auto* dialog = new QDialog(&window);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle("Instrumentation - " + tabs->tabText(tabs->currentIndex()));
+        dialog->resize(820, 520);
+        auto* layout = new QVBoxLayout(dialog);
+        auto* reportView = new QPlainTextEdit(dialog);
+        reportView->setReadOnly(true);
+        reportView->setLineWrapMode(QPlainTextEdit::NoWrap);
+        reportView->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        reportView->setPlainText(reportText);
+        layout->addWidget(reportView);
+        dialog->show();
+    });
+
     tabs->tabBar()->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(tabs->tabBar(), &QWidget::customContextMenuRequested, [&](const QPoint& pos) {
         const int index = tabs->tabBar()->tabAt(pos);
@@ -430,11 +484,13 @@ extern "C" int openbc_run_gui() {
     QObject::connect(tabs, &QTabWidget::currentChanged, [&](int) {
         rebuildMenus();
         updateWindowTitle();
+        instrumentationButton->setEnabled(!activeInstrumentationSessionId().isEmpty());
     });
 
     tabs->setCurrentIndex(homeIndex);
     rebuildMenus();
     updateWindowTitle();
+    instrumentationButton->setEnabled(!activeInstrumentationSessionId().isEmpty());
     window.show();
 
     return application.exec();

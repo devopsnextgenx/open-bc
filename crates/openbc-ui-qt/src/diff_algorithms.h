@@ -34,15 +34,18 @@ inline QString normalizedTextLine(const QString& line) {
 }
 
 inline QVector<TextDiffLine> alignTextLines(const QStringList& left, const QStringList& right,
-                                            const QString& ignoreSample = {}) {
+                                            const QString& ignoreSample,
+                                            const QString& sessionId) {
     const QByteArray leftBytes = left.join('\n').toUtf8();
     const QByteArray rightBytes = right.join('\n').toUtf8();
     const QByteArray ignoreSampleBytes = ignoreSample.toUtf8();
+    const QByteArray sessionIdBytes = sessionId.toUtf8();
     OpenBcDiff* handle = openbc_compare_buffers(
         reinterpret_cast<const std::uint8_t*>(leftBytes.constData()), leftBytes.size(),
         reinterpret_cast<const std::uint8_t*>(rightBytes.constData()), rightBytes.size(), 0, 0, 0,
         0.80, reinterpret_cast<const std::uint8_t*>(ignoreSampleBytes.constData()),
-        ignoreSampleBytes.size());
+        ignoreSampleBytes.size(), reinterpret_cast<const std::uint8_t*>(sessionIdBytes.constData()),
+        sessionIdBytes.size());
     QVector<TextDiffLine> result;
     if (!handle) return result;
     const std::size_t count = openbc_diff_len(handle);
@@ -122,12 +125,15 @@ inline bool isBlankChar(QChar c) { return c == ' ' || c == '\t'; }
 // middle span is classified as a whitespace-only mismatch when everything in
 // it, on both sides, is spaces/tabs (e.g. two spaces vs. one tab), otherwise
 // as a real content mismatch.
-inline InlineDiff computeInlineDiff(const QString& left, const QString& right) {
+inline InlineDiff computeInlineDiff(const QString& left, const QString& right,
+                                    const QString& sessionId) {
     const QByteArray leftBytes = left.toUtf8();
     const QByteArray rightBytes = right.toUtf8();
+    const QByteArray sessionIdBytes = sessionId.toUtf8();
     OpenBcInline* handle = openbc_inline_diff(
         reinterpret_cast<const std::uint8_t*>(leftBytes.constData()), leftBytes.size(),
-        reinterpret_cast<const std::uint8_t*>(rightBytes.constData()), rightBytes.size());
+        reinterpret_cast<const std::uint8_t*>(rightBytes.constData()), rightBytes.size(),
+        reinterpret_cast<const std::uint8_t*>(sessionIdBytes.constData()), sessionIdBytes.size());
     InlineDiff result;
     if (!handle) return result;
     const auto buildSide = [&](std::uint8_t side, const QByteArray& bytes) {

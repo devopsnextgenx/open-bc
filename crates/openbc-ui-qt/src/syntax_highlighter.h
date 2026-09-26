@@ -30,7 +30,8 @@ struct BackendHighlightSpan {
 class SyntaxHighlighter : public QSyntaxHighlighter {
 public:
     enum class Style { Vibrant, Classic, HighContrast, VsCodeDark };
-    explicit SyntaxHighlighter(QTextDocument* document) : QSyntaxHighlighter(document) {
+    explicit SyntaxHighlighter(QTextDocument* document, const QString& sessionId)
+        : QSyntaxHighlighter(document), sessionId_(sessionId) {
         connect(document, &QTextDocument::contentsChanged, this, [this]() {
             refreshAndRehighlight();
         });
@@ -111,13 +112,16 @@ private:
         spans_.clear();
         const QByteArray extension = extension_.toUtf8();
         const QByteArray source = document()->toPlainText().toUtf8();
-          OpenBcHighlight* handle = style_ == Style::VsCodeDark
+                const QByteArray sessionId = sessionId_.toUtf8();
+                OpenBcHighlight* handle = style_ == Style::VsCodeDark
             ? openbc_highlight_buffer_with_theme(
                 reinterpret_cast<const std::uint8_t*>(extension.constData()), extension.size(),
-                reinterpret_cast<const std::uint8_t*>(source.constData()), source.size(), 1)
+                reinterpret_cast<const std::uint8_t*>(source.constData()), source.size(), 1,
+                reinterpret_cast<const std::uint8_t*>(sessionId.constData()), sessionId.size())
             : openbc_highlight_buffer(
                 reinterpret_cast<const std::uint8_t*>(extension.constData()), extension.size(),
-                reinterpret_cast<const std::uint8_t*>(source.constData()), source.size());
+                reinterpret_cast<const std::uint8_t*>(source.constData()), source.size(),
+                reinterpret_cast<const std::uint8_t*>(sessionId.constData()), sessionId.size());
         if (!handle) return;
         const std::size_t count = openbc_highlight_len(handle);
         spans_.reserve(static_cast<int>(count));
@@ -174,6 +178,7 @@ private:
         return QColor(channel(0), channel(1), channel(2), channel(3));
     }
 
+    QString sessionId_;
     QString extension_;
     QVector<BackendHighlightSpan> spans_;
     std::function<QVector<CharSegment>(int)> inlineDiffProvider_;

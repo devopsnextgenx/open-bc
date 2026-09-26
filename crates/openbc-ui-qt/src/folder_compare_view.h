@@ -46,6 +46,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QUuid>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QUrl>
@@ -348,6 +349,8 @@ public:
     QString detailedTitle() const {
         return QDir::toNativeSeparators(leftText()) + "  <->  " + QDir::toNativeSeparators(rightText());
     }
+
+    QString instrumentationSessionId() const { return instrumentationSessionId_; }
 
     void copySettingsFrom(const CompareSession& other) {
         modeCombo_->setCurrentIndex(other.modeCombo_->currentIndex());
@@ -1334,6 +1337,7 @@ private:
     QPlainTextEdit* console_ = nullptr;
     QSplitter* splitter_ = nullptr;
     QSettings* preferences_ = nullptr;
+    QString instrumentationSessionId_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
     QAction* compareAction_ = nullptr;
     QAction* refreshAction_ = nullptr;

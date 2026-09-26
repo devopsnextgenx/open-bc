@@ -10,9 +10,14 @@ struct OpenBcHighlight;
 extern "C" {
 int openbc_initialize_observability();
 void openbc_log_message(const std::uint8_t*, std::size_t);
+void openbc_register_instrumentation_session(const std::uint8_t*, std::size_t,
+                                             const std::uint8_t*, std::size_t);
+char* openbc_instrumentation_session_report(const std::uint8_t*, std::size_t, std::size_t*);
+void openbc_instrumentation_report_destroy(char*);
 OpenBcDiff* openbc_compare_buffers(const std::uint8_t*, std::size_t, const std::uint8_t*,
                                    std::size_t, std::uint8_t, std::uint8_t, std::uint8_t,
-                                   double, const std::uint8_t*, std::size_t);
+                                   double, const std::uint8_t*, std::size_t, const std::uint8_t*,
+                                   std::size_t);
 void openbc_diff_destroy(OpenBcDiff*);
 std::size_t openbc_diff_len(const OpenBcDiff*);
 std::uint8_t openbc_diff_kind(const OpenBcDiff*, std::size_t);
@@ -21,7 +26,8 @@ std::size_t openbc_diff_right_line(const OpenBcDiff*, std::size_t);
 const std::uint8_t* openbc_diff_left_text(const OpenBcDiff*, std::size_t, std::size_t*);
 const std::uint8_t* openbc_diff_right_text(const OpenBcDiff*, std::size_t, std::size_t*);
 
-OpenBcInline* openbc_inline_diff(const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t);
+OpenBcInline* openbc_inline_diff(const std::uint8_t*, std::size_t, const std::uint8_t*,
+                                 std::size_t, const std::uint8_t*, std::size_t);
 void openbc_inline_destroy(OpenBcInline*);
 std::size_t openbc_inline_len(const OpenBcInline*, std::uint8_t);
 std::size_t openbc_inline_start(const OpenBcInline*, std::uint8_t, std::size_t);
@@ -29,10 +35,11 @@ std::size_t openbc_inline_length(const OpenBcInline*, std::uint8_t, std::size_t)
 std::uint8_t openbc_inline_kind(const OpenBcInline*, std::uint8_t, std::size_t);
 
 OpenBcHighlight* openbc_highlight_buffer(const std::uint8_t*, std::size_t, const std::uint8_t*,
-                                         std::size_t);
+                                         std::size_t, const std::uint8_t*, std::size_t);
 OpenBcHighlight* openbc_highlight_buffer_with_theme(const std::uint8_t*, std::size_t,
                                                     const std::uint8_t*, std::size_t,
-                                                    std::uint8_t);
+                                                    std::uint8_t, const std::uint8_t*,
+                                                    std::size_t);
 void openbc_highlight_destroy(OpenBcHighlight*);
 std::size_t openbc_highlight_len(const OpenBcHighlight*);
 std::size_t openbc_highlight_line(const OpenBcHighlight*, std::size_t);
