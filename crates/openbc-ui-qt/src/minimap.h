@@ -301,7 +301,7 @@ private:
     QVector<DiffGroup> blocks_;
     QSet<int> dirtyRows_;
     bool vertical_ = false;
-    bool pixelLineMode_ = false;
+    bool pixelLineMode_ = true; // default to the classic block-bar minimap
     int currentRow_ = -1;
     qreal viewportStart_ = 0.0;
     qreal viewportSpan_ = 0.0;
