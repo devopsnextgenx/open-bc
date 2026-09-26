@@ -6,6 +6,13 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+#[cfg(feature = "sftp")]
+pub mod sftp;
+#[cfg(feature = "ftp")]
+pub mod ftp;
+#[cfg(feature = "network")]
+pub mod network;
+
 /// Errors returned by a virtual filesystem provider.
 #[derive(Debug, Error)]
 pub enum VfsError {
@@ -174,4 +181,39 @@ pub async fn read_folder_level(
         readable: true,
     };
     Ok((folder_metadata, entries))
+}
+
+/// A connection profile that can be turned into a live [`AsyncVfs`] with
+/// [`build_vfs`]. This is the Rust-side counterpart of the UI's saved
+/// connection profile (protocol + host + credentials + root path); the two
+/// are kept as separate types deliberately - the UI profile also carries
+/// display-only fields (a name, a description, "remember this" flags) that
+/// have no business in the VFS layer - but they should map onto each other
+/// one-to-one wherever this crate is wired up behind the UI.
+pub enum ConnectionProfile {
+    Local {
+        root: PathBuf,
+    },
+    #[cfg(feature = "sftp")]
+    Sftp(sftp::SftpConfig),
+    #[cfg(feature = "ftp")]
+    Ftp(ftp::FtpConfig),
+    #[cfg(feature = "network")]
+    Network(network::NetworkShareConfig),
+}
+
+/// Build the right provider for a profile. This is the single place that
+/// needs to change when a new protocol is added, so the UI layer and any
+/// callers only ever depend on [`AsyncVfs`] and never on a concrete
+/// provider type.
+pub async fn build_vfs(profile: ConnectionProfile) -> Result<Box<dyn AsyncVfs>, VfsError> {
+    match profile {
+        ConnectionProfile::Local { root } => Ok(Box::new(LocalVfs::new(root))),
+        #[cfg(feature = "sftp")]
+        ConnectionProfile::Sftp(config) => Ok(Box::new(sftp::SftpVfs::connect(config).await?)),
+        #[cfg(feature = "ftp")]
+        ConnectionProfile::Ftp(config) => Ok(Box::new(ftp::FtpVfs::connect(config).await?)),
+        #[cfg(feature = "network")]
+        ConnectionProfile::Network(config) => Ok(Box::new(network::NetworkVfs::open(config).await?)),
+    }
 }

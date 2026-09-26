@@ -19,6 +19,7 @@
 
 #include "session_history.h"
 #include "qt_style.h"
+#include "remote_connections_dialog.h"
 
 namespace openbc::app {
 
@@ -143,6 +144,24 @@ public:
         buttons->addWidget(save_);
         buttons->addStretch();
         detailsLayout->addLayout(buttons);
+
+        // Below the session details: manage saved SFTP/FTP/FTPS/SMB/network
+        // drive connections that PathSelector's remote-browse button (and
+        // future folder/file pickers) can use, the same "Personal"-rooted
+        // tree pattern as the saved-session nodes above.
+        auto* remoteTitle = new QLabel("Remote connections", details);
+        remoteTitle->setObjectName("homeSectionTitle");
+        detailsLayout->addWidget(remoteTitle);
+        auto* remoteRow = new QHBoxLayout;
+        auto* manageRemote = new QPushButton("Manage remote connections...", details);
+        remoteRow->addWidget(manageRemote);
+        remoteRow->addStretch();
+        detailsLayout->addLayout(remoteRow);
+        connect(manageRemote, &QPushButton::clicked, this, [this]() {
+            RemoteConnectionsDialog dialog(this);
+            dialog.exec();
+        });
+
         detailsLayout->addStretch();
         clearDetails();
 

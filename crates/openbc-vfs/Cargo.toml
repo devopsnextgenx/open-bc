@@ -4,15 +4,29 @@ version = "0.1.0"
 edition.workspace = true
 
 [features]
-default = ["local"]
+default = ["local", "network"]
 local = []
 sftp = ["dep:ssh2"]
-smb = []
+ftp = ["dep:suppaftp"]
+# Renamed from the old placeholder `smb` feature: this crate never speaks
+# SMB on the wire (see src/network.rs for why) - it wraps an already-mounted
+# share/UNC path, which covers Samba shares and plain mapped network drives
+# alike. `smb` is kept as an alias so an existing `--features smb` keeps
+# working.
+network = []
+smb = ["network"]
 
 [dependencies]
 async-trait.workspace = true
 openbc-core = { path = "../openbc-core" }
 openbc-observability = { path = "../openbc-observability" }
 ssh2 = { version = "0.9", optional = true }
+# `tokio` async backend + explicit-FTPS via native-tls. If the workspace
+# already pulls in rustls elsewhere, swap this for `tokio-async-rustls` and
+# `suppaftp::RustlsFtpStream`/`AsyncRustlsFtpStream` in ftp.rs instead.
+suppaftp = { version = "9", optional = true, default-features = false, features = [
+    "tokio",
+    "tokio-async-native-tls",
+] }
 thiserror.workspace = true
 tokio.workspace = true

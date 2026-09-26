@@ -14,6 +14,16 @@
 // (same std::function-callback style CompareSession/TextCompareView already
 // use for onProgress/onComplete/onTitleChanged, so this fits in without
 // needing Q_OBJECT/moc for a signal nobody else needs).
+//
+// As of the remote-connections work, the row also grows a second button
+// (on by default - pass enableRemote=false to opt out) that opens
+// RemotePathBrowserDialog: pick "This computer" and browse a real local
+// tree, or pick a saved SFTP/FTP/FTPS/SMB/network-drive connection and
+// browse (or, without a live backend wired up yet, type) its path. A
+// remote pick is remembered in the MRU dropdown exactly like a local one,
+// as a "scheme://user@host/path" string - see selectedIsRemote()/
+// selectedProfile() on the browser dialog if a caller needs to know a
+// given pick came from a remote host rather than the local disk.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -22,14 +32,17 @@
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QLineEdit>
+#include <QMenu>
 #include <QSignalBlocker>
 #include <QString>
+#include <QStyle>
 #include <QToolButton>
 #include <QWidget>
 #include <functional>
 #include <utility>
 
 #include "qt_style.h"
+#include "remote_path_browser_dialog.h"
 
 namespace openbc::app {
 
@@ -47,8 +60,10 @@ public:
     // file pickers don't (a file has no meaningful "parent" to browse up
     // to), so it defaults off and Mode::File ignores it even if passed.
     explicit PathSelector(Mode mode, QString side, QWidget* parent = nullptr, bool showUp = false,
-                          QString fileFilter = "All files (*.*)")
-        : QWidget(parent), mode_(mode), side_(std::move(side)), fileFilter_(std::move(fileFilter)) {
+                          QString fileFilter = "All files (*.*)", bool enableRemote = true,
+                          RemoteBrowseBridge* remoteBridge = nullptr)
+        : QWidget(parent), mode_(mode), side_(std::move(side)), fileFilter_(std::move(fileFilter)),
+          remoteBridge_(remoteBridge) {
         auto* layout = new QHBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
@@ -69,6 +84,13 @@ public:
         layout->addWidget(combo_, 1);
         layout->addWidget(browse_);
 
+        if (enableRemote) {
+            remote_ = new QToolButton(this);
+            remote_->setIcon(style()->standardIcon(QStyle::SP_DriveNetIcon));
+            remote_->setToolTip("Browse local files, or connect to a remote host (SFTP/FTP/FTPS/SMB/network drive)...");
+            layout->addWidget(remote_);
+        }
+
         if (showUp && mode_ == Mode::Folder) {
             up_ = new QToolButton(this);
             up_->setIcon(icons::glyph(icons::Glyph::FolderUp));
@@ -79,10 +101,15 @@ public:
         connect(browse_, &QToolButton::clicked, this, [this]() {
             const QString selected = pickPath();
             if (!selected.isEmpty()) {
+                lastPickWasRemote_ = false;
+                lastRemoteProfile_ = {};
                 setText(selected);
                 if (onBrowsed) onBrowsed(selected);
             }
         });
+        if (remote_) {
+            connect(remote_, &QToolButton::clicked, this, [this]() { browseRemote(); });
+        }
         if (up_) {
             connect(up_, &QToolButton::clicked, this, [this]() {
                 QDir dir(text());
@@ -96,6 +123,7 @@ public:
 
     QComboBox* combo() const { return combo_; }
     QToolButton* browseButton() const { return browse_; }
+    QToolButton* remoteButton() const { return remote_; }  // nullptr unless enableRemote was requested
     QToolButton* upButton() const { return up_; }  // nullptr unless showUp was requested
 
     QString text() const { return combo_->currentText().trimmed(); }
@@ -127,6 +155,30 @@ public:
         return QFileDialog::getOpenFileName(this, "Choose " + side_ + " file", text(), fileFilter_);
     }
 
+    // Opens RemotePathBrowserDialog (This computer / a saved remote
+    // connection) and, on Select, commits the result the same way pickPath()
+    // does for the local-only dialog: updates the text, records whether the
+    // pick was remote, and fires onBrowsed.
+    void browseRemote() {
+        RemotePathBrowserDialog dialog(mode_ == Mode::Folder ? PathPickMode::Folder : PathPickMode::File,
+                                       remoteBridge_, this);
+        dialog.setInitialPath(text());
+        if (dialog.exec() != QDialog::Accepted) return;
+        const QString selected = dialog.selectedPath();
+        if (selected.isEmpty()) return;
+        lastPickWasRemote_ = dialog.selectedIsRemote();
+        lastRemoteProfile_ = dialog.selectedProfile();
+        setText(selected);
+        if (onBrowsed) onBrowsed(selected);
+    }
+
+    // True if the most recent Browse/browseRemote pick came from a saved
+    // remote connection rather than the local filesystem; callers that need
+    // to route reads through openbc-vfs instead of the local disk check
+    // this (and lastRemoteProfile()) after onBrowsed fires.
+    bool lastPickWasRemote() const { return lastPickWasRemote_; }
+    RemoteProfile lastRemoteProfile() const { return lastRemoteProfile_; }
+
     // Fired after a successful Browse pick, or Up navigation, respectively
     // - the two things this widget does on its own. Enter-in-the-line-edit
     // and picking an existing MRU entry are left for the caller to wire
@@ -142,7 +194,11 @@ private:
     QString fileFilter_;
     QComboBox* combo_ = nullptr;
     QToolButton* browse_ = nullptr;
+    QToolButton* remote_ = nullptr;
     QToolButton* up_ = nullptr;
+    RemoteBrowseBridge* remoteBridge_ = nullptr;
+    bool lastPickWasRemote_ = false;
+    RemoteProfile lastRemoteProfile_;
 };
 
 }  // namespace openbc::app
