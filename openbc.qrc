@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="openbc.png">icons/fevicon.png</file>
+    </qresource>
+</RCC>

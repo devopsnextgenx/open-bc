@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
 project(OpenBC LANGUAGES C CXX)
 
+if(WIN32)
+    enable_language(RC)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -58,7 +62,9 @@ set(OPENBC_HEADERS
 
 # 3. Create C++ Qt Application Entrypoint
 add_executable(OpenBC
-    crates/openbc-ui-qt/src/qt_app.cpp ${OPENBC_HEADERS}
+    crates/openbc-ui-qt/src/qt_app.cpp
+    ${OPENBC_HEADERS}
+    openbc.qrc
 )
 
 target_include_directories(OpenBC PRIVATE
@@ -77,6 +83,8 @@ target_compile_definitions(OpenBC PRIVATE OPENBC_BUILD_EXECUTABLE)
 
 # 5. Windows-Specific Linker Flags
 if(WIN32)
+    configure_file(openbc.rc.in "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc" @ONLY)
+    target_sources(OpenBC PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc")
     set_target_properties(OpenBC PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(OpenBC PRIVATE ws2_32 userenv advapi32 ntdll)
 endif()

@@ -19,6 +19,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFontDatabase>
+#include <QIcon>
 #include <QKeySequence>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -96,6 +97,7 @@ extern "C" int openbc_run_gui() {
     char application_name[] = "openbc-qt";
     char* argv[] = {application_name, nullptr};
     QApplication application(argc, argv);
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/openbc.png")));
 
     QApplication::setStyle(QStyleFactory::create("Fusion"));
     application.setPalette(openbc::ui::darkPalette());
@@ -104,6 +106,7 @@ extern "C" int openbc_run_gui() {
     QSettings preferences(SessionHistory::rootPath() + "/preferences.ini", QSettings::IniFormat);
 
     PersistedMainWindow window(preferences);
+    window.setWindowIcon(QApplication::windowIcon());
 
     auto* sessionMenu = window.menuBar()->addMenu("&Session");
     auto* actionsMenu = window.menuBar()->addMenu("&Actions");
