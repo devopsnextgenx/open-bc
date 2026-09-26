@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(OpenBC LANGUAGES C CXX)
+project(openbc LANGUAGES C CXX)
 
 if(WIN32)
     enable_language(RC)
@@ -61,30 +61,30 @@ set(OPENBC_HEADERS
 
 
 # 3. Create C++ Qt Application Entrypoint
-add_executable(OpenBC
+add_executable(openbc
     crates/openbc-ui-qt/src/qt_app.cpp
     ${OPENBC_HEADERS}
     openbc.qrc
 )
 
-target_include_directories(OpenBC PRIVATE
+target_include_directories(openbc PRIVATE
     crates/openbc-ui-qt/src
 )
 
 # 4. Link Rust static library & Qt6 modules
-target_link_libraries(OpenBC PRIVATE
+target_link_libraries(openbc PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
     openbc_ui_qt-static
 )
 
-target_compile_definitions(OpenBC PRIVATE OPENBC_BUILD_EXECUTABLE)
+target_compile_definitions(openbc PRIVATE OPENBC_BUILD_EXECUTABLE)
 
 # 5. Windows-Specific Linker Flags
 if(WIN32)
     configure_file(openbc.rc.in "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc" @ONLY)
-    target_sources(OpenBC PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc")
-    set_target_properties(OpenBC PROPERTIES WIN32_EXECUTABLE TRUE)
-    target_link_libraries(OpenBC PRIVATE ws2_32 userenv advapi32 ntdll)
+    target_sources(openbc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc")
+    set_target_properties(openbc PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_libraries(openbc PRIVATE ws2_32 userenv advapi32 ntdll)
 endif()

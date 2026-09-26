@@ -15,6 +15,7 @@
 #include <QIconEngine>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
+#include <QList>
 #include <QModelIndex>
 #include <QPainter>
 #include <QPainterPath>
@@ -94,6 +95,30 @@ inline QColor folderRed() { return QColor(0xff, 0x8f, 0x8f); }
 inline QColor folderGreen() { return QColor(0x6e, 0xf0, 0x8f); }
 inline QColor folderOrange() { return QColor(0xff, 0xb2, 0x7a); }
 inline QColor folderPurple() { return QColor(0xb7, 0x87, 0xff); }
+
+// Colours for "group" nodes in the session-history tree (date buckets, the
+// Personal node, and any other named node). These are deliberately a
+// separate palette from the diff-status folder colours above, since group
+// nodes never represent an actual folder-compare session.
+inline QColor groupToday() { return QColor(0x5a, 0xb8, 0xf2); }
+inline QColor groupYesterday() { return QColor(0x4c, 0xd6, 0xb0); }
+inline QColor groupThisWeek() { return QColor(0xb0, 0x7a, 0xf2); }
+inline QColor groupLastWeek() { return QColor(0xf2, 0xb4, 0x4a); }
+inline QColor groupOlder() { return QColor(0x8a, 0x8f, 0xa8); }
+inline QColor groupPersonal() { return QColor(0xf2, 0x7a, 0xb8); }
+inline QColor groupDefault() { return QColor(0x8f, 0x9b, 0xb3); }
+
+// Pool of bright, mutually-distinct colours handed out (and persisted) to
+// new named nodes created under "Personal", so siblings stay easy to tell
+// apart at a glance.
+inline QList<QColor> groupNodePalette() {
+    return {
+        QColor(0x6c, 0xa0, 0xf5), QColor(0x4c, 0xd6, 0xc0), QColor(0xf2, 0x8a, 0x6a),
+        QColor(0xe0, 0x7a, 0xd6), QColor(0xa8, 0xdc, 0x4a), QColor(0x5a, 0xd6, 0xe8),
+        QColor(0xf2, 0xd0, 0x4a), QColor(0x9a, 0x8a, 0xf2), QColor(0xff, 0x8f, 0xc8),
+        QColor(0x7d, 0xe8, 0x9a),
+    };
+}
 }  // namespace color
 
 inline QColor statusTextColor(RowStatus status) {
@@ -491,6 +516,24 @@ inline QIcon folderIconForMask(quint32 mask) {
     }
     cache.insert(mask, icon);
     return icon;
+}
+
+// A "group" icon - two overlapping rounded cards - used for every node in
+// the session-history tree that groups sessions together (date buckets, the
+// Personal node, and any other named node). folderIcon() above stays
+// reserved for rows that represent an actual folder-compare session, so the
+// two are never visually confused.
+inline QIcon groupNodeIcon(const QColor& color) {
+    return make([color](QPainter& p, QIcon::Mode, QIcon::State state) {
+        p.setPen(Qt::NoPen);
+        const bool open = state == QIcon::On;
+        p.setBrush(color.darker(150));
+        p.drawRoundedRect(QRectF(4.4, 1.6, 9.4, 9.0), 2.2, 2.2);
+        p.setBrush(open ? color.lighter(112) : color);
+        p.drawRoundedRect(QRectF(2.2, 4.8, 9.4, 9.0), 2.2, 2.2);
+        p.setPen(QPen(color.darker(190), 1.1));
+        p.drawLine(QPointF(4.6, 9.1), QPointF(9.4, 9.1));
+    });
 }
 
 // Small square shown in front of file names, coloured by status.

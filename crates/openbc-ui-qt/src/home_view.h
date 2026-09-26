@@ -151,6 +151,12 @@ public:
             [this](QTreeWidgetItem* item, int) {
                 if (!item || !item->data(0, Qt::UserRole + 3).toBool() || !onOpenHistory) return;
                 history_->setCurrentItem(item);
+                // Reopening from any node other than "Today" (Yesterday/This
+                // week/Last week/Older, or a saved node) records a fresh
+                // entry for today so each day's sessions are tracked; if it's
+                // already in Today, record() is a no-op.
+                SessionHistory::record(selected_.kind, selected_.left, selected_.right);
+                refreshHistory();
                 onOpenHistory(selected_);
             });
         connect(history_, &QTreeWidget::itemChanged, this,
@@ -163,6 +169,10 @@ public:
             selected_.label = label_->text().trimmed();
             selected_.left = left_->text();
             selected_.right = right_->text();
+            // Same as the double-click path: reopening from a non-Today node
+            // records a fresh entry for today; already-Today items are a no-op.
+            SessionHistory::record(selected_.kind, selected_.left, selected_.right);
+            refreshHistory();
             onOpenHistory(selected_);
         });
         connect(edit_, &QPushButton::clicked, this, [this]() {
@@ -185,14 +195,51 @@ public:
         auto* recent = new QTreeWidgetItem(history_, {"Recent sessions"});
         recent->setIcon(0, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Refresh));
         recent->setFlags(Qt::ItemIsEnabled);
+
+        // Group the flat recent-history list into Today / Yesterday / This
+        // week / Last week / Older sub-nodes; only buckets that actually
+        // hold a session are shown, each with its own colour and icon.
         const auto entries = SessionHistory::load();
-        for (int index = 0; index < entries.size(); ++index) addSessionItem(recent, entries[index], false, {}, index);
+        QList<QList<int>> buckets(kRecentBucketCount);
+        for (int index = 0; index < entries.size(); ++index) {
+            buckets[static_cast<int>(SessionHistory::bucketFor(entries[index].openedAt))].append(index);
+        }
+        for (int ordinal = 0; ordinal < kRecentBucketCount; ++ordinal) {
+            if (buckets[ordinal].isEmpty()) continue;
+            const auto bucket = static_cast<RecentBucket>(ordinal);
+            auto* bucketItem = new QTreeWidgetItem(recent, {SessionHistory::bucketLabel(bucket)});
+            bucketItem->setIcon(0, openbc::ui::icons::groupNodeIcon(bucketColor(bucket)));
+            bucketItem->setFlags(Qt::ItemIsEnabled);
+            bucketItem->setData(0, Qt::UserRole + 5, true);
+            for (int index : buckets[ordinal]) addSessionItem(bucketItem, entries[index], false, {}, index);
+            bucketItem->setExpanded(true);
+        }
         recent->setExpanded(true);
         for (const auto& node : SessionHistory::loadSavedNodes()) addNodeItem(nullptr, node);
         history_->expandAll();
     }
 
 private:
+    static QColor bucketColor(RecentBucket bucket) {
+        switch (bucket) {
+        case RecentBucket::Today: return openbc::ui::color::groupToday();
+        case RecentBucket::Yesterday: return openbc::ui::color::groupYesterday();
+        case RecentBucket::ThisWeek: return openbc::ui::color::groupThisWeek();
+        case RecentBucket::LastWeek: return openbc::ui::color::groupLastWeek();
+        case RecentBucket::Older:
+        default: return openbc::ui::color::groupOlder();
+        }
+    }
+
+    // Colour for a named saved-session node: "Personal" gets its own fixed
+    // colour, nodes nested under it get a persisted random colour each, and
+    // everything else falls back to a shared neutral colour.
+    static QColor nodeGroupColor(QTreeWidgetItem* parent, const SavedSessionNode& node) {
+        if (!parent && node.name == "Personal") return openbc::ui::color::groupPersonal();
+        const QColor persisted = SessionHistory::colorForNode(node.path);
+        return persisted.isValid() ? persisted : openbc::ui::color::groupDefault();
+    }
+
     void addSessionItem(QTreeWidgetItem* parent, const SessionHistoryEntry& entry, bool saved,
                         const QString& node, int index) {
         const QString label = entry.label.isEmpty() ? SessionHistory::defaultLabel(entry.kind, entry.left, entry.right) : entry.label;
@@ -211,7 +258,7 @@ private:
 
     void addNodeItem(QTreeWidgetItem* parent, const SavedSessionNode& node) {
         auto* item = parent ? new QTreeWidgetItem(parent, {node.name}) : new QTreeWidgetItem(history_, {node.name});
-        item->setIcon(0, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::FolderOpen));
+        item->setIcon(0, openbc::ui::icons::groupNodeIcon(nodeGroupColor(parent, node)));
         item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable |
                        Qt::ItemIsDropEnabled);
         item->setData(0, Qt::UserRole + 2, node.path);
@@ -283,6 +330,7 @@ private:
         auto* item = history_->itemAt(position);
         if (!item) return;
         history_->setCurrentItem(item);
+        if (item->data(0, Qt::UserRole + 5).toBool()) return;  // date-bucket header: no menu
         const bool isNode = item->data(0, Qt::UserRole + 4).toBool();
         const bool saved = item->data(0, Qt::UserRole).toBool();
         const QString node = item->data(0, Qt::UserRole + 2).toString();
@@ -297,7 +345,7 @@ private:
             showNodeMenu(item, node, position);
             return;
         }
-        if (!saved && item->parent()->text(0) != "Recent sessions") return;
+        if (!item->data(0, Qt::UserRole + 3).toBool()) return;  // only real session rows below
         QMenu menu(history_);
         QAction* rename = menu.addAction("Rename session");
         QAction* save = menu.addAction("Save to named node");

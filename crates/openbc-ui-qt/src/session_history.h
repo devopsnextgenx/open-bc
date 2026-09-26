@@ -1,11 +1,15 @@
 #pragma once
 
+#include <QColor>
+#include <QDate>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMap>
+#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QStringList>
@@ -29,6 +33,11 @@ struct SavedSessionNode {
     QList<SavedSessionNode> children;
 };
 
+// Buckets used to group "Recent sessions" by how long ago they were opened.
+// Ordinal values double as display order (Today first, Older last).
+enum class RecentBucket { Today = 0, Yesterday, ThisWeek, LastWeek, Older };
+constexpr int kRecentBucketCount = 5;
+
 class SessionHistory {
 public:
     static QString rootPath() {
@@ -45,11 +54,17 @@ public:
             entries = QJsonDocument::fromJson(file.readAll()).array();
             file.close();
         }
+        // Only treat this as a duplicate (and skip adding a new entry) when
+        // the exact same session was already opened earlier today. Reopening
+        // it from Yesterday/This week/Last week/Older, or from a saved node,
+        // should still create a fresh entry so each day's sessions -- and
+        // new sessions opened today -- stay visible under "Today".
         for (const auto& value : entries) {
             const auto existing = value.toObject();
             if (existing["kind"].toString() == kind && existing["left"].toString() == left &&
                 existing["right"].toString() == right) {
-                return;
+                const QDateTime openedAt = QDateTime::fromString(existing["openedAt"].toString(), Qt::ISODate);
+                if (bucketFor(openedAt) == RecentBucket::Today) return;
             }
         }
         QJsonObject entry;
@@ -70,6 +85,31 @@ public:
         const QString rightName = right.isEmpty() ? QString("(missing)") : QFileInfo(right).fileName();
         return kind == "folder" ? leftName + " <-> " + rightName
                                  : leftName + " <-> " + rightName;
+    }
+
+    // Buckets a "Recent sessions" entry by how long ago it was opened. Days
+    // are counted against the calendar date (not a rolling 24h window), so
+    // an entry opened at 12:01am today is still "Today".
+    static RecentBucket bucketFor(const QDateTime& openedAt) {
+        const QDate date = openedAt.date();
+        if (!date.isValid()) return RecentBucket::Older;
+        const qint64 daysAgo = date.daysTo(QDate::currentDate());
+        if (daysAgo <= 0) return RecentBucket::Today;
+        if (daysAgo == 1) return RecentBucket::Yesterday;
+        if (daysAgo <= 7) return RecentBucket::ThisWeek;
+        if (daysAgo <= 14) return RecentBucket::LastWeek;
+        return RecentBucket::Older;
+    }
+
+    static QString bucketLabel(RecentBucket bucket) {
+        switch (bucket) {
+        case RecentBucket::Today: return "Today";
+        case RecentBucket::Yesterday: return "Yesterday";
+        case RecentBucket::ThisWeek: return "This week";
+        case RecentBucket::LastWeek: return "Last week";
+        case RecentBucket::Older:
+        default: return "Older";
+        }
     }
 
     static QString savedRootPath() { return rootPath() + "/saved"; }
@@ -94,7 +134,9 @@ public:
             return false;
         }
         QDir root(savedRootPath());
-        return root.rename(source, replacement);
+        if (!root.rename(source, replacement)) return false;
+        renameNodeColors(source, replacement);
+        return true;
     }
 
     static bool moveSession(bool sourceSaved, const QString& sourceNode, int sourceIndex,
@@ -157,7 +199,9 @@ public:
     }
 
     static void removeNode(const QString& nodeName) {
-        QDir(savedRootPath() + "/" + cleanNodeName(nodeName)).removeRecursively();
+        const QString node = cleanNodeName(nodeName);
+        QDir(savedRootPath() + "/" + node).removeRecursively();
+        removeNodeColors(node);
     }
 
     static void removeAt(int index) {
@@ -203,6 +247,24 @@ public:
             result.push_back(entry);
         }
         return result;
+    }
+
+    // Colour for a named node in the saved-sessions tree. Nodes added under
+    // "Personal" (at any depth) get a colour assigned the first time they're
+    // seen, picked at random from a small palette and then persisted so it
+    // stays stable on later refreshes. Every other node (including
+    // "Personal" itself, which the UI colours separately) returns an
+    // invalid QColor so the caller can fall back to a shared default.
+    static QColor colorForNode(const QString& nodeName) {
+        const QString node = cleanNodeName(nodeName);
+        const QStringList parts = node.split('/', Qt::SkipEmptyParts);
+        if (parts.size() < 2 || parts.first() != "Personal") return QColor();
+        QMap<QString, QString> colors = readNodeColors();
+        const auto found = colors.constFind(node);
+        if (found != colors.constEnd() && QColor::isValidColor(found.value())) {
+            return QColor(found.value());
+        }
+        return assignNodeColor(node, colors);
     }
 
     static QList<SessionHistoryEntry> loadSaved(const QString& nodeName) {
@@ -257,6 +319,86 @@ private:
         }
         const QString parentPath = cleanNodeName(parent);
         return parentPath.isEmpty() ? child : parentPath + "/" + child;
+    }
+
+    static QString nodeColorsPath() { return savedRootPath() + "/node_colors.json"; }
+
+    static QMap<QString, QString> readNodeColors() {
+        QMap<QString, QString> result;
+        QFile file(nodeColorsPath());
+        if (!file.open(QIODevice::ReadOnly)) return result;
+        const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
+        for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
+            result.insert(it.key(), it.value().toString());
+        }
+        return result;
+    }
+
+    static void writeNodeColors(const QMap<QString, QString>& colors) {
+        QJsonObject object;
+        for (auto it = colors.constBegin(); it != colors.constEnd(); ++it) {
+            object.insert(it.key(), it.value());
+        }
+        QDir().mkpath(savedRootPath());
+        QFile file(nodeColorsPath());
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            file.write(QJsonDocument(object).toJson(QJsonDocument::Indented));
+        }
+    }
+
+    // Picks a random colour for `node`, preferring one not already used by
+    // any other node so siblings stay visually distinct, then persists it.
+    static QColor assignNodeColor(const QString& node, QMap<QString, QString> colors) {
+        static const QStringList kPalette = {
+            "#6ca0f5", "#4cd6c0", "#f28a6a", "#e07ad6", "#a8dc4a",
+            "#5ad6e8", "#f2d04a", "#9a8af2", "#ff8fc8", "#7de89a",
+        };
+        QStringList used;
+        for (auto it = colors.constBegin(); it != colors.constEnd(); ++it) used << it.value().toLower();
+        QStringList available;
+        for (const auto& hex : kPalette) {
+            if (!used.contains(hex.toLower())) available << hex;
+        }
+        if (available.isEmpty()) available = kPalette;
+        const QString chosen = available.at(QRandomGenerator::global()->bounded(available.size()));
+        colors.insert(node, chosen);
+        writeNodeColors(colors);
+        return QColor(chosen);
+    }
+
+    // Keeps node_colors.json in step with a node rename, remapping the
+    // renamed node's own key plus every descendant's key.
+    static void renameNodeColors(const QString& source, const QString& replacement) {
+        QMap<QString, QString> colors = readNodeColors();
+        QMap<QString, QString> updated;
+        bool changed = false;
+        for (auto it = colors.constBegin(); it != colors.constEnd(); ++it) {
+            QString key = it.key();
+            if (key == source) {
+                key = replacement;
+                changed = true;
+            } else if (key.startsWith(source + "/")) {
+                key = replacement + key.mid(source.length());
+                changed = true;
+            }
+            updated.insert(key, it.value());
+        }
+        if (changed) writeNodeColors(updated);
+    }
+
+    // Drops node_colors.json entries for a removed node and its descendants.
+    static void removeNodeColors(const QString& node) {
+        QMap<QString, QString> colors = readNodeColors();
+        bool changed = false;
+        for (auto it = colors.begin(); it != colors.end();) {
+            if (it.key() == node || it.key().startsWith(node + "/")) {
+                it = colors.erase(it);
+                changed = true;
+            } else {
+                ++it;
+            }
+        }
+        if (changed) writeNodeColors(colors);
     }
 
     static QJsonArray readArray(const QString& path) {

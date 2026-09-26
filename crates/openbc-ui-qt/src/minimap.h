@@ -41,6 +41,7 @@
 #include <QPaintEvent>
 #include <QSet>
 #include <functional>
+#include <iostream>
 
 #include "diff_algorithms.h"
 
@@ -141,7 +142,7 @@ protected:
 
         if (currentRow_ >= 0 && currentRow_ < rows_.size()) {
             const qreal at = currentRow_ * rowSize;
-            painter.fillRect(vertical_ ? QRectF(0, at, width(), qMax<qreal>(1, rowSize))
+            painter.fillRect(vertical_ ? QRectF(0, at, width(), 1)
                                        : QRectF(at, 0, qMax<qreal>(1, rowSize), height()),
                             QColor(248, 248, 242, 60));
         }
@@ -267,22 +268,58 @@ private:
         }
     }
 
-    // Pixel-line mode: every differing row gets its own 1px-thick hairline
-    // inside the content region.
+    // Pixel-line mode: every differing row gets its own hairline inside the
+    // content region. Consecutive changed rows of the same visual category
+    // (missing / whitespace / normal) are drawn as ONE run rather than one
+    // fillRect per row.
+    //
+    // Thickness is derived ONLY from the run's line count (runLength *
+    // rowSize, rounded), never from where the run happens to fall in the
+    // file. Deriving it from (roundedEnd - roundedStart) instead - as
+    // position - would still let two 1-line runs round to different
+    // thicknesses (1px vs 2px) depending on each run's fractional offset
+    // into the strip. With thickness computed independently, every run of
+    // the same length always renders at the same thickness, and the
+    // position (start) is rounded separately so gaps between runs still
+    // track the real number of unchanged lines between them.
     void paintPixelLines(QPainter& painter, qreal rowSize, qreal /*contentExtent*/) {
         const qreal barWidth = vertical_ ? width() - kDirtyColumnWidth - 6 : width() - 4;
-        for (int row = 0; row < rows_.size(); ++row) {
-            const TextDiffLine& line = rows_[row];
-            if (!line.changed) continue;
-            const bool missing = line.leftNumber == 0 || line.rightNumber == 0;
-            const QColor color = colorFor(line.whitespaceOnly, missing);
-            const qreal at = row * rowSize;
-            const qreal thickness = qMax<qreal>(1.5, rowSize * 0.9);
-            if (vertical_) {
-                painter.fillRect(QRectF(3, at, barWidth, thickness), color);
-            } else {
-                painter.fillRect(QRectF(at, 2, thickness, height() - 4), color);
+        const int totalRows = rows_.size();
+        int row = 0;
+        while (row < totalRows) {
+            if (!rows_[row].changed) {
+                ++row;
+                continue;
             }
+            const bool missing0 = rows_[row].leftNumber == 0 || rows_[row].rightNumber == 0;
+            const bool whitespace0 = rows_[row].whitespaceOnly;
+
+            int runEnd = row + 1;
+            while (runEnd < totalRows && rows_[runEnd].changed) {
+                const bool missingN = rows_[runEnd].leftNumber == 0 || rows_[runEnd].rightNumber == 0;
+                const bool whitespaceN = rows_[runEnd].whitespaceOnly;
+                if (missingN != missing0 || whitespaceN != whitespace0) break;
+                ++runEnd;
+            }
+
+            const int runLength = runEnd - row;
+            const int start = qRound(row * rowSize);
+            // Thickness is a pure function of runLength - not of start's
+            // fractional remainder - so every single-line diff is the same
+            // thickness everywhere in the file, and an N-line block is
+            // always N times that, never off by a rounding accident.
+            // instead of qRound use round down.
+            const int blockPixelSize = runLength > 1 ? runLength : 1;
+            const int thickness = qMax(1, blockPixelSize);
+            const QColor color = colorFor(whitespace0, missing0);
+
+            if (vertical_) {
+                painter.fillRect(QRectF(3, start, barWidth, thickness), color);
+            } else {
+                painter.fillRect(QRectF(start, 2, thickness, height() - 4), color);
+            }
+
+            row = runEnd;
         }
     }
 
