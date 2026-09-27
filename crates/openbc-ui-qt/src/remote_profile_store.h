@@ -270,6 +270,37 @@ public:
         return false;
     }
 
+    // Match a displayed compare path (sftp://user@host/path, or a network
+    // drive mount) back to the saved profile that produced it.
+    static bool findProfileForPath(const QString& path, RemoteProfile* out) {
+        std::function<bool(const RemoteProfileNode&)> walk = [&](const RemoteProfileNode& node) -> bool {
+            for (const auto& profile : node.profiles) {
+                if (profile.protocol == RemoteProtocol::NetworkDrive) {
+                    if (!profile.mountPath.isEmpty() &&
+                        (path == profile.mountPath || path.startsWith(profile.mountPath + "/") ||
+                         path.startsWith(profile.mountPath + "\\"))) {
+                        if (out) *out = profile;
+                        return true;
+                    }
+                } else {
+                    const QString prefix = profile.displayAddress();
+                    if (!prefix.isEmpty() && (path == prefix || path.startsWith(prefix + "/"))) {
+                        if (out) *out = profile;
+                        return true;
+                    }
+                }
+            }
+            for (const auto& child : node.children) {
+                if (walk(child)) return true;
+            }
+            return false;
+        };
+        for (const auto& node : loadTree()) {
+            if (walk(node)) return true;
+        }
+        return false;
+    }
+
     // Deterministic per-node colour, same trick SessionHistory uses for its
     // saved-session folders, so the two trees read consistently.
     static QColor colorForNode(const QString& path) {

@@ -1370,7 +1370,10 @@ dependencies = [
  "openbc-core",
  "openbc-engine",
  "openbc-observability",
+ "openbc-vfs",
  "pkg-config",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

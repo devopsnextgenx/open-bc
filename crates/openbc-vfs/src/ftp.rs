@@ -1,13 +1,30 @@
 //! FTP / explicit-FTPS virtual filesystem provider, backed by `suppaftp`'s
 //! tokio-async client.
 //!
-//! `suppaftp`'s method names have moved around a little across major
-//! versions (`list` vs `list_file`, the exact `File` parsing type, etc.).
-//! The calls below match the `tokio` + `tokio-async-native-tls` feature set
-//! pinned in `Cargo.toml`; if the workspace's lockfile resolves to a
-//! noticeably older or newer `suppaftp`, check that crate's changelog
-//! against the handful of calls here (`login`, `cwd`, `pwd`, `list`,
-//! `retr_as_buffer`, `into_secure`) before relying on this in production.
+//! `suppaftp`'s async stream types (`AsyncFtpStream`, `AsyncNativeTlsConnector`,
+//! `AsyncNativeTlsFtpStream`) live under `suppaftp::tokio` rather than the
+//! crate root as of the version this workspace resolves to - the crate's
+//! `async` feature was split into separate `smol`/`tokio` backends, each
+//! with its own stream types, some time after this module was first
+//! written. If the workspace's lockfile moves to a version with a
+//! differently-shaped `tokio` module (or renames methods like `list`/
+//! `list_file`, `retr_as_stream`, `finalize_retr_stream`, `into_secure`),
+//! recheck this file's imports and the handful of calls below (`login`,
+//! `cwd`, `pwd`, `list`, `retr_as_stream`, `into_secure`) against that
+//! version's docs.rs source before relying on this in production.
+//!
+//! Two API quirks worth flagging explicitly, since they're easy to get
+//! wrong against this crate's async API:
+//!
+//! - `into_secure` does NOT turn a plain `ImplAsyncFtpStream<AsyncNoTlsStream>`
+//!   into a TLS one - its bound is `impl AsyncTlsConnector<Stream = T>` for
+//!   the *same* `T` the stream already has. To do explicit FTPS you must
+//!   connect with `AsyncNativeTlsFtpStream::connect(..)` (i.e. already typed
+//!   for TLS) and then call `.into_secure(..)` on that to perform the
+//!   handshake.
+//! - There is no `retr_as_buffer` on the async stream (that's sync-only);
+//!   the async equivalent is `retr_as_stream` + read to end +
+//!   `finalize_retr_stream`.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -15,8 +32,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use openbc_core::{DirectoryEntry, EntryMetadata, EntryPath};
 use suppaftp::list::File as FtpListEntry;
-use suppaftp::{AsyncFtpStream, AsyncNativeTlsConnector, AsyncNativeTlsFtpStream};
-use tokio::io::{AsyncRead, AsyncWriteExt};
+use suppaftp::tokio::{
+    AsyncFtpStream, AsyncNativeTlsConnector, AsyncNativeTlsFtpStream,
+};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use crate::{AsyncVfs, VfsError};
 
@@ -96,9 +115,15 @@ impl FtpVfs {
                 FtpConnection::Plain(stream)
             }
             FtpSecurity::ExplicitTls => {
-                let stream = timeout(config.connect_timeout_secs, AsyncFtpStream::connect(address.as_str()))
-                    .await
-                    .map_err(|err| ftp_err("connect", &config.host, err))?;
+                // Must connect already typed for TLS (`AsyncNativeTlsFtpStream`,
+                // not `AsyncFtpStream`) - `into_secure` performs the handshake
+                // on a stream of that type, it does not convert one.
+                let stream = timeout(
+                    config.connect_timeout_secs,
+                    AsyncNativeTlsFtpStream::connect(address.as_str()),
+                )
+                .await
+                .map_err(|err| ftp_err("connect", &config.host, err))?;
                 let connector = AsyncNativeTlsConnector::from(
                     suppaftp::async_native_tls::TlsConnector::new(),
                 );
@@ -143,6 +168,47 @@ impl FtpVfs {
         };
         result.map_err(|err| ftp_err("list", remote_path, err))
     }
+
+    /// Download `remote_path` in full, using the stream-based `retr_as_stream`
+    /// / `finalize_retr_stream` pair (the async client has no `retr_as_buffer`
+    /// - that method only exists on the sync `ImplFtpStream`).
+    async fn retr_to_buffer(&self, remote_path: &str) -> Result<Vec<u8>, VfsError> {
+        let mut guard = self.connection.lock().await;
+        let mut buffer = Vec::new();
+        match &mut *guard {
+            FtpConnection::Plain(stream) => {
+                let mut data_stream = stream
+                    .retr_as_stream(remote_path)
+                    .await
+                    .map_err(|err| ftp_err("retr", remote_path, err))?;
+                data_stream.read_to_end(&mut buffer).await.map_err(|err| VfsError::Io {
+                    operation: "retr",
+                    path: PathBuf::from(remote_path),
+                    source: err,
+                })?;
+                stream
+                    .finalize_retr_stream(data_stream)
+                    .await
+                    .map_err(|err| ftp_err("retr", remote_path, err))?;
+            }
+            FtpConnection::Tls(stream) => {
+                let mut data_stream = stream
+                    .retr_as_stream(remote_path)
+                    .await
+                    .map_err(|err| ftp_err("retr", remote_path, err))?;
+                data_stream.read_to_end(&mut buffer).await.map_err(|err| VfsError::Io {
+                    operation: "retr",
+                    path: PathBuf::from(remote_path),
+                    source: err,
+                })?;
+                stream
+                    .finalize_retr_stream(data_stream)
+                    .await
+                    .map_err(|err| ftp_err("retr", remote_path, err))?;
+            }
+        }
+        Ok(buffer)
+    }
 }
 
 #[async_trait]
@@ -175,7 +241,7 @@ impl AsyncVfs for FtpVfs {
         // Plain FTP has no single "stat a path" command; list the parent
         // directory and find the matching entry, same trick most FTP
         // clients use.
-        let parent = path.0.parent().map(EntryPath::from).unwrap_or_else(|| EntryPath(PathBuf::new()));
+        let parent = path.0.parent().map(|p| EntryPath(p.to_path_buf())).unwrap_or_else(|| EntryPath(PathBuf::new()));
         let name = path.0.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let siblings = self.read_dir(&parent).await?;
         siblings
@@ -191,16 +257,7 @@ impl AsyncVfs for FtpVfs {
 
     async fn open_file(&self, path: &EntryPath) -> Result<Box<dyn AsyncRead + Unpin + Send>, VfsError> {
         let remote_path = self.resolve(path);
-        let bytes = {
-            let mut guard = self.connection.lock().await;
-            let result = match &mut *guard {
-                FtpConnection::Plain(stream) => stream.retr_as_buffer(&remote_path).await,
-                FtpConnection::Tls(stream) => stream.retr_as_buffer(&remote_path).await,
-            };
-            result
-                .map_err(|err| ftp_err("retr", &remote_path, err))?
-                .into_inner()
-        };
+        let bytes = self.retr_to_buffer(&remote_path).await?;
 
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
         tokio::spawn(async move {

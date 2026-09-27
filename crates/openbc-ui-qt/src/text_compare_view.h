@@ -53,6 +53,8 @@
 #include "minimap.h"
 #include "path_selector.h"
 #include "qt_style.h"
+#include "remote_profile_store.h"
+#include "remote_vfs_bridge.h"
 #include "syntax_highlighter.h"
 
 namespace openbc::app {
@@ -401,7 +403,9 @@ private:
         pathRow->setSpacing(4);
         PathSelector*& selector = left ? leftSelector_ : rightSelector_;
         QToolButton*& saveButton = left ? leftSaveButton_ : rightSaveButton_;
-        selector = new PathSelector(PathSelector::Mode::File, left ? "Left" : "Right", frame);
+        selector = new PathSelector(PathSelector::Mode::File, left ? "Left" : "Right", frame,
+                                    /*showUp=*/false, "All files (*.*)", /*enableRemote=*/true,
+                                    &sharedVfsBridge());
         selector->combo()->setObjectName("sidePath");
         selector->onBrowsed = [this, left](const QString& path) { loadSide(left, path); };
         pathRow->addWidget(selector, 1);
@@ -1581,16 +1585,32 @@ private:
         const QPointer<TextCompareView> view(this);
         progress_->show();
         status_->setText("Loading " + QFileInfo(path).fileName() + "...");
-        QThreadPool::globalInstance()->start([view, left, path]() {
-            QFile file(path);
-            const bool opened = file.open(QIODevice::ReadOnly | QIODevice::Text);
-            const QString text = opened ? QTextStream(&file).readAll() : QString();
+        // Resolved on the GUI thread (cheap: an in-memory profile-tree
+        // lookup) so the background lambda below only ever needs the
+        // profile struct, not RemoteProfileStore itself.
+        RemoteProfile remoteProfile;
+        const bool isRemote = RemoteProfileStore::findProfileForPath(path, &remoteProfile);
+        QThreadPool::globalInstance()->start([view, left, path, isRemote, remoteProfile]() {
+            bool opened = false;
+            QString text;
+            QString openError;
+            if (isRemote) {
+                QByteArray bytes;
+                opened = sharedVfsBridge().remoteReadFile(
+                    remoteProfile, remoteRelativePath(path, remoteProfile), &bytes, &openError);
+                if (opened) text = QString::fromUtf8(bytes);
+            } else {
+                QFile file(path);
+                opened = file.open(QIODevice::ReadOnly | QIODevice::Text);
+                if (opened) text = QTextStream(&file).readAll();
+            }
             if (!view) return;
-            QMetaObject::invokeMethod(view, [view, left, path, opened, text]() {
+            QMetaObject::invokeMethod(view, [view, left, path, opened, text, openError]() {
                 if (!view) return;
                 if (!opened) {
                     view->progress_->hide();
-                    view->status_->setText("Could not open " + path);
+                    view->status_->setText("Could not open " + path +
+                                            (openError.isEmpty() ? QString() : " (" + openError + ")"));
                     return;
                 }
                 view->flushPendingEdits();
@@ -1617,6 +1637,15 @@ private:
 
     void saveSide(bool left) {
         const QString& path = left ? leftPath_ : rightPath_;
+        RemoteProfile remoteProfile;
+        if (RemoteProfileStore::findProfileForPath(path, &remoteProfile)) {
+            // openbc-vfs's AsyncVfs trait (lib.rs) only exposes read_dir/
+            // stat/open_file - there is no write operation to route this
+            // through yet. Fail clearly here rather than let QFile::open
+            // fail on the URI string with a confusing "no such file" later.
+            status_->setText("Saving to a remote path isn't supported yet (openbc-vfs is read-only).");
+            return;
+        }
         QFile file(path);
         if (path.isEmpty() || !file.open(QIODevice::WriteOnly | QIODevice::Text)) {
             status_->setText("Could not save " + (path.isEmpty() ? QString("(no file)") : path));

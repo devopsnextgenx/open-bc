@@ -1,3 +1,5 @@
+mod vfs_bridge;
+
 use openbc_core::text::highlight_to_html as render_highlight_to_html;
 use openbc_core::text::{
     compute_inline_diff, highlight_to_spans, ChangeKind, CompareOptions, HighlightSpan, InlineDiff,

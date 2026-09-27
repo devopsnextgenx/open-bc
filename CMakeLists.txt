@@ -29,6 +29,19 @@ set(Rust_COMPILER "${RUSTC_EXECUTABLE}" CACHE FILEPATH "Rust compiler used by Co
 # 1. Find Qt6 Installation
 find_package(Qt6 COMPONENTS Core Gui Widgets REQUIRED)
 
+# The Rust static lib (via Corrosion) pulls in a dependency that links
+# zlib (e.g. suppaftp's TLS backend, or another crate using libz-sys).
+# Static archives don't carry transitive link deps forward, so the final
+# C++ link needs zlib named explicitly - otherwise `ld` reports undefined
+# references to symbols like `inflateEnd` even though libz.so is present.
+find_package(ZLIB REQUIRED)
+
+# suppaftp's `tokio-async-native-tls` feature pulls in `native-tls`, which
+# on Linux is backed by system OpenSSL via `openssl-sys`. Same "DSO missing
+# from command line" issue as zlib above, this time for libssl/libcrypto -
+# link them explicitly too.
+find_package(OpenSSL REQUIRED)
+
 # 2. Integrate Rust Cargo via Corrosion
 include(FetchContent)
 FetchContent_Declare(
@@ -77,6 +90,9 @@ target_link_libraries(openbc PRIVATE
     Qt6::Gui
     Qt6::Widgets
     openbc_ui_qt-static
+    ZLIB::ZLIB
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )
 
 target_compile_definitions(openbc PRIVATE OPENBC_BUILD_EXECUTABLE)

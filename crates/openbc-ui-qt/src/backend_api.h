@@ -52,4 +52,12 @@ std::uint8_t openbc_highlight_italic(const OpenBcHighlight*, std::size_t);
 char* openbc_highlight_to_html(const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t,
                                std::uint8_t);
 void openbc_highlight_html_destroy(char*);
+
+char* openbc_vfs_connect(const std::uint8_t*, std::size_t, std::int32_t*);
+void openbc_vfs_disconnect(std::int32_t);
+char* openbc_vfs_list(std::int32_t, const std::uint8_t*, std::size_t, char**);
+std::int32_t openbc_vfs_stat(std::int32_t, const std::uint8_t*, std::size_t, char**);
+std::uint8_t* openbc_vfs_read(std::int32_t, const std::uint8_t*, std::size_t, std::size_t*, char**);
+void openbc_vfs_string_destroy(char*);
+void openbc_vfs_buffer_destroy(std::uint8_t*, std::size_t);
 }

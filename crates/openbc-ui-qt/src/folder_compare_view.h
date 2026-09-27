@@ -59,6 +59,8 @@
 #include "folder_model.h"
 #include "path_selector.h"
 #include "qt_style.h"
+#include "remote_profile_store.h"
+#include "remote_vfs_bridge.h"
 
 namespace openbc::app {
 
@@ -391,6 +393,22 @@ public:
             log("Select two folders to compare");
             return;
         }
+
+        RemoteProfile leftProfile, rightProfile;
+        const bool leftRemote = RemoteProfileStore::findProfileForPath(left, &leftProfile);
+        const bool rightRemote = RemoteProfileStore::findProfileForPath(right, &rightProfile);
+        if (leftRemote || rightRemote) {
+            // ComparisonRun::collectEntries (folder_model.h) walks both
+            // sides with QDir/QFileInfo only and has no openbc-vfs
+            // awareness yet, so a recursive remote-vs-* diff isn't
+            // possible from here without changing that file too. Rather
+            // than silently hand it a remote URI (which would just fail
+            // with a confusing "not found"), stop here and report what
+            // openbc-vfs itself can already confirm: whether the picked
+            // remote path resolves to a real folder.
+            reportRemoteFolderCheck(left, leftProfile, leftRemote, right, rightProfile, rightRemote);
+            return;
+        }
         if (!QFileInfo(left).isDir()) {
             log("Left folder not found: " + QDir::toNativeSeparators(left));
             return;
@@ -425,6 +443,39 @@ public:
         log(contentsAction_->isChecked() ? "Comparing folder contents (byte-for-byte)..."
                                          : "Comparing folder structure (size and timestamp)...");
         run_->start(left, right);
+    }
+
+    // Confirms (via the real openbc_vfs_stat FFI call, off the GUI thread)
+    // whether each remote side resolves to a folder, and reports that plus
+    // the current recursive-compare limitation. Local sides are reported
+    // as "local" without a redundant re-check, since refresh() already
+    // validated them with QFileInfo before either side could reach here.
+    void reportRemoteFolderCheck(QString left, RemoteProfile leftProfile, bool leftRemote, QString right,
+                                 RemoteProfile rightProfile, bool rightRemote) {
+        log("Recursive comparison against a remote connection isn't wired up yet - checking whether "
+            "the picked remote path(s) resolve to a folder...");
+        QPointer<CompareSession> self(this);
+        QThreadPool::globalInstance()->start([self, left, leftProfile, leftRemote, right, rightProfile,
+                                              rightRemote]() {
+            auto describe = [](const QString& path, const RemoteProfile& profile, bool remote) -> QString {
+                if (!remote) return "local";
+                QString error;
+                const bool isDir =
+                    sharedVfsBridge().remoteIsDir(profile, remoteRelativePath(path, profile), &error);
+                if (isDir) return "remote folder confirmed on " + profile.name;
+                return "remote check failed on " + profile.name +
+                       (error.isEmpty() ? QString(" (not a folder)") : (": " + error));
+            };
+            const QString leftStatus = describe(left, leftProfile, leftRemote);
+            const QString rightStatus = describe(right, rightProfile, rightRemote);
+            QMetaObject::invokeMethod(
+                qApp,
+                [self, leftStatus, rightStatus]() {
+                    if (!self) return;
+                    self->log("Left: " + leftStatus + " / Right: " + rightStatus);
+                },
+                Qt::QueuedConnection);
+        });
     }
 
 private:
@@ -515,7 +566,8 @@ private:
         auto* pathLayout = new QHBoxLayout(pathBar);
         pathLayout->setContentsMargins(0, 1, 2, 1);
         pathLayout->setSpacing(0);
-        pane.selector = new PathSelector(PathSelector::Mode::Folder, side, pathBar, /*showUp=*/true);
+        pane.selector = new PathSelector(PathSelector::Mode::Folder, side, pathBar, /*showUp=*/true,
+                                         "All files (*.*)", /*enableRemote=*/true, &sharedVfsBridge());
         pane.path = pane.selector->combo();
         pane.browse = pane.selector->browseButton();
         pane.up = pane.selector->upButton();
