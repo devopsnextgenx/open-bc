@@ -1107,6 +1107,11 @@ public:
             opt.icon.paint(painter, iconRect, Qt::AlignCenter, QIcon::Normal,
                            open ? QIcon::On : QIcon::Off);
             content.setLeft(iconRect.right() + 6);
+        } else if (index.column() == 1 && !opt.icon.isNull()) {
+            constexpr int iconSize = 16;
+            const QRect iconRect(content.left() + (content.width() - iconSize) / 2,
+                                 r.top() + (r.height() - iconSize) / 2, iconSize, iconSize);
+            opt.icon.paint(painter, iconRect, Qt::AlignCenter);
         }
 
         const QBrush fg = index.data(Qt::ForegroundRole).value<QBrush>();
@@ -1124,8 +1129,8 @@ public:
 class CompareTree : public QTreeWidget {
 public:
     explicit CompareTree(QWidget* parent = nullptr) : QTreeWidget(parent) {
-        setColumnCount(5);
-        setHeaderLabels({"Name", "Ext", "Size", "Modified", "Attributes"});
+        setColumnCount(6);
+        setHeaderLabels({"Name", "Status", "Ext", "Size", "Modified", "Attributes"});
         setItemDelegate(new CompareDelegate(this));
         setRootIsDecorated(true);
         setIndentation(20);
@@ -1146,14 +1151,16 @@ public:
         h->setHighlightSections(false);
         h->setMinimumSectionSize(36);
         h->setSectionResizeMode(0, QHeaderView::Stretch);
-        for (int column = 1; column < 5; ++column) {
+        for (int column = 1; column < 6; ++column) {
             h->setSectionResizeMode(column, QHeaderView::Interactive);
         }
-        h->resizeSection(1, 64);
-        h->resizeSection(2, 110);
-        h->resizeSection(3, 150);
-        h->resizeSection(4, 78);
-        headerItem()->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
+        h->resizeSection(1, 30);
+        h->resizeSection(2, 64);
+        h->resizeSection(3, 110);
+        h->resizeSection(4, 150);
+        h->resizeSection(5, 78);
+        headerItem()->setTextAlignment(1, Qt::AlignCenter);
+        headerItem()->setTextAlignment(3, Qt::AlignRight | Qt::AlignVCenter);
     }
 
 protected:

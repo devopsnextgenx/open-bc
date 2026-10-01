@@ -166,6 +166,25 @@ inline void applyRowStyle(QTreeWidgetItem* item, RowStatus status, bool isDir) {
     }
 }
 
+inline QString statusLabel(RowStatus status) {
+    switch (status) {
+    case RowStatus::Equal: return "Equal";
+    case RowStatus::Newer: return "Newer";
+    case RowStatus::Older: return "Older";
+    case RowStatus::Different: return "Different";
+    case RowStatus::Orphan: return "Missing on other side";
+    case RowStatus::Pending: return "Comparing";
+    }
+    return "Unknown";
+}
+
+inline void applyStatusMarker(QTreeWidgetItem* item, RowStatus status) {
+    const QString label = statusLabel(status);
+    item->setIcon(1, icons::markerIcon(status));
+    item->setData(1, Qt::AccessibleTextRole, label);
+    item->setToolTip(1, label);
+}
+
 inline QTreeWidgetItem* addRow(QTreeWidget* tree, const SideInfo& side, RowStatus status,
                         PairClass pairClass, QTreeWidgetItem* parent) {
     auto* item = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(tree);
@@ -174,6 +193,7 @@ inline QTreeWidgetItem* addRow(QTreeWidget* tree, const SideInfo& side, RowStatu
     item->setData(0, kPathRole, side.exists ? side.path : QString());
     item->setData(0, kIsDirRole, side.exists && side.isDir);
     item->setData(0, kFolderStatusMaskRole, side.isDir ? 0 : statusBit(status));
+    applyStatusMarker(item, status);
     if (!side.exists) {
         item->setFlags(item->flags() & ~Qt::ItemIsEditable);
     } else {
@@ -181,11 +201,11 @@ inline QTreeWidgetItem* addRow(QTreeWidget* tree, const SideInfo& side, RowStatu
     }
     if (side.exists) {
         item->setText(0, side.name);
-        item->setText(1, side.ext);
-        item->setText(2, side.isDir ? QString() : formatSize(side.size));
-        item->setText(3, side.modified.toString("yyyy-MM-dd HH:mm:ss"));
-        item->setText(4, side.attrs);
-        item->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
+        item->setText(2, side.ext);
+        item->setText(3, side.isDir ? QString() : formatSize(side.size));
+        item->setText(4, side.modified.toString("yyyy-MM-dd HH:mm:ss"));
+        item->setText(5, side.attrs);
+        item->setTextAlignment(3, Qt::AlignRight | Qt::AlignVCenter);
         item->setIcon(0, side.isDir ? icons::folderIconForMask(0) : icons::markerIcon(status));
         applyRowStyle(item, status, side.isDir);
     }

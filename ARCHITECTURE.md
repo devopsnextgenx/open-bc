@@ -24,7 +24,7 @@ flowchart LR
 - `openbc-core`: dependency-light models, comparison policy, result types, and pure diff algorithms.
 - `openbc-vfs`: `AsyncVfs`, metadata, directory streams, and local/remote adapters. Adapters must expose lazy directory levels.
 - `openbc-compute`: execution policy and backends. It chooses CPU or GPU without leaking backend types to callers.
-- `openbc-engine`: bounded Tokio pipelines. It requests one directory level at a time, performs metadata comparison first, then schedules phase-two content work.
+- `openbc-engine`: bounded Tokio pipelines. It requests directory levels progressively, performs metadata comparison first, then schedules phase-two content work.
 - `openbc-ui-qt`: Qt event-loop integration and virtualized model state. It consumes progress messages and never performs scans itself.
 
 ## Thread safety and scheduling
@@ -38,7 +38,7 @@ flowchart LR
 
 ## Performance policy
 
-- Directory traversal is lazy and level-by-level. Expanding a node requests only that node's children.
+- Directory traversal is lazy and level-by-level: each completed level reveals its children and queues their levels under bounded concurrency until the full tree is compared. Expansion controls visibility, not whether descendants are compared; never perform an upfront recursive scan.
 - Metadata comparison (size and modified time) precedes content comparison.
 - Small and medium files use the Rayon backend. The default GPU eligibility threshold is 4 MiB; files below 1 MiB must never be sent to a GPU.
 - GPU transfers are chunked and bounded. A future implementation should use pinned or staging buffers and avoid mapping a file larger than the configured memory budget.

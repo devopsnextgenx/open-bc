@@ -91,9 +91,20 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
         qint64 rightBytes = 0;
     };
 
+    struct FolderRequest {
+        QString leftPath;
+        QString rightPath;
+        QTreeWidgetItem* leftParent = nullptr;
+        QTreeWidgetItem* rightParent = nullptr;
+        std::shared_ptr<NodeState> parent;
+        bool mismatched = false;
+    };
+
     QPointer<QTreeWidget> leftTree;
     QPointer<QTreeWidget> rightTree;
     QThreadPool pool;
+    QList<FolderRequest> folderQueue;
+    int activeFolderRequests = 0;
     std::atomic_bool cancelled{false};
     CompareOptions options;
     std::function<void()> onProgress;
@@ -131,49 +142,50 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
     void scheduleFolder(QString leftPath, QString rightPath, QTreeWidgetItem* leftParent,
                         QTreeWidgetItem* rightParent, std::shared_ptr<NodeState> parent,
                         bool mismatched) {
-        auto run = shared_from_this();
-        auto* task = QRunnable::create([run, leftPath = std::move(leftPath),
-                                        rightPath = std::move(rightPath), leftParent, rightParent,
-                                        parent = std::move(parent), mismatched,
-                                        leftProfile = run->leftProfile, leftRemote = run->leftRemote,
-                                        rightProfile = run->rightProfile, rightRemote = run->rightRemote]() {
-            if (run->cancelled.load()) {
-                return;
-            }
-            QString error;
-            auto entries = collectEntriesFromEngine(leftPath, leftProfile, leftRemote, rightPath,
-                                                    rightProfile, rightRemote, run->options,
-                                                    run->cancelled, &error);
-            if (run->cancelled.load()) {
-                return;
-            }
-            if (!error.isEmpty()) {
+        folderQueue.push_back({std::move(leftPath), std::move(rightPath), leftParent,
+                               rightParent, std::move(parent), mismatched});
+        pumpFolderQueue();
+    }
+
+    void pumpFolderQueue() {
+        constexpr int maxActiveFolderRequests = 2;
+        while (!cancelled.load() && activeFolderRequests < maxActiveFolderRequests &&
+               !folderQueue.isEmpty()) {
+            const FolderRequest request = folderQueue.takeFirst();
+            ++activeFolderRequests;
+            auto run = shared_from_this();
+            auto* task = QRunnable::create([run, request,
+                                            leftProfile = run->leftProfile,
+                                            leftRemote = run->leftRemote,
+                                            rightProfile = run->rightProfile,
+                                            rightRemote = run->rightRemote]() {
+                if (run->cancelled.load()) return;
+                QString error;
+                auto entries = collectEntriesFromEngine(
+                    request.leftPath, leftProfile, leftRemote, request.rightPath, rightProfile,
+                    rightRemote, run->options, run->cancelled, &error);
+                if (run->cancelled.load()) return;
                 QMetaObject::invokeMethod(
-                    qApp, [run, error, leftParent, rightParent, parent, mismatched,
-                           leftMissing = leftPath.isEmpty(), rightMissing = rightPath.isEmpty()]() {
-                        if (run->cancelled.load()) return;
-                        run->populate({}, leftParent, rightParent, parent, leftMissing,
-                                      rightMissing, mismatched, error);
-                        if (run->onError) run->onError(error);
-                    }, Qt::QueuedConnection);
-                return;
-            }
-            const bool leftMissing = leftPath.isEmpty();
-            const bool rightMissing = rightPath.isEmpty();
-            // qApp is always a valid context, and the lambda re-checks
-            // `cancelled` and the QPointers on the GUI thread, so a closed tab
-            // can never be touched.
-            QMetaObject::invokeMethod(
-                qApp,
-                [run, entries = std::move(entries), leftParent, rightParent, parent, leftMissing,
-                 rightMissing, mismatched]() {
-                    run->populate(entries, leftParent, rightParent, parent, leftMissing,
-                                  rightMissing, mismatched);
-                },
-                Qt::QueuedConnection);
-        });
-        task->setAutoDelete(true);
-        pool.start(task);
+                    qApp,
+                    [run, request, entries = std::move(entries), error]() mutable {
+                        run->completeFolderRequest(request, std::move(entries), error);
+                    },
+                    Qt::QueuedConnection);
+            });
+            task->setAutoDelete(true);
+            pool.start(task);
+        }
+    }
+
+    void completeFolderRequest(const FolderRequest& request, std::vector<EntryPair> entries,
+                               const QString& error) {
+        if (cancelled.load()) return;
+        --activeFolderRequests;
+        populate(entries, request.leftParent, request.rightParent, request.parent,
+                 request.leftPath.isEmpty(), request.rightPath.isEmpty(), request.mismatched,
+                 error);
+        if (!error.isEmpty() && onError) onError(error);
+        pumpFolderQueue();
     }
 
     static QString childPath(const QString& parent, const QString& name) {
@@ -320,6 +332,7 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
                         item->setData(0, kClassRole, static_cast<int>(pairClass));
                         item->setData(0, kFolderStatusMaskRole, statusBit(status));
                         item->setIcon(0, icons::markerIcon(status));
+                        applyStatusMarker(item, status);
                         applyRowStyle(item, status, false);
                     }
                     state->different = state->different || pairClass != PairClass::Same;
@@ -354,6 +367,12 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
         state->rightMissing = rightMissing;
         state->mismatched = mismatched;
         state->different = !error.isEmpty();
+        if (state->different) {
+            if (leftParent && leftParent->data(0, kIsDirRole).toBool())
+                state->leftMask |= statusBit(RowStatus::Different);
+            if (rightParent && rightParent->data(0, kIsDirRole).toBool())
+                state->rightMask |= statusBit(RowStatus::Different);
+        }
 
         for (const auto& entry : entries) {
             if ((!entry.left.path.isEmpty() && ignoredPaths.contains(entry.left.path)) ||
@@ -381,7 +400,6 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
             }
 
             if (entry.recurse) {
-                state->pendingFolders = state->pendingFolders || entry.pairClass == PairClass::Pending;
                 if (entry.pairClass == PairClass::Different) {
                     state->different = true;
                     if (entry.left.exists) state->leftMask |= statusBit(RowStatus::Different);
@@ -393,6 +411,17 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
                 if (rightItem && entry.right.isDir) {
                     rightItem->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
                 }
+                for (auto* item : {leftItem, rightItem}) {
+                    if (item && item->data(0, kIsDirRole).toBool()) {
+                        item->setData(0, kChildrenLoadedRole, true);
+                    }
+                }
+                const bool childMismatched = entry.left.exists && entry.right.exists &&
+                    (entry.left.isDir != entry.right.isDir || entry.left.isLink != entry.right.isLink);
+                const QString leftPath = entry.left.isDir ? entry.left.path : QString();
+                const QString rightPath = entry.right.isDir ? entry.right.path : QString();
+                ++state->pendingChildren;
+                scheduleFolder(leftPath, rightPath, leftItem, rightItem, state, childMismatched);
                 if (leftItem && leftItem->data(0, kIsDirRole).toBool() &&
                     expandedPaths.contains(leftItem->data(0, kPathRole).toString())) {
                     leftItem->setExpanded(true);
@@ -432,7 +461,8 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
         }
         item->setData(0, kFolderStatusMaskRole, static_cast<quint32>(mask));
         item->setIcon(0, icons::folderIconForMask(mask));
-        item->setText(2, formatSize(bytes));
+        item->setText(3, formatSize(bytes));
+        applyStatusMarker(item, static_cast<RowStatus>(item->data(0, kStatusRole).toInt()));
     }
 
     static void refreshAncestorFolders(QTreeWidgetItem* leftItem, QTreeWidgetItem* rightItem) {
@@ -471,6 +501,8 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
             rightParent->setData(0, kFolderStatusMaskRole, rightMask);
             leftParent->setIcon(0, icons::folderIconForMask(leftMask));
             rightParent->setIcon(0, icons::folderIconForMask(rightMask));
+            applyStatusMarker(leftParent, status);
+            applyStatusMarker(rightParent, status);
             leftItem = leftParent;
             rightItem = rightParent;
             leftParent = leftItem->parent();
@@ -1280,11 +1312,11 @@ private:
     }
 
     static QStringList folderColumnNames() {
-        return {"name", "extension", "size", "modified", "attributes"};
+        return {"name", "status", "extension", "size", "modified", "attributes"};
     }
 
     static QStringList folderColumnLabels() {
-        return {"Name", "Ext", "Size", "Modified", "Attributes"};
+        return {"Name", "Status", "Ext", "Size", "Modified", "Attributes"};
     }
 
     void configureColumnVisibility() {
@@ -1585,6 +1617,17 @@ private:
         });
     }
 
+    void compareFolderNode(const NodeContext& ctx) {
+        const QString leftPath = ctx.side == Side::Left ? ctx.path : ctx.otherPath;
+        const QString rightPath = ctx.side == Side::Right ? ctx.path : ctx.otherPath;
+        if (leftPath.isEmpty() || rightPath.isEmpty()) {
+            QMessageBox::information(this, "Folder comparison",
+                                     "A matching folder is missing on one side.");
+            return;
+        }
+        if (onNewFolderCompare) onNewFolderCompare(leftPath, rightPath);
+    }
+
     void compareNodeFiles(const NodeContext& ctx, bool showReport,
                           const QString& comparisonPath = {}) {
         if (ctx.isDir) {
@@ -1649,6 +1692,7 @@ private:
                                 item->setData(0, kClassRole, static_cast<int>(pairClass));
                                 item->setData(0, kFolderStatusMaskRole, statusBit(status));
                                 item->setIcon(0, icons::markerIcon(status));
+                                applyStatusMarker(item, status);
                                 applyRowStyle(item, status, false);
                             }
                         }
@@ -1771,7 +1815,8 @@ private:
                 openTextComparePaths(leftPath, rightPath);
             }
         } else if (action == "Compare Contents...") {
-            compareNodeFiles(ctx, false);
+            if (ctx.isDir) compareFolderNode(ctx);
+            else compareNodeFiles(ctx, false);
         } else if (action == "File Compare Report...") {
             compareNodeFiles(ctx, true);
         } else if (action == "Copy Filename") {
@@ -1926,9 +1971,7 @@ private:
         menu.addSeparator();
 
         // ---- operate on the node
-        if (!ctx.isDir) {
-            addNodeAction(&menu, ctx, "Compare Contents...", mi::compareContents());
-        }
+        addNodeAction(&menu, ctx, "Compare Contents...", mi::compareContents());
         addNodeAction(&menu, ctx, "Copy to " + other + "...", mi::copyArrow(toRight),
                       toRight ? "Ctrl+R" : "Ctrl+L");
         addNodeAction(&menu, ctx, "Move to " + other + "...", mi::moveArrow(toRight));
