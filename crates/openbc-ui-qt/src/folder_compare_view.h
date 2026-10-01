@@ -446,6 +446,7 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
                 }
             }
         }
+        refreshFolderPair(leftParent, rightParent);
         if (onProgress) {
             onProgress();
         }
@@ -465,48 +466,52 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
         applyStatusMarker(item, static_cast<RowStatus>(item->data(0, kStatusRole).toInt()));
     }
 
+    static void refreshFolderPair(QTreeWidgetItem* leftFolder, QTreeWidgetItem* rightFolder) {
+        if (!leftFolder || !rightFolder) return;
+
+        bool different = leftFolder->data(0, kClassRole).toInt() ==
+                             static_cast<int>(PairClass::Different) ||
+                         rightFolder->data(0, kClassRole).toInt() ==
+                             static_cast<int>(PairClass::Different);
+        bool matched = false;
+        quint32 leftMask = 0;
+        quint32 rightMask = 0;
+        const int count = std::min(leftFolder->childCount(), rightFolder->childCount());
+        for (int index = 0; index < count; ++index) {
+            auto* leftChild = leftFolder->child(index);
+            auto* rightChild = rightFolder->child(index);
+            leftMask |= leftChild->data(0, kFolderStatusMaskRole).toUInt();
+            rightMask |= rightChild->data(0, kFolderStatusMaskRole).toUInt();
+            const auto pairClass = static_cast<PairClass>(leftChild->data(0, kClassRole).toInt());
+            different = different ||
+                        (pairClass != PairClass::Same && pairClass != PairClass::Pending);
+            matched = matched || pairClass == PairClass::Same;
+        }
+
+        const RowStatus status = different ? RowStatus::Different
+                                           : matched ? RowStatus::Equal : RowStatus::Pending;
+        const PairClass pairClass = different ? PairClass::Different
+                                              : matched ? PairClass::Same : PairClass::Pending;
+        for (auto* item : {leftFolder, rightFolder}) {
+            item->setData(0, kStatusRole, static_cast<int>(status));
+            item->setData(0, kClassRole, static_cast<int>(pairClass));
+            item->setData(0, kFolderStatusMaskRole,
+                          item == leftFolder ? leftMask : rightMask);
+            if (item->data(0, kIsDirRole).toBool()) {
+                item->setIcon(0, icons::folderIconForMask(
+                                     item == leftFolder ? leftMask : rightMask));
+            }
+            applyStatusMarker(item, status);
+        }
+    }
+
     static void refreshAncestorFolders(QTreeWidgetItem* leftItem, QTreeWidgetItem* rightItem) {
         auto* leftParent = leftItem ? leftItem->parent() : nullptr;
         auto* rightParent = rightItem ? rightItem->parent() : nullptr;
         while (leftParent && rightParent) {
-            bool different = false;
-            bool pending = false;
-            quint32 leftMask = 0;
-            quint32 rightMask = 0;
-            const int count = std::min(leftParent->childCount(), rightParent->childCount());
-            for (int index = 0; index < count; ++index) {
-                auto* leftChild = leftParent->child(index);
-                auto* rightChild = rightParent->child(index);
-                const auto leftStatus = static_cast<RowStatus>(
-                    leftChild->data(0, kStatusRole).toInt());
-                const auto rightStatus = static_cast<RowStatus>(
-                    rightChild->data(0, kStatusRole).toInt());
-                leftMask |= leftChild->data(0, kFolderStatusMaskRole).toUInt();
-                rightMask |= rightChild->data(0, kFolderStatusMaskRole).toUInt();
-                const int pairClass = leftChild->data(0, kClassRole).toInt();
-                different = different || pairClass != static_cast<int>(PairClass::Same) &&
-                                         pairClass != static_cast<int>(PairClass::Pending);
-                pending = pending || leftStatus == RowStatus::Pending ||
-                                      rightStatus == RowStatus::Pending;
-            }
-            const RowStatus status = different ? RowStatus::Different
-                                               : pending ? RowStatus::Pending : RowStatus::Equal;
-            const PairClass pairClass = different ? PairClass::Different
-                                                  : pending ? PairClass::Pending : PairClass::Same;
-            leftParent->setData(0, kStatusRole, static_cast<int>(status));
-            rightParent->setData(0, kStatusRole, static_cast<int>(status));
-            leftParent->setData(0, kClassRole, static_cast<int>(pairClass));
-            rightParent->setData(0, kClassRole, static_cast<int>(pairClass));
-            leftParent->setData(0, kFolderStatusMaskRole, leftMask);
-            rightParent->setData(0, kFolderStatusMaskRole, rightMask);
-            leftParent->setIcon(0, icons::folderIconForMask(leftMask));
-            rightParent->setIcon(0, icons::folderIconForMask(rightMask));
-            applyStatusMarker(leftParent, status);
-            applyStatusMarker(rightParent, status);
-            leftItem = leftParent;
-            rightItem = rightParent;
-            leftParent = leftItem->parent();
-            rightParent = rightItem->parent();
+            refreshFolderPair(leftParent, rightParent);
+            leftParent = leftParent->parent();
+            rightParent = rightParent->parent();
         }
     }
 
@@ -570,6 +575,79 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
             onComplete();
         }
     }
+};
+
+class CompareStatusGutter : public QFrame {
+public:
+    explicit CompareStatusGutter(CompareTree* source, QWidget* parent = nullptr)
+        : QFrame(parent), source_(source) {
+        setObjectName("gutterBody");
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        if (!source_) return;
+
+        auto* model = source_->model();
+        connect(model, &QAbstractItemModel::dataChanged, this,
+                [this](const QModelIndex&, const QModelIndex&, const QList<int>&) { update(); });
+        connect(model, &QAbstractItemModel::rowsInserted, this,
+                [this](const QModelIndex&, int, int) { update(); });
+        connect(model, &QAbstractItemModel::rowsRemoved, this,
+                [this](const QModelIndex&, int, int) { update(); });
+        connect(model, &QAbstractItemModel::layoutChanged, this, [this]() { update(); });
+        connect(source_->verticalScrollBar(), &QScrollBar::valueChanged, this,
+                [this](int) { update(); });
+        connect(source_, &QTreeWidget::itemExpanded, this,
+                [this](QTreeWidgetItem*) { update(); });
+        connect(source_, &QTreeWidget::itemCollapsed, this,
+                [this](QTreeWidgetItem*) { update(); });
+    }
+
+protected:
+    void paintEvent(QPaintEvent* event) override {
+        QFrame::paintEvent(event);
+        if (!source_) return;
+
+        QPainter painter(this);
+        painter.setClipRect(event->rect());
+        std::function<void(QTreeWidgetItem*)> paintItem = [&](QTreeWidgetItem* item) {
+            const QRect sourceRect = source_->visualItemRect(item);
+            if (!sourceRect.isEmpty()) {
+                const QPoint globalTopLeft = source_->viewport()->mapToGlobal(sourceRect.topLeft());
+                const QRect rowRect(mapFromGlobal(globalTopLeft), sourceRect.size());
+                if (rowRect.intersects(event->rect())) {
+                    const auto pairClass = static_cast<PairClass>(
+                        item->data(0, kClassRole).toInt());
+                    icons::markerIcon(statusForPair(pairClass)).paint(
+                        &painter,
+                        QRect(rowRect.center().x() - 8, rowRect.center().y() - 8, 16, 16),
+                        Qt::AlignCenter);
+                }
+            }
+            if (item->isExpanded()) {
+                for (int index = 0; index < item->childCount(); ++index) {
+                    paintItem(item->child(index));
+                }
+            }
+        };
+        for (int index = 0; index < source_->topLevelItemCount(); ++index) {
+            paintItem(source_->topLevelItem(index));
+        }
+    }
+
+private:
+    static RowStatus statusForPair(PairClass pairClass) {
+        switch (pairClass) {
+        case PairClass::Same: return RowStatus::Equal;
+        case PairClass::OrphanLeft:
+        case PairClass::OrphanRight: return RowStatus::Orphan;
+        case PairClass::LeftNewer:
+        case PairClass::RightNewer: return RowStatus::Newer;
+        case PairClass::Different: return RowStatus::Different;
+        case PairClass::Pending: return RowStatus::Pending;
+        }
+        return RowStatus::Pending;
+    }
+
+    QTreeWidget* source_ = nullptr;
 };
 
 // A run may be released by a worker thread (its tasks hold references). Its
@@ -952,8 +1030,7 @@ private:
         header->setObjectName("gutterHeader");
         header->setFixedHeight(left.tree->header()->sizeHint().height());
 
-        auto* body = new QFrame(gutter);
-        body->setObjectName("gutterBody");
+        gutterStatus_ = new CompareStatusGutter(left.tree, gutter);
 
         auto* footer = new QFrame(gutter);
         footer->setObjectName("footer");
@@ -961,7 +1038,7 @@ private:
 
         layout->addWidget(top);
         layout->addWidget(header);
-        layout->addWidget(body, 1);
+        layout->addWidget(gutterStatus_, 1);
         layout->addWidget(footer);
         return gutter;
     }
@@ -2210,6 +2287,7 @@ private:
         for (int i = 0; i < count; ++i) {
             filterRows(leftTree_->topLevelItem(i), rightTree_->topLevelItem(i));
         }
+        if (gutterStatus_) gutterStatus_->update();
     }
 
     // ---------------------------------------------------------------- members
@@ -2225,6 +2303,7 @@ private:
     QToolButton* bothUp_ = nullptr;
     CompareTree* leftTree_ = nullptr;
     CompareTree* rightTree_ = nullptr;
+    CompareStatusGutter* gutterStatus_ = nullptr;
     QLabel* leftCount_ = nullptr;
     QLabel* rightCount_ = nullptr;
     QLabel* leftFree_ = nullptr;
