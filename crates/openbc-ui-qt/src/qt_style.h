@@ -99,6 +99,7 @@ inline QColor folderRed() { return QColor(0xff, 0x8f, 0x8f); }
 inline QColor folderGreen() { return QColor(0x6e, 0xf0, 0x8f); }
 inline QColor folderOrange() { return QColor(0xff, 0xb2, 0x7a); }
 inline QColor folderPurple() { return QColor(0xb7, 0x87, 0xff); }
+inline QColor folderBlue() { return QColor(0x6d, 0xb7, 0xff); }
 
 // Colours for "group" nodes in the session-history tree (date buckets, the
 // Personal node, and any other named node). These are deliberately a
@@ -507,9 +508,10 @@ inline QIcon folderIconForMask(quint32 mask) {
     }
     std::vector<QColor> colors;
     if (mask & statusBit(RowStatus::Different)) colors.push_back(color::folderRed());
-    if (mask & statusBit(RowStatus::Newer)) colors.push_back(color::folderGreen());
-    if (mask & statusBit(RowStatus::Older)) colors.push_back(color::folderOrange());
-    if (mask & statusBit(RowStatus::Orphan)) colors.push_back(color::folderPurple());
+    if (mask & statusBit(RowStatus::Orphan)) colors.push_back(color::folderBlue());
+    if (mask & statusBit(RowStatus::Equal)) colors.push_back(color::folderGreen());
+    if (mask & statusBit(RowStatus::Newer)) colors.push_back(color::folderOrange());
+    if (mask & statusBit(RowStatus::Older)) colors.push_back(color::folderPurple());
     QIcon icon;
     if (colors.empty()) {
         icon = folderIcon(color::folderYellow());

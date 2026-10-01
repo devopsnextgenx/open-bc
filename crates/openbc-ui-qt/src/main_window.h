@@ -239,10 +239,10 @@ extern "C" int openbc_run_gui() {
         auto* session = new CompareSession(&preferences);
         session->setPaths(left, right);
         registerInstrumentationSession(session->instrumentationSessionId(), session->title());
-        if (run && !left.isEmpty() && !right.isEmpty()) {
-            SessionHistory::record("folder", left, right);
+        session->onComparisonRequested = [&](const QString& requestedLeft, const QString& requestedRight) {
+            SessionHistory::record("folder", requestedLeft, requestedRight);
             home->refreshHistory();
-        }
+        };
         const int index =
             tabs->addTab(session, openbc::ui::icons::folderIcon(openbc::ui::color::folderYellow()),
                          session->title());

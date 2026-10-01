@@ -104,6 +104,8 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
     bool leftRemote = false;
     bool rightRemote = false;
     QSet<QString> ignoredPaths;
+    QSet<QString> expandedPaths;
+    bool rootItemsCreated = false;
 
     // Totals shown in the pane footers (GUI thread only).
     int leftFiles = 0;
@@ -339,6 +341,11 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
         if (cancelled.load() || !leftTree || !rightTree) {
             return;
         }
+        if (!parent && !rootItemsCreated) {
+            rootItemsCreated = true;
+            leftTree->clear();
+            rightTree->clear();
+        }
         auto state = std::make_shared<NodeState>();
         state->leftItem = leftParent;
         state->rightItem = rightParent;
@@ -386,6 +393,13 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
                 if (rightItem && entry.right.isDir) {
                     rightItem->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
                 }
+                if (leftItem && leftItem->data(0, kIsDirRole).toBool() &&
+                    expandedPaths.contains(leftItem->data(0, kPathRole).toString())) {
+                    leftItem->setExpanded(true);
+                } else if (rightItem && rightItem->data(0, kIsDirRole).toBool() &&
+                           expandedPaths.contains(rightItem->data(0, kPathRole).toString())) {
+                    rightItem->setExpanded(true);
+                }
             } else if (hashPending) {
                 ++state->pendingChildren;
                 scheduleFileComparison(entry, leftItem, rightItem, state);
@@ -393,8 +407,14 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
                 if (entry.pairClass != PairClass::Same) {
                     state->different = true;
                 }
-                if (entry.left.exists) state->leftMask |= statusBit(entry.leftStatus);
-                if (entry.right.exists) state->rightMask |= statusBit(entry.rightStatus);
+                if (entry.pairClass == PairClass::OrphanLeft ||
+                    entry.pairClass == PairClass::OrphanRight) {
+                    state->leftMask |= statusBit(RowStatus::Orphan);
+                    state->rightMask |= statusBit(RowStatus::Orphan);
+                } else {
+                    if (entry.left.exists) state->leftMask |= statusBit(entry.leftStatus);
+                    if (entry.right.exists) state->rightMask |= statusBit(entry.rightStatus);
+                }
             }
         }
         if (onProgress) {
@@ -463,8 +483,19 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
             return;
         }
         const bool orphan = !state->mismatched && (state->leftMissing || state->rightMissing);
-        if (state->leftMissing && !state->mismatched) state->rightMask |= statusBit(RowStatus::Orphan);
-        if (state->rightMissing && !state->mismatched) state->leftMask |= statusBit(RowStatus::Orphan);
+        if ((state->leftMissing || state->rightMissing) && !state->mismatched) {
+            state->leftMask |= statusBit(RowStatus::Orphan);
+            state->rightMask |= statusBit(RowStatus::Orphan);
+        }
+        if (state->mismatched) {
+            if (state->leftItem && state->leftItem->data(0, kIsDirRole).toBool())
+                state->leftMask |= statusBit(RowStatus::Different);
+            if (state->rightItem && state->rightItem->data(0, kIsDirRole).toBool())
+                state->rightMask |= statusBit(RowStatus::Different);
+        } else if (!orphan && !state->different && !state->pendingFolders) {
+            if (state->leftItem) state->leftMask |= statusBit(RowStatus::Equal);
+            if (state->rightItem) state->rightMask |= statusBit(RowStatus::Equal);
+        }
         const bool different = state->different || orphan || state->mismatched;
 
         if (state->leftItem || state->rightItem) {
@@ -534,6 +565,7 @@ public:
     std::function<void(const QString&, const QString&, const QString&, const QString&)>
         onTextCompare;
     std::function<void(const QString&, const QString&)> onNewFolderCompare;
+    std::function<void(const QString&, const QString&)> onComparisonRequested;
 
     // What a right-click landed on. Copied by value: the context menu runs a
     // nested event loop and the rows may be rebuilt while it is open, so it
@@ -635,9 +667,10 @@ public:
     }
 
     void refresh() {
+        expandedPaths_.clear();
+        rememberExpandedPaths(leftTree_, expandedPaths_);
+        rememberExpandedPaths(rightTree_, expandedPaths_);
         cancelRun();
-        leftTree_->clear();
-        rightTree_->clear();
 
         const QString left = leftText();
         const QString right = rightText();
@@ -648,18 +681,25 @@ public:
         updateFooter();
 
         if (left.isEmpty() || right.isEmpty()) {
+            leftTree_->clear();
+            rightTree_->clear();
             log("Select two folders to compare");
             return;
         }
+        if (onComparisonRequested) onComparisonRequested(left, right);
 
         RemoteProfile leftProfile, rightProfile;
         const bool leftRemote = RemoteProfileStore::findProfileForPath(left, &leftProfile);
         const bool rightRemote = RemoteProfileStore::findProfileForPath(right, &rightProfile);
         if (!leftRemote && !QFileInfo(left).isDir()) {
+            leftTree_->clear();
+            rightTree_->clear();
             log("Left folder not found: " + QDir::toNativeSeparators(left));
             return;
         }
         if (!rightRemote && !QFileInfo(right).isDir()) {
+            leftTree_->clear();
+            rightTree_->clear();
             log("Right folder not found: " + QDir::toNativeSeparators(right));
             return;
         }
@@ -674,6 +714,7 @@ public:
 
         run_ = makeRun(leftTree_, rightTree_, std::move(options));
         run_->ignoredPaths = ignoredPaths_;
+        run_->expandedPaths = expandedPaths_;
         const ComparisonRun* expected = run_.get();
         run_->onProgress = [this, expected]() {
             if (run_.get() == expected) updateFooter();
@@ -1379,6 +1420,20 @@ private:
         return QFileInfo(path).absolutePath();
     }
 
+    static void rememberExpandedPaths(QTreeWidget* tree, QSet<QString>& paths) {
+        std::function<void(QTreeWidgetItem*)> visit = [&](QTreeWidgetItem* item) {
+            if (item->isExpanded()) {
+                paths.insert(item->data(0, kPathRole).toString());
+            }
+            for (int index = 0; index < item->childCount(); ++index) {
+                visit(item->child(index));
+            }
+        };
+        for (int index = 0; index < tree->topLevelItemCount(); ++index) {
+            visit(tree->topLevelItem(index));
+        }
+    }
+
     void focusPendingEdit() {
         if (pendingEditPath_.isEmpty() || !pendingEditTree_) return;
         auto* item = findPath(pendingEditTree_, pendingEditPath_);
@@ -1532,6 +1587,10 @@ private:
 
     void compareNodeFiles(const NodeContext& ctx, bool showReport,
                           const QString& comparisonPath = {}) {
+        if (ctx.isDir) {
+            QMessageBox::information(this, "File comparison", "Select a file to compare its contents.");
+            return;
+        }
         const bool updateRows = comparisonPath.isEmpty();
         const QString otherPath = comparisonPath.isEmpty() ? ctx.otherPath : comparisonPath;
         const QString leftPath = ctx.side == Side::Left ? ctx.path : otherPath;
@@ -1860,12 +1919,16 @@ private:
         QMenu* openWith = menu.addMenu("Open With");
         openWith->menuAction()->setEnabled(ctx.existsHere);
         fillProviderMenu(openWith, ctx, populateOpenWithMenu);
-        addNodeAction(&menu, ctx, "Compare To...", {}, "F7");
-        addNodeAction(&menu, ctx, "Align With...", {}, "F6");
+        if (!ctx.isDir) {
+            addNodeAction(&menu, ctx, "Compare To...", {}, "F7");
+            addNodeAction(&menu, ctx, "Align With...", {}, "F6");
+        }
         menu.addSeparator();
 
         // ---- operate on the node
-        addNodeAction(&menu, ctx, "Compare Contents...", mi::compareContents());
+        if (!ctx.isDir) {
+            addNodeAction(&menu, ctx, "Compare Contents...", mi::compareContents());
+        }
         addNodeAction(&menu, ctx, "Copy to " + other + "...", mi::copyArrow(toRight),
                       toRight ? "Ctrl+R" : "Ctrl+L");
         addNodeAction(&menu, ctx, "Move to " + other + "...", mi::moveArrow(toRight));
@@ -2128,6 +2191,7 @@ private:
     QPlainTextEdit* console_ = nullptr;
     QSplitter* splitter_ = nullptr;
     QSettings* preferences_ = nullptr;
+    QSet<QString> expandedPaths_;
     QString instrumentationSessionId_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
     QAction* compareAction_ = nullptr;
