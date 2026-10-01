@@ -29,7 +29,9 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
+#include <QJsonArray>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -46,6 +48,22 @@
 #include "vfs_bridge_ffi.h"
 
 namespace openbc::app {
+
+struct VfsCompareSide {
+    bool exists = false;
+    bool isDir = false;
+    bool isLink = false;
+    QString path;
+    qint64 size = 0;
+    QDateTime modified;
+};
+
+struct VfsCompareEntry {
+    QString name;
+    QString status;
+    VfsCompareSide left;
+    VfsCompareSide right;
+};
 
 namespace vfs_detail {
 
@@ -240,7 +258,7 @@ public:
         const QByteArray pathBytes = path.toUtf8();
         size_t length = 0;
         char* errorRaw = nullptr;
-        unsigned char* data = openbc_vfs_read(
+        unsigned char* data = openbc_engine_read_file(
             sessionId, reinterpret_cast<const unsigned char*>(pathBytes.constData()),
             static_cast<size_t>(pathBytes.size()), &length, &errorRaw);
         vfs_detail::FfiString err(errorRaw);
@@ -250,6 +268,141 @@ public:
         }
         if (out) *out = QByteArray(reinterpret_cast<const char*>(data), static_cast<int>(length));
         openbc_vfs_buffer_destroy(data, length);
+        return true;
+    }
+
+    bool remoteWriteFile(const RemoteProfile& profile, const QString& path,
+                         const QByteArray& bytes, QString* error) {
+        if (!ensureConnected(profile, error)) return false;
+        const int32_t sessionId = sessionIdFor(profile);
+        const QByteArray pathBytes = path.toUtf8();
+        vfs_detail::FfiString err(openbc_engine_write_file(
+            sessionId, reinterpret_cast<const unsigned char*>(pathBytes.constData()),
+            static_cast<size_t>(pathBytes.size()),
+            reinterpret_cast<const unsigned char*>(bytes.constData()),
+            static_cast<size_t>(bytes.size())));
+        if (!err.isNull()) {
+            if (error) *error = err.toQString();
+            return false;
+        }
+        return true;
+    }
+
+    bool remoteCreateDirectory(const RemoteProfile& profile, const QString& path, QString* error) {
+        if (!ensureConnected(profile, error)) return false;
+        const int32_t sessionId = sessionIdFor(profile);
+        const QByteArray pathBytes = path.toUtf8();
+        vfs_detail::FfiString err(openbc_engine_create_dir(
+            sessionId, reinterpret_cast<const unsigned char*>(pathBytes.constData()),
+            static_cast<size_t>(pathBytes.size())));
+        if (!err.isNull()) {
+            if (error) *error = err.toQString();
+            return false;
+        }
+        return true;
+    }
+
+    bool remoteRename(const RemoteProfile& profile, const QString& from, const QString& to,
+                      QString* error) {
+        if (!ensureConnected(profile, error)) return false;
+        const int32_t sessionId = sessionIdFor(profile);
+        const QByteArray fromBytes = from.toUtf8();
+        const QByteArray toBytes = to.toUtf8();
+        vfs_detail::FfiString err(openbc_engine_rename(
+            sessionId, reinterpret_cast<const unsigned char*>(fromBytes.constData()),
+            static_cast<size_t>(fromBytes.size()),
+            reinterpret_cast<const unsigned char*>(toBytes.constData()),
+            static_cast<size_t>(toBytes.size())));
+        if (!err.isNull()) {
+            if (error) *error = err.toQString();
+            return false;
+        }
+        return true;
+    }
+
+    bool remoteListDirectory(const RemoteProfile& profile, const QString& path,
+                             QList<RemoteEntry>* out, QString* error) {
+        if (!ensureConnected(profile, error)) return false;
+        const int32_t sessionId = sessionIdFor(profile);
+        const QByteArray pathBytes = path.toUtf8();
+        char* listingRaw = nullptr;
+        vfs_detail::FfiString ffiError(openbc_vfs_list(
+            sessionId, reinterpret_cast<const unsigned char*>(pathBytes.constData()),
+            static_cast<size_t>(pathBytes.size()), &listingRaw));
+        vfs_detail::FfiString listing(listingRaw);
+        if (!ffiError.isNull()) {
+            if (error) *error = ffiError.toQString();
+            return false;
+        }
+        const QJsonDocument document = QJsonDocument::fromJson(listing.toQString().toUtf8());
+        if (!document.isArray()) {
+            if (error) *error = QStringLiteral("The remote provider returned an invalid listing.");
+            return false;
+        }
+        QList<RemoteEntry> entries;
+        for (const QJsonValue& value : document.array()) {
+            const QJsonObject object = value.toObject();
+            entries.push_back({object.value("name").toString(), object.value("isDir").toBool()});
+        }
+        if (out) *out = std::move(entries);
+        return true;
+    }
+
+    bool compareFolderLevel(const QString& leftPath, const RemoteProfile& leftProfile,
+                            bool leftRemote, const QString& rightPath,
+                            const RemoteProfile& rightProfile, bool rightRemote,
+                            bool checkContent, bool ignoreTimestamps,
+                            QList<VfsCompareEntry>* out, QString* error) {
+        if ((leftRemote && !ensureConnected(leftProfile, error)) ||
+            (rightRemote && !ensureConnected(rightProfile, error)) ||
+            (!leftRemote && !ensureLocalConnected(error)) ||
+            (!rightRemote && !ensureLocalConnected(error))) {
+            return false;
+        }
+
+        const int32_t leftSession = leftRemote ? sessionIdFor(leftProfile) : localSessionId();
+        const int32_t rightSession = rightRemote ? sessionIdFor(rightProfile) : localSessionId();
+        const QByteArray leftBytes = (leftRemote ? remoteRelativePath(leftPath, leftProfile) : leftPath).toUtf8();
+        const QByteArray rightBytes = (rightRemote ? remoteRelativePath(rightPath, rightProfile) : rightPath).toUtf8();
+        char* resultRaw = nullptr;
+        vfs_detail::FfiString ffiError(openbc_engine_compare_folder_level(
+            leftSession, reinterpret_cast<const unsigned char*>(leftBytes.constData()),
+            static_cast<size_t>(leftBytes.size()), rightSession,
+            reinterpret_cast<const unsigned char*>(rightBytes.constData()),
+            static_cast<size_t>(rightBytes.size()), checkContent ? 1 : 0,
+            ignoreTimestamps ? 1 : 0, &resultRaw));
+        vfs_detail::FfiString result(resultRaw);
+        if (!ffiError.isNull()) {
+            if (error) *error = ffiError.toQString();
+            return false;
+        }
+
+        const QJsonDocument document = QJsonDocument::fromJson(result.toQString().toUtf8());
+        if (!document.isArray()) {
+            if (error) *error = QStringLiteral("The comparison engine returned an invalid listing.");
+            return false;
+        }
+        QList<VfsCompareEntry> entries;
+        for (const QJsonValue& value : document.array()) {
+            const QJsonObject object = value.toObject();
+            VfsCompareEntry entry;
+            entry.name = object.value("name").toString();
+            entry.status = object.value("status").toString();
+            auto readSide = [](const QJsonValue& value, VfsCompareSide* side) {
+                if (!value.isObject()) return;
+                const QJsonObject object = value.toObject();
+                side->exists = true;
+                side->isDir = object.value("isDir").toBool();
+                side->isLink = object.value("isLink").toBool();
+                side->size = object.value("size").toVariant().toLongLong();
+                const qint64 modifiedMs = object.value("mtimeMs").toVariant().toLongLong();
+                if (modifiedMs != 0) side->modified = QDateTime::fromMSecsSinceEpoch(modifiedMs);
+            };
+            readSide(object.value("left"), &entry.left);
+            readSide(object.value("right"), &entry.right);
+            entries.push_back(std::move(entry));
+        }
+        if (out) *out = std::move(entries);
         return true;
     }
 
@@ -265,8 +418,33 @@ private:
         return it == sessions_.end() ? -1 : it.value().id;
     }
 
+    bool ensureLocalConnected(QString* error) {
+        QMutexLocker lock(&mutex_);
+        if (localSessionId_ >= 0) return true;
+        QJsonObject profile;
+        profile["protocol"] = "local";
+        profile["mountPath"] = QDir::currentPath();
+        const QByteArray json = QJsonDocument(profile).toJson(QJsonDocument::Compact);
+        int32_t sessionId = -1;
+        vfs_detail::FfiString err(openbc_vfs_connect(
+            reinterpret_cast<const unsigned char*>(json.constData()),
+            static_cast<size_t>(json.size()), &sessionId));
+        if (!err.isNull()) {
+            if (error) *error = err.toQString();
+            return false;
+        }
+        localSessionId_ = sessionId;
+        return true;
+    }
+
+    int32_t localSessionId() {
+        QMutexLocker lock(&mutex_);
+        return localSessionId_;
+    }
+
     QMutex mutex_;
     QMap<QString, Session> sessions_;
+    int32_t localSessionId_ = -1;
 };
 
 // Shared instance every PathSelector construction site passes in, so a

@@ -43,6 +43,21 @@ pub trait AsyncVfs: Send + Sync {
         &self,
         path: &EntryPath,
     ) -> Result<Box<dyn AsyncRead + Unpin + Send>, VfsError>;
+
+    /// Replace a file's contents with the supplied bytes.
+    async fn write_file(&self, _path: &EntryPath, _bytes: &[u8]) -> Result<(), VfsError> {
+        Err(VfsError::Unsupported("write_file"))
+    }
+
+    /// Create one directory at the requested path.
+    async fn create_dir(&self, _path: &EntryPath) -> Result<(), VfsError> {
+        Err(VfsError::Unsupported("create_dir"))
+    }
+
+    /// Rename a file or directory within this provider.
+    async fn rename(&self, _from: &EntryPath, _to: &EntryPath) -> Result<(), VfsError> {
+        Err(VfsError::Unsupported("rename"))
+    }
 }
 
 /// Local filesystem implementation rooted at a configured directory.
@@ -86,11 +101,20 @@ impl AsyncVfs for LocalVfs {
             path: base.clone(),
             source,
         })? {
-            let metadata = entry.metadata().await.map_err(|source| VfsError::Io {
-                operation: "metadata",
-                path: entry.path(),
-                source,
-            })?;
+            let link_metadata = tokio::fs::symlink_metadata(entry.path())
+                .await
+                .map_err(|source| VfsError::Io {
+                    operation: "symlink_metadata",
+                    path: entry.path(),
+                    source,
+                })?;
+            let metadata = if link_metadata.file_type().is_symlink() {
+                tokio::fs::metadata(entry.path())
+                    .await
+                    .unwrap_or_else(|_| link_metadata.clone())
+            } else {
+                link_metadata.clone()
+            };
             let relative = entry
                 .path()
                 .strip_prefix(&self.root)
@@ -103,6 +127,7 @@ impl AsyncVfs for LocalVfs {
                     size: metadata.len(),
                     modified: metadata.modified().ok(),
                     is_dir: metadata.is_dir(),
+                    is_link: link_metadata.file_type().is_symlink(),
                 },
             });
         }
@@ -125,13 +150,21 @@ impl AsyncVfs for LocalVfs {
             .await
             .map_err(|source| VfsError::Io {
                 operation: "metadata",
-                path: resolved,
+                path: resolved.clone(),
+                source,
+            })?;
+        let link_metadata = tokio::fs::symlink_metadata(&resolved)
+            .await
+            .map_err(|source| VfsError::Io {
+                operation: "symlink_metadata",
+                path: resolved.clone(),
                 source,
             })?;
         Ok(EntryMetadata {
             size: metadata.len(),
             modified: metadata.modified().ok(),
             is_dir: metadata.is_dir(),
+            is_link: link_metadata.file_type().is_symlink(),
         })
     }
 
@@ -148,6 +181,40 @@ impl AsyncVfs for LocalVfs {
                 source,
             })?;
         Ok(Box::new(file))
+    }
+
+    async fn write_file(&self, path: &EntryPath, bytes: &[u8]) -> Result<(), VfsError> {
+        let resolved = self.resolve(path);
+        tokio::fs::write(&resolved, bytes)
+            .await
+            .map_err(|source| VfsError::Io {
+                operation: "write_file",
+                path: resolved,
+                source,
+            })
+    }
+
+    async fn create_dir(&self, path: &EntryPath) -> Result<(), VfsError> {
+        let resolved = self.resolve(path);
+        tokio::fs::create_dir(&resolved)
+            .await
+            .map_err(|source| VfsError::Io {
+                operation: "create_dir",
+                path: resolved,
+                source,
+            })
+    }
+
+    async fn rename(&self, from: &EntryPath, to: &EntryPath) -> Result<(), VfsError> {
+        let source = self.resolve(from);
+        let destination = self.resolve(to);
+        tokio::fs::rename(&source, &destination)
+            .await
+            .map_err(|source_error| VfsError::Io {
+                operation: "rename",
+                path: source,
+                source: source_error,
+            })
     }
 }
 
@@ -215,5 +282,38 @@ pub async fn build_vfs(profile: ConnectionProfile) -> Result<Box<dyn AsyncVfs>, 
         ConnectionProfile::Ftp(config) => Ok(Box::new(ftp::FtpVfs::connect(config).await?)),
         #[cfg(feature = "network")]
         ConnectionProfile::Network(config) => Ok(Box::new(network::NetworkVfs::open(config).await?)),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{AsyncVfs, EntryPath, LocalVfs};
+
+    #[tokio::test]
+    async fn local_listing_keeps_valid_and_dangling_links_without_following_them() {
+        let root = std::env::temp_dir().join(format!(
+            "openbc-vfs-links-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        tokio::fs::create_dir_all(root.join("target")).await.unwrap();
+        std::os::unix::fs::symlink(root.join("target"), root.join("directory-link")).unwrap();
+        std::os::unix::fs::symlink(root.join("missing"), root.join("dangling-link")).unwrap();
+
+        let entries = LocalVfs::new(&root)
+            .read_dir(&EntryPath("".into()))
+            .await
+            .unwrap();
+        let directory_link = entries.iter().find(|entry| entry.name == "directory-link").unwrap();
+        assert!(directory_link.metadata.is_dir);
+        assert!(directory_link.metadata.is_link);
+        let dangling_link = entries.iter().find(|entry| entry.name == "dangling-link").unwrap();
+        assert!(!dangling_link.metadata.is_dir);
+        assert!(dangling_link.metadata.is_link);
+
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }

@@ -422,6 +422,9 @@ extern "C" int openbc_run_gui() {
     plus->setAutoRaise(true);
     tabs->setCornerWidget(plus, Qt::TopRightCorner);
     QObject::connect(plus, &QToolButton::clicked, [&]() { addSession(QString(), QString(), false); });
+    QObject::connect(tabs->tabBar(), &QTabBar::tabBarDoubleClicked, [&](int index) {
+        if (index < 0) addSession(QString(), QString(), false);
+    });
 
     auto activeInstrumentationSessionId = [&]() {
         if (auto* session = currentSession()) return session->instrumentationSessionId();

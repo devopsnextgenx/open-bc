@@ -19,6 +19,8 @@ pub struct EntryMetadata {
     pub modified: Option<SystemTime>,
     /// Whether this entry is a directory.
     pub is_dir: bool,
+    /// Whether the entry itself is a symbolic link.
+    pub is_link: bool,
 }
 
 /// A lazily discovered directory child.
@@ -78,10 +80,20 @@ pub enum ComparisonStatus {
     Equal,
     /// The entries differ in size, timestamp, or content.
     Different,
+    /// The left file is newer than the right file.
+    LeftNewer,
+    /// The right file is newer than the left file.
+    RightNewer,
     /// An entry exists on only one side.
     Missing,
     /// The comparison could not read one side.
     Error(String),
+}
+
+/// Compare file contents after providers have read the bytes.
+#[must_use]
+pub fn compare_file_content(left: &[u8], right: &[u8]) -> bool {
+    left == right
 }
 
 /// A digest produced by a compute backend.
@@ -92,12 +104,15 @@ pub struct ContentDigest(pub Vec<u8>);
 ///
 /// ```
 /// use openbc_core::{compare_metadata, EntryMetadata};
-/// let left = EntryMetadata { size: 4, modified: None, is_dir: false };
+/// let left = EntryMetadata { size: 4, modified: None, is_dir: false, is_link: false };
 /// assert!(compare_metadata(&left, &left));
 /// ```
 #[must_use]
 pub fn compare_metadata(left: &EntryMetadata, right: &EntryMetadata) -> bool {
-    left.size == right.size && left.modified == right.modified && left.is_dir == right.is_dir
+    left.size == right.size
+        && left.modified == right.modified
+        && left.is_dir == right.is_dir
+        && left.is_link == right.is_link
 }
 
 /// Align two directory levels by name without recursively scanning children.

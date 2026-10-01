@@ -1639,11 +1639,33 @@ private:
         const QString& path = left ? leftPath_ : rightPath_;
         RemoteProfile remoteProfile;
         if (RemoteProfileStore::findProfileForPath(path, &remoteProfile)) {
-            // openbc-vfs's AsyncVfs trait (lib.rs) only exposes read_dir/
-            // stat/open_file - there is no write operation to route this
-            // through yet. Fail clearly here rather than let QFile::open
-            // fail on the URI string with a confusing "no such file" later.
-            status_->setText("Saving to a remote path isn't supported yet (openbc-vfs is read-only).");
+            const QString contents = (left ? leftOriginal_ : rightOriginal_).join('\n');
+            const QByteArray bytes = contents.toUtf8();
+            const QString relativePath = remoteRelativePath(path, remoteProfile);
+            const QPointer<TextCompareView> view(this);
+            status_->setText("Saving " + QFileInfo(relativePath).fileName() + "...");
+            QThreadPool::globalInstance()->start([view, left, path, remoteProfile, relativePath,
+                                                  contents, bytes]() {
+                QString error;
+                const bool saved = sharedVfsBridge().remoteWriteFile(
+                    remoteProfile, relativePath, bytes, &error);
+                QMetaObject::invokeMethod(qApp, [view, left, path, contents, saved, error]() {
+                    if (!view) return;
+                    if (!saved) {
+                        view->status_->setText("Could not save " + path +
+                                               (error.isEmpty() ? QString() : " (" + error + ")"));
+                        return;
+                    }
+                    QStringList& current = left ? view->leftOriginal_ : view->rightOriginal_;
+                    if (current.join('\n') == contents) {
+                        (left ? view->leftDirtyLines_ : view->rightDirtyLines_).clear();
+                        if (left) view->leftUnsaved_ = false; else view->rightUnsaved_ = false;
+                        view->refreshDirtyIndicators();
+                        view->refreshSideHeader(left);
+                    }
+                    view->status_->setText(QFileInfo(path).fileName() + " saved.");
+                }, Qt::QueuedConnection);
+            });
             return;
         }
         QFile file(path);

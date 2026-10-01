@@ -8,7 +8,7 @@
 //! (folder scans and whole-file reads) but would need a connection pool for
 //! heavy parallel throughput.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -157,6 +157,7 @@ impl AsyncVfs for SftpVfs {
                             .mtime
                             .map(|secs| UNIX_EPOCH + std::time::Duration::from_secs(secs)),
                         is_dir: stat.is_dir(),
+                        is_link: stat.file_type().is_symlink(),
                     },
                 });
             }
@@ -177,6 +178,7 @@ impl AsyncVfs for SftpVfs {
                 size: stat.size.unwrap_or(0),
                 modified: stat.mtime.map(|secs| UNIX_EPOCH + std::time::Duration::from_secs(secs)),
                 is_dir: stat.is_dir(),
+                is_link: stat.file_type().is_symlink(),
             })
         })
         .await
@@ -213,5 +215,49 @@ impl AsyncVfs for SftpVfs {
             let _ = writer.write_all(&bytes).await;
         });
         Ok(Box::new(reader))
+    }
+
+    async fn write_file(&self, path: &EntryPath, bytes: &[u8]) -> Result<(), VfsError> {
+        let session = self.session.clone();
+        let resolved = self.resolve(path);
+        let bytes = bytes.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let session = session.lock().expect("sftp session mutex poisoned");
+            let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &resolved, &err))?;
+            let mut file = sftp.create(&resolved).map_err(|err| ssh_err("write_file", &resolved, &err))?;
+            file.write_all(&bytes).map_err(|source| VfsError::Io {
+                operation: "write_file",
+                path: resolved,
+                source,
+            })
+        })
+        .await
+        .map_err(join_error)?
+    }
+
+    async fn create_dir(&self, path: &EntryPath) -> Result<(), VfsError> {
+        let session = self.session.clone();
+        let resolved = self.resolve(path);
+        tokio::task::spawn_blocking(move || {
+            let session = session.lock().expect("sftp session mutex poisoned");
+            let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &resolved, &err))?;
+            sftp.mkdir(&resolved, 0o755).map_err(|err| ssh_err("create_dir", &resolved, &err))
+        })
+        .await
+        .map_err(join_error)?
+    }
+
+    async fn rename(&self, from: &EntryPath, to: &EntryPath) -> Result<(), VfsError> {
+        let session = self.session.clone();
+        let source = self.resolve(from);
+        let destination = self.resolve(to);
+        tokio::task::spawn_blocking(move || {
+            let session = session.lock().expect("sftp session mutex poisoned");
+            let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &source, &err))?;
+            sftp.rename(&source, &destination, None)
+                .map_err(|err| ssh_err("rename", &source, &err))
+        })
+        .await
+        .map_err(join_error)?
     }
 }

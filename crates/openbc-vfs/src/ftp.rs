@@ -231,6 +231,7 @@ impl AsyncVfs for FtpVfs {
                     size: entry.size() as u64,
                     modified: Some(entry.modified()),
                     is_dir: entry.is_directory(),
+                    is_link: entry.is_symlink(),
                 },
             });
         }
@@ -264,6 +265,38 @@ impl AsyncVfs for FtpVfs {
             let _ = writer.write_all(&bytes).await;
         });
         Ok(Box::new(reader))
+    }
+
+    async fn write_file(&self, path: &EntryPath, bytes: &[u8]) -> Result<(), VfsError> {
+        let remote_path = self.resolve(path);
+        let mut guard = self.connection.lock().await;
+        let mut reader = tokio::io::BufReader::new(std::io::Cursor::new(bytes.to_vec()));
+        let result = match &mut *guard {
+            FtpConnection::Plain(stream) => stream.put_file(&remote_path, &mut reader).await,
+            FtpConnection::Tls(stream) => stream.put_file(&remote_path, &mut reader).await,
+        };
+        result.map(|_| ()).map_err(|err| ftp_err("write_file", &remote_path, err))
+    }
+
+    async fn create_dir(&self, path: &EntryPath) -> Result<(), VfsError> {
+        let remote_path = self.resolve(path);
+        let mut guard = self.connection.lock().await;
+        let result = match &mut *guard {
+            FtpConnection::Plain(stream) => stream.mkdir(&remote_path).await,
+            FtpConnection::Tls(stream) => stream.mkdir(&remote_path).await,
+        };
+        result.map_err(|err| ftp_err("create_dir", &remote_path, err))
+    }
+
+    async fn rename(&self, from: &EntryPath, to: &EntryPath) -> Result<(), VfsError> {
+        let source = self.resolve(from);
+        let destination = self.resolve(to);
+        let mut guard = self.connection.lock().await;
+        let result = match &mut *guard {
+            FtpConnection::Plain(stream) => stream.rename(&source, &destination).await,
+            FtpConnection::Tls(stream) => stream.rename(&source, &destination).await,
+        };
+        result.map_err(|err| ftp_err("rename", &source, err))
     }
 }
 

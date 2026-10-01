@@ -97,4 +97,16 @@ impl AsyncVfs for NetworkVfs {
     async fn open_file(&self, path: &EntryPath) -> Result<Box<dyn AsyncRead + Unpin + Send>, VfsError> {
         self.inner.open_file(path).await
     }
+
+    async fn write_file(&self, path: &EntryPath, bytes: &[u8]) -> Result<(), VfsError> {
+        self.inner.write_file(path, bytes).await
+    }
+
+    async fn create_dir(&self, path: &EntryPath) -> Result<(), VfsError> {
+        self.inner.create_dir(path).await
+    }
+
+    async fn rename(&self, from: &EntryPath, to: &EntryPath) -> Result<(), VfsError> {
+        self.inner.rename(from, to).await
+    }
 }

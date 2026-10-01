@@ -42,6 +42,22 @@ int32_t openbc_vfs_stat(int32_t session_id, const unsigned char* path, size_t pa
 unsigned char* openbc_vfs_read(int32_t session_id, const unsigned char* path, size_t path_length,
                                 size_t* out_length, char** error);
 
+// Replace file contents or create one directory through openbc-engine.
+char* openbc_engine_write_file(int32_t session_id, const unsigned char* path, size_t path_length,
+                               const unsigned char* bytes, size_t bytes_length);
+char* openbc_engine_create_dir(int32_t session_id, const unsigned char* path, size_t path_length);
+unsigned char* openbc_engine_read_file(int32_t session_id, const unsigned char* path,
+                                       size_t path_length, size_t* out_length, char** error);
+char* openbc_engine_rename(int32_t session_id, const unsigned char* from, size_t from_length,
+                           const unsigned char* to, size_t to_length);
+
+// Compare one directory level through openbc-engine/openbc-core. On success
+// writes an allocated JSON array to *result and returns nullptr.
+char* openbc_engine_compare_folder_level(
+    int32_t left_session_id, const unsigned char* left_path, size_t left_path_length,
+    int32_t right_session_id, const unsigned char* right_path, size_t right_path_length,
+    uint8_t check_content, uint8_t ignore_timestamps, char** result);
+
 // Free a string returned by any of the functions above.
 void openbc_vfs_string_destroy(char* value);
 
