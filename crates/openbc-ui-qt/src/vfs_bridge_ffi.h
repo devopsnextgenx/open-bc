@@ -50,13 +50,25 @@ unsigned char* openbc_engine_read_file(int32_t session_id, const unsigned char* 
                                        size_t path_length, size_t* out_length, char** error);
 char* openbc_engine_rename(int32_t session_id, const unsigned char* from, size_t from_length,
                            const unsigned char* to, size_t to_length);
+char* openbc_engine_copy_entry(int32_t source_session_id, const unsigned char* source_path,
+                               size_t source_path_length, int32_t destination_session_id,
+                               const unsigned char* destination_path, size_t destination_path_length);
+char* openbc_engine_mirror_entry(int32_t source_session_id, const unsigned char* source_path,
+                                 size_t source_path_length, int32_t destination_session_id,
+                                 const unsigned char* destination_path, size_t destination_path_length);
+char* openbc_engine_delete_entry(int32_t session_id, const unsigned char* path, size_t path_length);
 
 // Compare one directory level through openbc-engine/openbc-core. On success
 // writes an allocated JSON array to *result and returns nullptr.
 char* openbc_engine_compare_folder_level(
     int32_t left_session_id, const unsigned char* left_path, size_t left_path_length,
     int32_t right_session_id, const unsigned char* right_path, size_t right_path_length,
+    uint8_t left_present, uint8_t right_present,
     uint8_t check_content, uint8_t ignore_timestamps, char** result);
+char* openbc_engine_compare_files(
+    int32_t left_session_id, const unsigned char* left_path, size_t left_path_length,
+    int32_t right_session_id, const unsigned char* right_path, size_t right_path_length,
+    uint8_t* equal);
 
 // Free a string returned by any of the functions above.
 void openbc_vfs_string_destroy(char* value);

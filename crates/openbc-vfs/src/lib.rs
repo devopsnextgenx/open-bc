@@ -58,6 +58,16 @@ pub trait AsyncVfs: Send + Sync {
     async fn rename(&self, _from: &EntryPath, _to: &EntryPath) -> Result<(), VfsError> {
         Err(VfsError::Unsupported("rename"))
     }
+
+    /// Remove one file from this provider.
+    async fn remove_file(&self, _path: &EntryPath) -> Result<(), VfsError> {
+        Err(VfsError::Unsupported("remove_file"))
+    }
+
+    /// Remove one empty directory from this provider.
+    async fn remove_dir(&self, _path: &EntryPath) -> Result<(), VfsError> {
+        Err(VfsError::Unsupported("remove_dir"))
+    }
 }
 
 /// Local filesystem implementation rooted at a configured directory.
@@ -214,6 +224,28 @@ impl AsyncVfs for LocalVfs {
                 operation: "rename",
                 path: source,
                 source: source_error,
+            })
+    }
+
+    async fn remove_file(&self, path: &EntryPath) -> Result<(), VfsError> {
+        let resolved = self.resolve(path);
+        tokio::fs::remove_file(&resolved)
+            .await
+            .map_err(|source| VfsError::Io {
+                operation: "remove_file",
+                path: resolved,
+                source,
+            })
+    }
+
+    async fn remove_dir(&self, path: &EntryPath) -> Result<(), VfsError> {
+        let resolved = self.resolve(path);
+        tokio::fs::remove_dir(&resolved)
+            .await
+            .map_err(|source| VfsError::Io {
+                operation: "remove_dir",
+                path: resolved,
+                source,
             })
     }
 }

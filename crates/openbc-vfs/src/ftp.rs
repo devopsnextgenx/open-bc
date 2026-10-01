@@ -298,6 +298,26 @@ impl AsyncVfs for FtpVfs {
         };
         result.map_err(|err| ftp_err("rename", &source, err))
     }
+
+    async fn remove_file(&self, path: &EntryPath) -> Result<(), VfsError> {
+        let remote_path = self.resolve(path);
+        let mut guard = self.connection.lock().await;
+        let result = match &mut *guard {
+            FtpConnection::Plain(stream) => stream.rm(&remote_path).await,
+            FtpConnection::Tls(stream) => stream.rm(&remote_path).await,
+        };
+        result.map_err(|err| ftp_err("remove_file", &remote_path, err))
+    }
+
+    async fn remove_dir(&self, path: &EntryPath) -> Result<(), VfsError> {
+        let remote_path = self.resolve(path);
+        let mut guard = self.connection.lock().await;
+        let result = match &mut *guard {
+            FtpConnection::Plain(stream) => stream.rmdir(&remote_path).await,
+            FtpConnection::Tls(stream) => stream.rmdir(&remote_path).await,
+        };
+        result.map_err(|err| ftp_err("remove_dir", &remote_path, err))
+    }
 }
 
 fn join_remote(root: &str, relative: &str) -> String {

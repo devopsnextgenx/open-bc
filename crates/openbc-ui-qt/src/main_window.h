@@ -274,6 +274,9 @@ extern "C" int openbc_run_gui() {
                                      const QString& leftText, const QString& rightText) {
             addTextView(leftPath, rightPath, leftText, rightText, session);
         };
+        session->onNewFolderCompare = [&](const QString& leftPath, const QString& rightPath) {
+            addSession(leftPath, rightPath, true);
+        };
         tabs->setCurrentIndex(index);
         if (run) {
             session->refresh();

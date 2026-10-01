@@ -369,7 +369,8 @@ public:
             leftSession, reinterpret_cast<const unsigned char*>(leftBytes.constData()),
             static_cast<size_t>(leftBytes.size()), rightSession,
             reinterpret_cast<const unsigned char*>(rightBytes.constData()),
-            static_cast<size_t>(rightBytes.size()), checkContent ? 1 : 0,
+            static_cast<size_t>(rightBytes.size()), leftPath.isEmpty() ? 0 : 1,
+            rightPath.isEmpty() ? 0 : 1, checkContent ? 1 : 0,
             ignoreTimestamps ? 1 : 0, &resultRaw));
         vfs_detail::FfiString result(resultRaw);
         if (!ffiError.isNull()) {
@@ -403,6 +404,139 @@ public:
             entries.push_back(std::move(entry));
         }
         if (out) *out = std::move(entries);
+        return true;
+    }
+
+    bool compareFiles(const QString& leftPath, const RemoteProfile& leftProfile, bool leftRemote,
+                      const QString& rightPath, const RemoteProfile& rightProfile, bool rightRemote,
+                      bool* equal, QString* error) {
+        if ((leftRemote && !ensureConnected(leftProfile, error)) ||
+            (rightRemote && !ensureConnected(rightProfile, error)) ||
+            (!leftRemote && !ensureLocalConnected(error)) ||
+            (!rightRemote && !ensureLocalConnected(error))) {
+            return false;
+        }
+        const int32_t leftSession = leftRemote ? sessionIdFor(leftProfile) : localSessionId();
+        const int32_t rightSession = rightRemote ? sessionIdFor(rightProfile) : localSessionId();
+        const QByteArray leftBytes = (leftRemote ? remoteRelativePath(leftPath, leftProfile) : leftPath).toUtf8();
+        const QByteArray rightBytes = (rightRemote ? remoteRelativePath(rightPath, rightProfile) : rightPath).toUtf8();
+        uint8_t result = 0;
+        vfs_detail::FfiString ffiError(openbc_engine_compare_files(
+            leftSession, reinterpret_cast<const unsigned char*>(leftBytes.constData()),
+            static_cast<size_t>(leftBytes.size()), rightSession,
+            reinterpret_cast<const unsigned char*>(rightBytes.constData()),
+            static_cast<size_t>(rightBytes.size()), &result));
+        if (!ffiError.isNull()) {
+            if (error) *error = ffiError.toQString();
+            return false;
+        }
+        if (equal) *equal = result != 0;
+        return true;
+    }
+
+    bool copyEntry(const QString& sourcePath, const RemoteProfile& sourceProfile, bool sourceRemote,
+                   const QString& destinationPath, const RemoteProfile& destinationProfile,
+                   bool destinationRemote, QString* error, bool mirror = false) {
+        if ((sourceRemote && !ensureConnected(sourceProfile, error)) ||
+            (destinationRemote && !ensureConnected(destinationProfile, error)) ||
+            (!sourceRemote && !ensureLocalConnected(error)) ||
+            (!destinationRemote && !ensureLocalConnected(error))) {
+            return false;
+        }
+        const int32_t sourceSession = sourceRemote ? sessionIdFor(sourceProfile) : localSessionId();
+        const int32_t destinationSession = destinationRemote ? sessionIdFor(destinationProfile)
+                                                              : localSessionId();
+        const QByteArray sourceBytes =
+            (sourceRemote ? remoteRelativePath(sourcePath, sourceProfile) : sourcePath).toUtf8();
+        const QByteArray destinationBytes =
+            (destinationRemote ? remoteRelativePath(destinationPath, destinationProfile)
+                               : destinationPath).toUtf8();
+        auto operation = mirror ? openbc_engine_mirror_entry : openbc_engine_copy_entry;
+        vfs_detail::FfiString ffiError(operation(
+            sourceSession, reinterpret_cast<const unsigned char*>(sourceBytes.constData()),
+            static_cast<size_t>(sourceBytes.size()), destinationSession,
+            reinterpret_cast<const unsigned char*>(destinationBytes.constData()),
+            static_cast<size_t>(destinationBytes.size())));
+        if (!ffiError.isNull()) {
+            if (error) *error = ffiError.toQString();
+            return false;
+        }
+        return true;
+    }
+
+    bool deleteEntry(const QString& path, const RemoteProfile& profile, bool remote, QString* error) {
+        if ((remote && !ensureConnected(profile, error)) ||
+            (!remote && !ensureLocalConnected(error))) {
+            return false;
+        }
+        const int32_t sessionId = remote ? sessionIdFor(profile) : localSessionId();
+        const QByteArray pathBytes = (remote ? remoteRelativePath(path, profile) : path).toUtf8();
+        vfs_detail::FfiString ffiError(openbc_engine_delete_entry(
+            sessionId, reinterpret_cast<const unsigned char*>(pathBytes.constData()),
+            static_cast<size_t>(pathBytes.size())));
+        if (!ffiError.isNull()) {
+            if (error) *error = ffiError.toQString();
+            return false;
+        }
+        return true;
+    }
+
+    bool renameEntry(const QString& from, const QString& to, const RemoteProfile& profile,
+                     bool remote, QString* error) {
+        if ((remote && !ensureConnected(profile, error)) ||
+            (!remote && !ensureLocalConnected(error))) {
+            return false;
+        }
+        const int32_t sessionId = remote ? sessionIdFor(profile) : localSessionId();
+        const QByteArray fromBytes = (remote ? remoteRelativePath(from, profile) : from).toUtf8();
+        const QByteArray toBytes = (remote ? remoteRelativePath(to, profile) : to).toUtf8();
+        vfs_detail::FfiString ffiError(openbc_engine_rename(
+            sessionId, reinterpret_cast<const unsigned char*>(fromBytes.constData()),
+            static_cast<size_t>(fromBytes.size()),
+            reinterpret_cast<const unsigned char*>(toBytes.constData()),
+            static_cast<size_t>(toBytes.size())));
+        if (!ffiError.isNull()) {
+            if (error) *error = ffiError.toQString();
+            return false;
+        }
+        return true;
+    }
+
+    bool createDirectory(const QString& path, const RemoteProfile& profile, bool remote,
+                         QString* error) {
+        if ((remote && !ensureConnected(profile, error)) ||
+            (!remote && !ensureLocalConnected(error))) {
+            return false;
+        }
+        const int32_t sessionId = remote ? sessionIdFor(profile) : localSessionId();
+        const QByteArray pathBytes = (remote ? remoteRelativePath(path, profile) : path).toUtf8();
+        vfs_detail::FfiString ffiError(openbc_engine_create_dir(
+            sessionId, reinterpret_cast<const unsigned char*>(pathBytes.constData()),
+            static_cast<size_t>(pathBytes.size())));
+        if (!ffiError.isNull()) {
+            if (error) *error = ffiError.toQString();
+            return false;
+        }
+        return true;
+    }
+
+    bool writeFile(const QString& path, const RemoteProfile& profile, bool remote,
+                   const QByteArray& bytes, QString* error) {
+        if ((remote && !ensureConnected(profile, error)) ||
+            (!remote && !ensureLocalConnected(error))) {
+            return false;
+        }
+        const int32_t sessionId = remote ? sessionIdFor(profile) : localSessionId();
+        const QByteArray pathBytes = (remote ? remoteRelativePath(path, profile) : path).toUtf8();
+        vfs_detail::FfiString ffiError(openbc_engine_write_file(
+            sessionId, reinterpret_cast<const unsigned char*>(pathBytes.constData()),
+            static_cast<size_t>(pathBytes.size()),
+            reinterpret_cast<const unsigned char*>(bytes.constData()),
+            static_cast<size_t>(bytes.size())));
+        if (!ffiError.isNull()) {
+            if (error) *error = ffiError.toQString();
+            return false;
+        }
         return true;
     }
 

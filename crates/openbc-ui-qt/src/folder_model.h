@@ -32,7 +32,10 @@ namespace openbc::app {
 using openbc::ui::PairClass;
 using openbc::ui::RowStatus;
 using openbc::ui::kClassRole;
+using openbc::ui::kChildrenLoadedRole;
+using openbc::ui::kCompareRevisionRole;
 using openbc::ui::kIsDirRole;
+using openbc::ui::kFolderStatusMaskRole;
 using openbc::ui::kPathRole;
 using openbc::ui::kStatusRole;
 using openbc::ui::statusBit;
@@ -170,6 +173,7 @@ inline QTreeWidgetItem* addRow(QTreeWidget* tree, const SideInfo& side, RowStatu
     item->setData(0, kClassRole, static_cast<int>(pairClass));
     item->setData(0, kPathRole, side.exists ? side.path : QString());
     item->setData(0, kIsDirRole, side.exists && side.isDir);
+    item->setData(0, kFolderStatusMaskRole, side.isDir ? 0 : statusBit(status));
     if (!side.exists) {
         item->setFlags(item->flags() & ~Qt::ItemIsEditable);
     } else {

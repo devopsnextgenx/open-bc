@@ -260,4 +260,28 @@ impl AsyncVfs for SftpVfs {
         .await
         .map_err(join_error)?
     }
+
+    async fn remove_file(&self, path: &EntryPath) -> Result<(), VfsError> {
+        let session = self.session.clone();
+        let resolved = self.resolve(path);
+        tokio::task::spawn_blocking(move || {
+            let session = session.lock().expect("sftp session mutex poisoned");
+            let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &resolved, &err))?;
+            sftp.unlink(&resolved).map_err(|err| ssh_err("remove_file", &resolved, &err))
+        })
+        .await
+        .map_err(join_error)?
+    }
+
+    async fn remove_dir(&self, path: &EntryPath) -> Result<(), VfsError> {
+        let session = self.session.clone();
+        let resolved = self.resolve(path);
+        tokio::task::spawn_blocking(move || {
+            let session = session.lock().expect("sftp session mutex poisoned");
+            let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &resolved, &err))?;
+            sftp.rmdir(&resolved).map_err(|err| ssh_err("remove_dir", &resolved, &err))
+        })
+        .await
+        .map_err(join_error)?
+    }
 }

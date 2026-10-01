@@ -4,11 +4,11 @@ pub mod text_runner;
 
 use openbc_compute::ComputeDispatcher;
 use openbc_core::{
-    compare_directory_entries, compare_file_content, ComparisonStatus, DirectoryEntry, EntryPath,
-    FolderComparison,
+    compare_directory_entries, ComparisonStatus, DirectoryEntry, EntryPath, FolderComparison,
+    FolderMetadata,
 };
 use openbc_vfs::{read_folder_level, read_small_file, AsyncVfs, VfsError};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
@@ -63,16 +63,44 @@ pub async fn compare_folder_level_with_options(
     check_content: bool,
     ignore_timestamps: bool,
 ) -> Result<FolderComparison, ScanError> {
+    compare_folder_sides_with_options(
+        left_vfs,
+        Some(left_path),
+        right_vfs,
+        Some(right_path),
+        check_content,
+        ignore_timestamps,
+    )
+    .await
+}
+
+/// Compare one directory level when either folder side is absent.
+pub async fn compare_folder_sides_with_options(
+    left_vfs: Arc<dyn AsyncVfs>,
+    left_path: Option<EntryPath>,
+    right_vfs: Arc<dyn AsyncVfs>,
+    right_path: Option<EntryPath>,
+    check_content: bool,
+    ignore_timestamps: bool,
+) -> Result<FolderComparison, ScanError> {
     let started = std::time::Instant::now();
-    let (left_metadata, left_entries) = read_folder_level(left_vfs.as_ref(), &left_path).await?;
-    let (right_metadata, right_entries) =
-        read_folder_level(right_vfs.as_ref(), &right_path).await?;
+    let (left_metadata, left_entries) = match &left_path {
+        Some(path) => read_folder_level(left_vfs.as_ref(), path).await?,
+        None => (empty_folder_metadata(), Vec::new()),
+    };
+    let (right_metadata, right_entries) = match &right_path {
+        Some(path) => read_folder_level(right_vfs.as_ref(), path).await?,
+        None => (empty_folder_metadata(), Vec::new()),
+    };
     let mut entries = compare_directory_entries(&left_entries, &right_entries);
     for entry in &mut entries {
         let (Some(left), Some(right)) = (&entry.left, &entry.right) else {
             continue;
         };
-        if left.metadata.is_dir || right.metadata.is_dir || left.metadata.is_dir != right.metadata.is_dir {
+        if left.metadata.is_dir
+            || right.metadata.is_dir
+            || left.metadata.is_dir != right.metadata.is_dir
+        {
             continue;
         }
         if left.metadata.size != right.metadata.size {
@@ -90,22 +118,17 @@ pub async fn compare_folder_level_with_options(
             _ => false,
         };
         if check_content {
-            match (
-                read_small_file(left_vfs.as_ref(), &left.path).await,
-                read_small_file(right_vfs.as_ref(), &right.path).await,
-            ) {
-                (Ok(left_bytes), Ok(right_bytes)) => {
-                    if compare_file_content(&left_bytes, &right_bytes) {
-                        entry.status = ComparisonStatus::Equal;
-                    } else if !timestamps_match {
-                        entry.status = newer_status(left.metadata.modified, right.metadata.modified);
-                    } else {
-                        entry.status = ComparisonStatus::Different;
-                    }
-                }
-                (Err(error), _) | (_, Err(error)) => {
-                    entry.status = ComparisonStatus::Error(error.to_string());
-                }
+            match compare_file_content_by_hash(
+                left_vfs.as_ref(),
+                &left.path,
+                right_vfs.as_ref(),
+                &right.path,
+            )
+            .await
+            {
+                Ok(true) => entry.status = ComparisonStatus::Equal,
+                Ok(false) => entry.status = ComparisonStatus::Different,
+                Err(error) => entry.status = ComparisonStatus::Error(error.to_string()),
             }
         } else if ignore_timestamps || timestamps_match {
             entry.status = ComparisonStatus::Equal;
@@ -124,6 +147,14 @@ pub async fn compare_folder_level_with_options(
         "INFO",
         "folder comparison complete",
     );
+    let depth = left_path
+        .as_ref()
+        .map_or(0, |path| path.0.components().count())
+        .max(
+            right_path
+                .as_ref()
+                .map_or(0, |path| path.0.components().count()),
+        );
     openbc_observability::record(
         "openbc-engine",
         "folder_compare",
@@ -131,16 +162,20 @@ pub async fn compare_folder_level_with_options(
         None,
         None,
         Some(comparison.left.size + comparison.right.size),
-        Some(
-            left_path
-                .0
-                .components()
-                .count()
-                .max(right_path.0.components().count()),
-        ),
+        Some(depth),
         Some("Tokio orchestration".to_owned()),
     );
     Ok(comparison)
+}
+
+fn empty_folder_metadata() -> FolderMetadata {
+    FolderMetadata {
+        path: EntryPath(Default::default()),
+        item_count: 0,
+        size: 0,
+        modified: None,
+        readable: true,
+    }
 }
 
 fn newer_status(
@@ -148,7 +183,9 @@ fn newer_status(
     right: Option<std::time::SystemTime>,
 ) -> ComparisonStatus {
     match (left, right) {
-        (Some(left_time), Some(right_time)) if left_time > right_time => ComparisonStatus::LeftNewer,
+        (Some(left_time), Some(right_time)) if left_time > right_time => {
+            ComparisonStatus::LeftNewer
+        }
         (Some(_), Some(_)) => ComparisonStatus::RightNewer,
         _ => ComparisonStatus::Different,
     }
@@ -183,38 +220,74 @@ pub async fn scan_level(
         .await
         .map_err(|_| ScanError::ReceiverClosed)?;
 
+    let mut hash_tasks = tokio::task::JoinSet::new();
     for entry in entries {
         if entry.metadata.is_dir || entry.metadata.size == 0 {
             continue;
         }
+        while hash_tasks.len() >= 2 {
+            if let Some(result) = hash_tasks.join_next().await {
+                publish_hash_result(result, &events).await?;
+            }
+        }
         let vfs = Arc::clone(&vfs);
         let compute = Arc::clone(&compute);
-        let events = events.clone();
-        tokio::spawn(async move {
-            match hash_entry(vfs, compute, entry.clone()).await {
-                Ok(digest) => {
-                    let _ = events
-                        .send(ScanEvent::ContentHash {
-                            path: entry.path,
-                            digest,
-                        })
-                        .await;
-                }
-                Err(error) => {
-                    let _ = events
-                        .send(ScanEvent::EntryError {
-                            path: entry.path,
-                            message: error.to_string(),
-                        })
-                        .await;
-                }
-            }
+        hash_tasks.spawn(async move {
+            let path = entry.path.clone();
+            (path, hash_entry(vfs, compute, entry).await)
         });
+    }
+    while let Some(result) = hash_tasks.join_next().await {
+        publish_hash_result(result, &events).await?;
     }
     events
         .send(ScanEvent::LevelComplete { path })
         .await
         .map_err(|_| ScanError::ReceiverClosed)
+}
+
+async fn publish_hash_result(
+    result: Result<(EntryPath, Result<Vec<u8>, ScanError>), tokio::task::JoinError>,
+    events: &mpsc::Sender<ScanEvent>,
+) -> Result<(), ScanError> {
+    let (path, result) = result?;
+    let event = match result {
+        Ok(digest) => ScanEvent::ContentHash { path, digest },
+        Err(error) => ScanEvent::EntryError {
+            path,
+            message: error.to_string(),
+        },
+    };
+    events
+        .send(event)
+        .await
+        .map_err(|_| ScanError::ReceiverClosed)
+}
+
+/// Compare two files by SHA-256 digest without exposing their contents to callers.
+pub async fn compare_file_content_by_hash(
+    left_vfs: &dyn AsyncVfs,
+    left_path: &EntryPath,
+    right_vfs: &dyn AsyncVfs,
+    right_path: &EntryPath,
+) -> Result<bool, ScanError> {
+    let (left_bytes, right_bytes) = tokio::try_join!(
+        read_small_file(left_vfs, left_path),
+        read_small_file(right_vfs, right_path),
+    )?;
+    let result = tokio::task::spawn_blocking(move || {
+        let compute = compute_dispatcher();
+        compute.hash_bytes(&left_bytes).digest == compute.hash_bytes(&right_bytes).digest
+    })
+    .await?;
+    Ok(result)
+}
+
+fn compute_dispatcher() -> &'static ComputeDispatcher {
+    static COMPUTE: OnceLock<ComputeDispatcher> = OnceLock::new();
+    COMPUTE.get_or_init(|| {
+        ComputeDispatcher::new(2).expect("the shared CPU hash pool should initialize")
+    })
 }
 
 /// Replace file contents through the selected VFS provider.
@@ -243,6 +316,103 @@ pub async fn rename_entry(
     to: &EntryPath,
 ) -> Result<(), VfsError> {
     vfs.rename(from, to).await
+}
+
+/// Copy one file or directory tree between VFS providers without UI-side filesystem access.
+pub async fn copy_entry(
+    source_vfs: &dyn AsyncVfs,
+    source_path: &EntryPath,
+    destination_vfs: &dyn AsyncVfs,
+    destination_path: &EntryPath,
+) -> Result<(), VfsError> {
+    let mut pending = vec![(source_path.clone(), destination_path.clone())];
+    while let Some((source, destination)) = pending.pop() {
+        let metadata = source_vfs.stat(&source).await?;
+        if metadata.is_link {
+            return Err(VfsError::Unsupported("copy_symlink"));
+        }
+        if metadata.is_dir {
+            match destination_vfs.stat(&destination).await {
+                Ok(existing) if existing.is_dir => {}
+                Ok(_) => {
+                    return Err(VfsError::Io {
+                        operation: "copy_entry",
+                        path: destination.0,
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::AlreadyExists,
+                            "destination exists and is not a directory",
+                        ),
+                    });
+                }
+                Err(_) => destination_vfs.create_dir(&destination).await?,
+            }
+            for entry in source_vfs.read_dir(&source).await? {
+                pending.push((entry.path, EntryPath(destination.0.join(entry.name))));
+            }
+        } else {
+            let bytes = read_small_file(source_vfs, &source).await?;
+            destination_vfs.write_file(&destination, &bytes).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Make one destination entry match a source entry, removing destination-only descendants.
+pub async fn mirror_entry(
+    source_vfs: &dyn AsyncVfs,
+    source_path: &EntryPath,
+    destination_vfs: &dyn AsyncVfs,
+    destination_path: &EntryPath,
+) -> Result<(), VfsError> {
+    copy_entry(source_vfs, source_path, destination_vfs, destination_path).await?;
+    let source_metadata = source_vfs.stat(source_path).await?;
+    if !source_metadata.is_dir || source_metadata.is_link {
+        return Ok(());
+    }
+    let mut folders = vec![(source_path.clone(), destination_path.clone())];
+    while let Some((source, destination)) = folders.pop() {
+        let source_entries = source_vfs.read_dir(&source).await?;
+        let destination_entries = destination_vfs.read_dir(&destination).await?;
+        let source_names: std::collections::HashSet<_> = source_entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        for entry in destination_entries {
+            if !source_names.contains(entry.name.as_str()) {
+                delete_entry(destination_vfs, &entry.path).await?;
+            }
+        }
+        for entry in source_entries {
+            if entry.metadata.is_dir && !entry.metadata.is_link {
+                folders.push((
+                    entry.path.clone(),
+                    EntryPath(destination.0.join(entry.name)),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Delete a file or directory tree through its provider, without following symlinks.
+pub async fn delete_entry(vfs: &dyn AsyncVfs, path: &EntryPath) -> Result<(), VfsError> {
+    let mut pending = vec![(path.clone(), false)];
+    while let Some((current, visited)) = pending.pop() {
+        let metadata = vfs.stat(&current).await?;
+        if metadata.is_dir && !metadata.is_link {
+            if visited {
+                vfs.remove_dir(&current).await?;
+            } else {
+                pending.push((current.clone(), true));
+                for entry in vfs.read_dir(&current).await? {
+                    pending.push((entry.path, false));
+                }
+            }
+        } else {
+            vfs.remove_file(&current).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn hash_entry(
@@ -278,7 +448,10 @@ async fn hash_entry(
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_folder_level_with_options, create_directory, read_file, rename_entry, write_file};
+    use super::{
+        compare_folder_level_with_options, copy_entry, create_directory, delete_entry,
+        mirror_entry, read_file, rename_entry, write_file,
+    };
     use openbc_core::{ComparisonStatus, EntryPath};
     use openbc_vfs::{AsyncVfs, LocalVfs};
     use std::sync::Arc;
@@ -305,21 +478,75 @@ mod tests {
         write_file(left.as_ref(), &file, b"same").await.unwrap();
         write_file(right.as_ref(), &file, b"same").await.unwrap();
         let equal = compare_folder_level_with_options(
-            Arc::clone(&left), EntryPath("".into()), Arc::clone(&right),
-            EntryPath("".into()), true, false,
-        ).await.unwrap();
+            Arc::clone(&left),
+            EntryPath("".into()),
+            Arc::clone(&right),
+            EntryPath("".into()),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(equal.entries[0].status, ComparisonStatus::Equal);
 
-        write_file(right.as_ref(), &file, b"changed").await.unwrap();
+        write_file(right.as_ref(), &file, b"diff").await.unwrap();
         let different = compare_folder_level_with_options(
-            Arc::clone(&left), EntryPath("".into()), Arc::clone(&right),
-            EntryPath("".into()), true, false,
-        ).await.unwrap();
+            Arc::clone(&left),
+            EntryPath("".into()),
+            Arc::clone(&right),
+            EntryPath("".into()),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(different.entries[0].status, ComparisonStatus::Different);
         assert_eq!(read_file(left.as_ref(), &file).await.unwrap(), b"same");
 
         let directory = EntryPath("created".into());
         create_directory(left.as_ref(), &directory).await.unwrap();
+        let nested_file = EntryPath("created/nested.txt".into());
+        write_file(left.as_ref(), &nested_file, b"nested")
+            .await
+            .unwrap();
+        let copied_directory = EntryPath("copied".into());
+        copy_entry(left.as_ref(), &directory, right.as_ref(), &copied_directory)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_file(right.as_ref(), &EntryPath("copied/nested.txt".into()))
+                .await
+                .unwrap(),
+            b"nested"
+        );
+        let mirror_directory = EntryPath("mirror".into());
+        create_directory(right.as_ref(), &mirror_directory)
+            .await
+            .unwrap();
+        write_file(
+            right.as_ref(),
+            &EntryPath("mirror/extra.txt".into()),
+            b"extra",
+        )
+        .await
+        .unwrap();
+        mirror_entry(left.as_ref(), &directory, right.as_ref(), &mirror_directory)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_file(right.as_ref(), &EntryPath("mirror/nested.txt".into()))
+                .await
+                .unwrap(),
+            b"nested"
+        );
+        assert!(right
+            .stat(&EntryPath("mirror/extra.txt".into()))
+            .await
+            .is_err());
+        delete_entry(right.as_ref(), &copied_directory)
+            .await
+            .unwrap();
+        assert!(right.stat(&copied_directory).await.is_err());
         let renamed = EntryPath("renamed.txt".into());
         rename_entry(left.as_ref(), &file, &renamed).await.unwrap();
         assert_eq!(read_file(left.as_ref(), &renamed).await.unwrap(), b"same");

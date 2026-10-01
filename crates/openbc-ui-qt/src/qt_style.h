@@ -17,6 +17,7 @@
 #include <QKeyEvent>
 #include <QList>
 #include <QModelIndex>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPalette>
@@ -60,6 +61,9 @@ constexpr int kPathRole = Qt::UserRole;
 constexpr int kStatusRole = Qt::UserRole + 1;
 constexpr int kClassRole = Qt::UserRole + 2;
 constexpr int kIsDirRole = Qt::UserRole + 3;
+constexpr int kChildrenLoadedRole = Qt::UserRole + 4;
+constexpr int kCompareRevisionRole = Qt::UserRole + 5;
+constexpr int kFolderStatusMaskRole = Qt::UserRole + 6;
 
 inline constexpr quint32 statusBit(RowStatus status) {
     return 1u << static_cast<int>(status);
@@ -1127,7 +1131,7 @@ public:
         setAlternatingRowColors(false);  // banding is painted by the delegate
         setAllColumnsShowFocus(true);
         setSelectionBehavior(QAbstractItemView::SelectRows);
-        setSelectionMode(QAbstractItemView::SingleSelection);
+        setSelectionMode(QAbstractItemView::ExtendedSelection);
         setVerticalScrollMode(QAbstractItemView::ScrollPerItem);
         setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
         setEditTriggers(QAbstractItemView::EditKeyPressed);
@@ -1151,6 +1155,19 @@ public:
     }
 
 protected:
+    void mousePressEvent(QMouseEvent* event) override {
+        if (event->button() == Qt::LeftButton &&
+            event->modifiers().testFlag(Qt::ControlModifier)) {
+            if (auto* item = itemAt(event->pos())) {
+                setCurrentItem(item);
+                item->setSelected(!item->isSelected());
+                event->accept();
+                return;
+            }
+        }
+        QTreeWidget::mousePressEvent(event);
+    }
+
     void keyPressEvent(QKeyEvent* event) override {
         if (event->key() == Qt::Key_F2) {
             if (auto* item = currentItem()) {

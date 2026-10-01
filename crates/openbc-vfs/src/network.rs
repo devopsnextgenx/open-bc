@@ -109,4 +109,12 @@ impl AsyncVfs for NetworkVfs {
     async fn rename(&self, from: &EntryPath, to: &EntryPath) -> Result<(), VfsError> {
         self.inner.rename(from, to).await
     }
+
+    async fn remove_file(&self, path: &EntryPath) -> Result<(), VfsError> {
+        self.inner.remove_file(path).await
+    }
+
+    async fn remove_dir(&self, path: &EntryPath) -> Result<(), VfsError> {
+        self.inner.remove_dir(path).await
+    }
 }

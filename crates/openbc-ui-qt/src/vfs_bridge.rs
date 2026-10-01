@@ -175,9 +175,7 @@ fn connection_from_json(profile: VfsProfileJson) -> Result<(ConnectionProfile, b
             } else if !profile.host.is_empty() && !profile.share_name.is_empty() {
                 PathBuf::from(format!("//{}/{}", profile.host, profile.share_name))
             } else {
-                return Err(
-                    "network drive needs a mount path, or a host and share name".into(),
-                );
+                return Err("network drive needs a mount path, or a host and share name".into());
             };
             Ok((
                 ConnectionProfile::Network(NetworkShareConfig {
@@ -207,9 +205,7 @@ fn insert_session(session: VfsSession) -> i32 {
 fn listing_path(raw: &str, network_rooted: bool) -> EntryPath {
     let trimmed = raw.trim();
     if network_rooted {
-        let relative = trimmed
-            .trim_start_matches(['/', '\\'])
-            .replace('\\', "/");
+        let relative = trimmed.trim_start_matches(['/', '\\']).replace('\\', "/");
         if relative.is_empty() || relative == "." {
             return EntryPath(PathBuf::new());
         }
@@ -514,6 +510,100 @@ pub extern "C" fn openbc_engine_rename(
     }
 }
 
+/// Copy a file or folder through openbc-engine between two VFS sessions.
+#[no_mangle]
+pub extern "C" fn openbc_engine_copy_entry(
+    source_session_id: i32,
+    source_path: *const u8,
+    source_path_length: usize,
+    destination_session_id: i32,
+    destination_path: *const u8,
+    destination_path_length: usize,
+) -> *mut c_char {
+    let source_path = unsafe { crate::input_text(source_path, source_path_length) };
+    let destination_path = unsafe { crate::input_text(destination_path, destination_path_length) };
+    match copy_inner(
+        source_session_id,
+        &source_path,
+        destination_session_id,
+        &destination_path,
+    ) {
+        Ok(()) => ok_string(),
+        Err(message) => error_string(message),
+    }
+}
+
+/// Mirror one source entry to a destination, removing destination-only descendants.
+#[no_mangle]
+pub extern "C" fn openbc_engine_mirror_entry(
+    source_session_id: i32,
+    source_path: *const u8,
+    source_path_length: usize,
+    destination_session_id: i32,
+    destination_path: *const u8,
+    destination_path_length: usize,
+) -> *mut c_char {
+    let source_path = unsafe { crate::input_text(source_path, source_path_length) };
+    let destination_path = unsafe { crate::input_text(destination_path, destination_path_length) };
+    let (source_vfs, source_network_rooted) = match session_handle(source_session_id) {
+        Ok(session) => session,
+        Err(message) => return error_string(message),
+    };
+    let (destination_vfs, destination_network_rooted) = match session_handle(destination_session_id)
+    {
+        Ok(session) => session,
+        Err(message) => return error_string(message),
+    };
+    match runtime().block_on(openbc_engine::mirror_entry(
+        source_vfs.as_ref(),
+        &listing_path(&source_path, source_network_rooted),
+        destination_vfs.as_ref(),
+        &listing_path(&destination_path, destination_network_rooted),
+    )) {
+        Ok(()) => ok_string(),
+        Err(error) => error_string(vfs_error_message(error)),
+    }
+}
+
+fn copy_inner(
+    source_session_id: i32,
+    source_path: &str,
+    destination_session_id: i32,
+    destination_path: &str,
+) -> Result<(), String> {
+    let (source_vfs, source_network_rooted) = session_handle(source_session_id)?;
+    let (destination_vfs, destination_network_rooted) = session_handle(destination_session_id)?;
+    runtime()
+        .block_on(openbc_engine::copy_entry(
+            source_vfs.as_ref(),
+            &listing_path(source_path, source_network_rooted),
+            destination_vfs.as_ref(),
+            &listing_path(destination_path, destination_network_rooted),
+        ))
+        .map_err(vfs_error_message)
+}
+
+/// Delete a file or directory tree through openbc-engine and its VFS provider.
+#[no_mangle]
+pub extern "C" fn openbc_engine_delete_entry(
+    session_id: i32,
+    path: *const u8,
+    path_length: usize,
+) -> *mut c_char {
+    let path = unsafe { crate::input_text(path, path_length) };
+    let (vfs, network_rooted) = match session_handle(session_id) {
+        Ok(session) => session,
+        Err(message) => return error_string(message),
+    };
+    match runtime().block_on(openbc_engine::delete_entry(
+        vfs.as_ref(),
+        &listing_path(&path, network_rooted),
+    )) {
+        Ok(()) => ok_string(),
+        Err(error) => error_string(vfs_error_message(error)),
+    }
+}
+
 /// Compare one directory level through openbc-engine and openbc-core.
 #[no_mangle]
 pub extern "C" fn openbc_engine_compare_folder_level(
@@ -523,6 +613,8 @@ pub extern "C" fn openbc_engine_compare_folder_level(
     right_session_id: i32,
     right_path: *const u8,
     right_path_length: usize,
+    left_present: u8,
+    right_present: u8,
     check_content: u8,
     ignore_timestamps: u8,
     result: *mut *mut c_char,
@@ -534,6 +626,8 @@ pub extern "C" fn openbc_engine_compare_folder_level(
         &left_path,
         right_session_id,
         &right_path,
+        left_present != 0,
+        right_present != 0,
         check_content != 0,
         ignore_timestamps != 0,
     ) {
@@ -547,22 +641,66 @@ pub extern "C" fn openbc_engine_compare_folder_level(
     }
 }
 
+/// Compare two current file contents through openbc-engine and openbc-compute.
+#[no_mangle]
+pub extern "C" fn openbc_engine_compare_files(
+    left_session_id: i32,
+    left_path: *const u8,
+    left_path_length: usize,
+    right_session_id: i32,
+    right_path: *const u8,
+    right_path_length: usize,
+    equal: *mut u8,
+) -> *mut c_char {
+    let left_path = unsafe { crate::input_text(left_path, left_path_length) };
+    let right_path = unsafe { crate::input_text(right_path, right_path_length) };
+    match compare_files_inner(left_session_id, &left_path, right_session_id, &right_path) {
+        Ok(is_equal) => {
+            if !equal.is_null() {
+                unsafe { *equal = u8::from(is_equal) };
+            }
+            ok_string()
+        }
+        Err(message) => error_string(message),
+    }
+}
+
+fn compare_files_inner(
+    left_session_id: i32,
+    left_path: &str,
+    right_session_id: i32,
+    right_path: &str,
+) -> Result<bool, String> {
+    let (left_vfs, left_network_rooted) = session_handle(left_session_id)?;
+    let (right_vfs, right_network_rooted) = session_handle(right_session_id)?;
+    runtime()
+        .block_on(openbc_engine::compare_file_content_by_hash(
+            left_vfs.as_ref(),
+            &listing_path(left_path, left_network_rooted),
+            right_vfs.as_ref(),
+            &listing_path(right_path, right_network_rooted),
+        ))
+        .map_err(|error| error.to_string())
+}
+
 fn compare_folder_inner(
     left_session_id: i32,
     left_path: &str,
     right_session_id: i32,
     right_path: &str,
+    left_present: bool,
+    right_present: bool,
     check_content: bool,
     ignore_timestamps: bool,
 ) -> Result<String, String> {
-    let (left_vfs, _) = session_handle(left_session_id)?;
-    let (right_vfs, _) = session_handle(right_session_id)?;
+    let (left_vfs, left_network_rooted) = session_handle(left_session_id)?;
+    let (right_vfs, right_network_rooted) = session_handle(right_session_id)?;
     let comparison = runtime()
-        .block_on(openbc_engine::compare_folder_level_with_options(
+        .block_on(openbc_engine::compare_folder_sides_with_options(
             left_vfs,
-            listing_path(left_path, false),
+            left_present.then(|| listing_path(left_path, left_network_rooted)),
             right_vfs,
-            listing_path(right_path, false),
+            right_present.then(|| listing_path(right_path, right_network_rooted)),
             check_content,
             ignore_timestamps,
         ))
@@ -630,8 +768,8 @@ pub unsafe extern "C" fn openbc_vfs_buffer_destroy(value: *mut u8, length: usize
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_folder_inner, connect_inner, listing_path, parse_profile, runtime,
-        openbc_vfs_disconnect,
+        compare_folder_inner, connect_inner, listing_path, openbc_vfs_disconnect, parse_profile,
+        runtime,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -696,11 +834,30 @@ mod tests {
             session,
             &right.to_string_lossy(),
             true,
+            true,
+            true,
             false,
         )
         .unwrap();
         let rows: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(rows[0]["status"], "equal");
+
+        assert!(super::compare_files_inner(session, &left_file, session, &right_file).unwrap());
+        fs::write(&right_file, b"diff").unwrap();
+        assert!(!super::compare_files_inner(session, &left_file, session, &right_file).unwrap());
+        let one_sided = compare_folder_inner(
+            session,
+            &left.to_string_lossy(),
+            session,
+            "",
+            true,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        let orphan_rows: serde_json::Value = serde_json::from_str(&one_sided).unwrap();
+        assert_eq!(orphan_rows[0]["status"], "missing");
 
         let created = left.join("created").to_string_lossy().into_owned();
         let (vfs, network_rooted) = super::session_handle(session).unwrap();
@@ -710,7 +867,10 @@ mod tests {
                 &listing_path(&created, network_rooted),
             ))
             .unwrap();
-        assert_eq!(super::read_inner_engine(session, &left_file).unwrap(), b"same");
+        assert_eq!(
+            super::read_inner_engine(session, &left_file).unwrap(),
+            b"same"
+        );
         openbc_vfs_disconnect(session);
         fs::remove_dir_all(root).unwrap();
     }

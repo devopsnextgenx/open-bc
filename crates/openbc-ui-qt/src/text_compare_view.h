@@ -13,6 +13,8 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QContextMenuEvent>
+#include <QDesktopServices>
+#include <QFileDialog>
 #include <QDateTime>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -29,6 +31,7 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPointer>
+#include <QProcess>
 #include <QUuid>
 #include <QSet>
 #include <QThreadPool>
@@ -1031,7 +1034,19 @@ private:
                 pushSideHistory(sideIsLeft);
             }
         } else if (chosen == openDefault || chosen == openChoose) {
-            status_->setText("Open With: " + (isLeft ? leftPath_ : rightPath_));
+            const QString path = isLeft ? leftPath_ : rightPath_;
+            RemoteProfile profile;
+            if (RemoteProfileStore::findProfileForPath(path, &profile)) {
+                QMessageBox::information(this, "Open With",
+                                         "Remote files must be downloaded before opening in a local application.");
+                return;
+            }
+            if (chosen == openDefault) {
+                QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+            } else {
+                const QString program = QFileDialog::getOpenFileName(this, "Choose application");
+                if (!program.isEmpty()) QProcess::startDetached(program, {path});
+            }
         }
     }
 
