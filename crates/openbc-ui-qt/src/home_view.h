@@ -20,6 +20,7 @@
 #include "session_history.h"
 #include "qt_style.h"
 #include "remote_connections_dialog.h"
+#include "remote_vfs_bridge.h"
 
 namespace openbc::app {
 
@@ -158,7 +159,7 @@ public:
         remoteRow->addStretch();
         detailsLayout->addLayout(remoteRow);
         connect(manageRemote, &QPushButton::clicked, this, [this]() {
-            RemoteConnectionsDialog dialog(this);
+            RemoteConnectionsDialog dialog(this, /*pickerMode=*/false, &sharedVfsBridge());
             dialog.exec();
         });
 

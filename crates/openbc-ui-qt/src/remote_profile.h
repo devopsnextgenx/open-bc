@@ -13,6 +13,7 @@
 #include <QCoreApplication>
 #include <QList>
 #include <QString>
+#include <functional>
 
 namespace openbc::app {
 
@@ -125,6 +126,29 @@ struct RemoteProfileNode {
     QString path;  // unique slash-separated path, e.g. "Personal/Build servers"
     QList<RemoteProfile> profiles;
     QList<RemoteProfileNode> children;
+};
+
+// One directory entry as reported by a remote provider's listing.
+struct RemoteEntry {
+    QString name;
+    bool isDir = false;
+};
+
+// Live network access backing a RemoteProfile - implemented by
+// VfsSessionBridge (remote_vfs_bridge.h) over the openbc-vfs FFI. Declared
+// here, rather than in either dialog header, so both
+// RemoteConnectionsDialog (to actually test a connection) and
+// RemotePathBrowserDialog (to browse one) can depend on the interface
+// without the two dialog headers having to include each other.
+class RemoteBrowseBridge {
+public:
+    virtual ~RemoteBrowseBridge() = default;
+    virtual void connectProfile(const RemoteProfile& profile,
+                                 std::function<void(bool ok, const QString& error)> done) = 0;
+    virtual void listDirectory(
+        const RemoteProfile& profile, const QString& path,
+        std::function<void(bool ok, QList<RemoteEntry> entries, const QString& error)> done) = 0;
+    virtual void disconnectProfile(const RemoteProfile&) {}
 };
 
 }  // namespace openbc::app

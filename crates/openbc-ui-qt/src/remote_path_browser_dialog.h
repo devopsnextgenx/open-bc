@@ -50,21 +50,8 @@ namespace openbc::app {
 
 enum class PathPickMode { Folder, File };
 
-struct RemoteEntry {
-    QString name;
-    bool isDir = false;
-};
-
-class RemoteBrowseBridge {
-public:
-    virtual ~RemoteBrowseBridge() = default;
-    virtual void connectProfile(const RemoteProfile& profile,
-                                 std::function<void(bool ok, const QString& error)> done) = 0;
-    virtual void listDirectory(
-        const RemoteProfile& profile, const QString& path,
-        std::function<void(bool ok, QList<RemoteEntry> entries, const QString& error)> done) = 0;
-    virtual void disconnectProfile(const RemoteProfile&) {}
-};
+// RemoteEntry and RemoteBrowseBridge now live in remote_profile.h, shared
+// with RemoteConnectionsDialog's "Test connection" button.
 
 class RemotePathBrowserDialog : public QDialog {
 public:
@@ -107,7 +94,7 @@ public:
         connect(tree_, &QTreeWidget::itemClicked, this,
                 [this](QTreeWidgetItem* item, int) { onItemClicked(item); });
         connect(manage_, &QToolButton::clicked, this, [this]() {
-            RemoteConnectionsDialog dialog(this);
+            RemoteConnectionsDialog dialog(this, /*pickerMode=*/false, bridge_);
             dialog.exec();
             refreshRemoteProfiles();
         });

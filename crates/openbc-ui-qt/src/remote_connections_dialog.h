@@ -13,6 +13,10 @@
 //     get a "Connect" button that resolves `onProfileChosen` with the
 //     selected/just-saved profile and closes the dialog, instead of the
 //     browser having to duplicate this whole form itself.
+//
+// Pass a `RemoteBrowseBridge*` (VfsSessionBridge in practice) so "Test
+// connection" can actually reach the host instead of only validating that
+// the form is filled in; without one it falls back to that form-only check.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -28,6 +32,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPointer>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -53,8 +58,12 @@ public:
     // manager mode.
     std::function<void(const RemoteProfile&)> onProfileChosen;
 
-    explicit RemoteConnectionsDialog(QWidget* parent = nullptr, bool pickerMode = false)
-        : QDialog(parent), pickerMode_(pickerMode) {
+    // `bridge`, when supplied, lets "Test connection" actually reach the
+    // host through openbc-vfs (VfsSessionBridge in practice) instead of
+    // only validating that the form fields are filled in.
+    explicit RemoteConnectionsDialog(QWidget* parent = nullptr, bool pickerMode = false,
+                                      RemoteBrowseBridge* bridge = nullptr)
+        : QDialog(parent), pickerMode_(pickerMode), bridge_(bridge) {
         setWindowTitle("Remote Connections");
         resize(760, 520);
 
@@ -514,23 +523,47 @@ private:
         selectProfile(nodePath, profile.name);
     }
 
-    // Wired to real network I/O once the app's Rust <-> Qt bridge exposes
-    // openbc-vfs's connect() calls (see sftp.rs/ftp.rs/network.rs) to this
-    // layer; until then this just validates the form so users get feedback
-    // on obviously-missing fields before saving.
+    // Actually reaches the host through openbc-vfs (RemoteBrowseBridge,
+    // VfsSessionBridge in practice) and reports whatever the provider
+    // itself says (bad credentials, unreachable host, SFTP handshake
+    // failure, ...) instead of only validating that the form is filled in.
+    // The test connection is torn down again immediately afterwards - this
+    // button only ever proves reachability, it doesn't keep a session
+    // around for browsing.
     void testConnection() {
         const RemoteProfile profile = collectForm();
         if (!profile.isValid()) {
             QMessageBox::warning(this, "Test connection", "Fill in the required fields first.");
             return;
         }
-        QMessageBox::information(this, "Test connection",
-                                 "Connection details look complete for " + profile.displayAddress() +
-                                     ".\n\nActually reaching the host isn't wired up in this build yet - hook this "
-                                     "button up to openbc-vfs's connect() once the Rust bridge is in place.");
+        if (!bridge_) {
+            QMessageBox::information(this, "Test connection",
+                                     "Connection details look complete for " + profile.displayAddress() +
+                                         ".\n\nRemote browsing isn't wired up in this build, so the connection "
+                                         "itself can't be tested here.");
+            return;
+        }
+        testConnection_->setEnabled(false);
+        testConnection_->setText("Testing...");
+        QPointer<RemoteConnectionsDialog> self(this);
+        RemoteBrowseBridge* bridge = bridge_;
+        bridge->connectProfile(profile, [self, bridge, profile](bool ok, const QString& error) {
+            if (!self) return;
+            self->testConnection_->setEnabled(true);
+            self->testConnection_->setText("Test connection");
+            if (ok) {
+                bridge->disconnectProfile(profile);
+                QMessageBox::information(self, "Test connection",
+                                         "Connected successfully to " + profile.displayAddress() + ".");
+            } else {
+                QMessageBox::warning(self, "Test connection",
+                                     "Couldn't connect to " + profile.displayAddress() + ":\n\n" + error);
+            }
+        });
     }
 
     bool pickerMode_ = false;
+    RemoteBrowseBridge* bridge_ = nullptr;
     QTreeWidget* tree_ = nullptr;
     QToolButton* add_ = nullptr;
     QToolButton* remove_ = nullptr;

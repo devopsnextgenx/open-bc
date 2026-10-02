@@ -9,10 +9,10 @@
 //! heavy parallel throughput.
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use openbc_core::{DirectoryEntry, EntryMetadata, EntryPath};
@@ -75,22 +75,59 @@ impl SftpVfs {
     }
 
     fn connect_blocking(config: SftpConfig) -> Result<Self, VfsError> {
-        let tcp = TcpStream::connect((config.host.as_str(), config.port)).map_err(|source| {
-            VfsError::Io { operation: "tcp_connect", path: PathBuf::from(&config.host), source }
+        let timeout = Duration::from_secs(u64::from(config.connect_timeout_secs.max(1)));
+        // `TcpStream::connect` has no timeout of its own and relies on the
+        // OS default, which on Windows can be far longer than on
+        // Linux/macOS (multiple minutes against a firewalled/unreachable
+        // host) - resolve the address(es) ourselves and bound each attempt
+        // with `connect_timeout` so a bad host/port fails within
+        // `connect_timeout_secs` instead of appearing to hang.
+        let addrs: Vec<_> = (config.host.as_str(), config.port)
+            .to_socket_addrs()
+            .map_err(|source| VfsError::Io {
+                operation: "resolve_host",
+                path: PathBuf::from(&config.host),
+                source,
+            })?
+            .collect();
+        if addrs.is_empty() {
+            return Err(VfsError::Io {
+                operation: "resolve_host",
+                path: PathBuf::from(&config.host),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no addresses found for host",
+                ),
+            });
+        }
+        let mut last_error = None;
+        let mut tcp = None;
+        for addr in addrs {
+            match TcpStream::connect_timeout(&addr, timeout) {
+                Ok(stream) => {
+                    tcp = Some(stream);
+                    break;
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        let tcp = tcp.ok_or_else(|| VfsError::Io {
+            operation: "tcp_connect",
+            path: PathBuf::from(&config.host),
+            source: last_error.unwrap_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "connection timed out")
+            }),
         })?;
-        tcp.set_read_timeout(Some(std::time::Duration::from_secs(u64::from(
-            config.connect_timeout_secs.max(1),
-        ))))
-        .ok();
+        tcp.set_read_timeout(Some(timeout)).ok();
 
         let mut session = Session::new().map_err(|err| ssh_err("session_new", &config.root, &err))?;
         session.set_tcp_stream(tcp);
         session.handshake().map_err(|err| ssh_err("handshake", &config.root, &err))?;
 
         match &config.auth {
-            SftpAuth::Password { username, password } => session
-                .userauth_password(username, password)
-                .map_err(|err| ssh_err("userauth_password", &config.root, &err))?,
+            SftpAuth::Password { username, password } => {
+                authenticate_password(&session, username, password, &config.root)?
+            }
             SftpAuth::PrivateKey { username, private_key, passphrase } => session
                 .userauth_pubkey_file(username, None, private_key, passphrase.as_deref())
                 .map_err(|err| ssh_err("userauth_pubkey_file", &config.root, &err))?,
@@ -118,6 +155,46 @@ fn ssh_err(operation: &'static str, path: &Path, err: &ssh2::Error) -> VfsError 
         path: path.to_path_buf(),
         source: std::io::Error::new(std::io::ErrorKind::Other, err.to_string()),
     }
+}
+
+/// Answers every keyboard-interactive challenge with the configured
+/// password. Good enough for the common case this exists for - a server
+/// with `PasswordAuthentication no` / `KbdInteractiveAuthentication yes`
+/// (several managed SFTP hosts and hardened OpenSSH setups default to this)
+/// asking a single "Password:" prompt - not a general MFA client.
+struct PasswordPrompter<'a> {
+    password: &'a str,
+}
+
+impl ssh2::KeyboardInteractivePrompt for PasswordPrompter<'_> {
+    fn prompt<'a>(
+        &mut self,
+        _username: &str,
+        _instructions: &str,
+        prompts: &[ssh2::Prompt<'a>],
+    ) -> Vec<String> {
+        prompts.iter().map(|_| self.password.to_owned()).collect()
+    }
+}
+
+/// Tries plain password auth first, then falls back to keyboard-interactive
+/// with the same password. Some SFTP servers (including several that
+/// Windows clients commonly hit) only advertise "keyboard-interactive" and
+/// reject `userauth_password` outright even with correct credentials, which
+/// otherwise surfaces as a flat, confusing "authentication was rejected".
+fn authenticate_password(
+    session: &Session,
+    username: &str,
+    password: &str,
+    root: &Path,
+) -> Result<(), VfsError> {
+    if session.userauth_password(username, password).is_ok() {
+        return Ok(());
+    }
+    let mut prompter = PasswordPrompter { password };
+    session
+        .userauth_keyboard_interactive(username, &mut prompter)
+        .map_err(|err| ssh_err("userauth_password_or_keyboard_interactive", root, &err))
 }
 
 fn join_error(err: tokio::task::JoinError) -> VfsError {

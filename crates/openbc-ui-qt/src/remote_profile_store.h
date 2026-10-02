@@ -31,6 +31,7 @@
 #include <QSysInfo>
 
 #include "remote_profile.h"
+#include "session_history.h"
 
 namespace openbc::app {
 
@@ -156,10 +157,21 @@ inline RemoteProfileNode* findNode(QList<RemoteProfileNode>& nodes, const QStrin
 
 class RemoteProfileStore {
 public:
+    // Same preferences.ini PersistedMainWindow already writes window
+    // geometry to (see main_window.h). Deliberately NOT a default-
+    // constructed `QSettings settings;` - that overload stores under
+    // QCoreApplication::organizationName()/applicationName(), which this
+    // app never sets, so it silently fails to persist (or persists to a
+    // location that changes across launches) instead of surfacing an
+    // error. Using the same explicit, already-proven-working file every
+    // other preference in the app relies on makes saved connections
+    // survive a restart like everything else does.
+    static QString settingsFilePath() { return SessionHistory::rootPath() + "/preferences.ini"; }
+
     static QList<RemoteProfileNode> loadTree() {
         auto& cache = treeCache();
         if (!loaded()) {
-            QSettings settings;
+            QSettings settings(settingsFilePath(), QSettings::IniFormat);
             const QByteArray json = settings.value("remoteConnections/tree").toByteArray();
             if (!json.isEmpty()) {
                 const auto doc = QJsonDocument::fromJson(json);
@@ -304,7 +316,7 @@ public:
     // Deterministic per-node colour, same trick SessionHistory uses for its
     // saved-session folders, so the two trees read consistently.
     static QColor colorForNode(const QString& path) {
-        QSettings settings;
+        QSettings settings(settingsFilePath(), QSettings::IniFormat);
         const QString key = "remoteConnections/colors/" + QString(path).replace('/', "_");
         if (settings.contains(key)) return settings.value(key).value<QColor>();
         static const QColor palette[] = {
@@ -329,7 +341,7 @@ private:
     static void persist() {
         QJsonArray array;
         for (const auto& node : treeCache()) array.append(detail::nodeToJson(node));
-        QSettings settings;
+        QSettings settings(settingsFilePath(), QSettings::IniFormat);
         settings.setValue("remoteConnections/tree", QJsonDocument(array).toJson(QJsonDocument::Compact));
     }
 

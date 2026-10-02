@@ -27,14 +27,17 @@
 //!   `finalize_retr_stream`.
 
 use std::path::PathBuf;
+use std::sync::Arc; // <--- ADD THIS
 use std::time::Duration;
 
 use async_trait::async_trait;
 use openbc_core::{DirectoryEntry, EntryMetadata, EntryPath};
+use rustls::{ClientConfig, RootCertStore}; // <--- ADD THIS
 use suppaftp::list::File as FtpListEntry;
 use suppaftp::tokio::{
-    AsyncFtpStream, AsyncNativeTlsConnector, AsyncNativeTlsFtpStream,
+    AsyncFtpStream, AsyncRustlsConnector, AsyncRustlsFtpStream,
 };
+use suppaftp::tokio_rustls::TlsConnector;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use crate::{AsyncVfs, VfsError};
@@ -82,7 +85,7 @@ impl Default for FtpConfig {
 /// operation stays a plain, explicit match.
 enum FtpConnection {
     Plain(AsyncFtpStream),
-    Tls(Box<AsyncNativeTlsFtpStream>),
+    Tls(Box<AsyncRustlsFtpStream>),
 }
 
 /// FTP/FTPS-backed [`AsyncVfs`]. Roots all paths at `config.root` on the
@@ -115,29 +118,31 @@ impl FtpVfs {
                 FtpConnection::Plain(stream)
             }
             FtpSecurity::ExplicitTls => {
-                // Must connect already typed for TLS (`AsyncNativeTlsFtpStream`,
-                // not `AsyncFtpStream`) - `into_secure` performs the handshake
-                // on a stream of that type, it does not convert one.
                 let stream = timeout(
                     config.connect_timeout_secs,
-                    AsyncNativeTlsFtpStream::connect(address.as_str()),
+                    AsyncRustlsFtpStream::connect(address.as_str()),
                 )
                 .await
                 .map_err(|err| ftp_err("connect", &config.host, err))?;
-                let connector = AsyncNativeTlsConnector::from(
-                    suppaftp::async_native_tls::TlsConnector::new(),
-                );
+                // Configure rustls RootCertStore
+                let mut root_store = RootCertStore::empty();
+                let certs_result = rustls_native_certs::load_native_certs();
+                for cert in certs_result.certs {
+                    let _ = root_store.add(cert);
+                }
+
+                let config_builder = ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth();
+
+                let tls_config = Arc::new(config_builder);
+
+                let connector = AsyncRustlsConnector::from(TlsConnector::from(tls_config));
+
                 let mut stream = stream
                     .into_secure(connector, &config.host)
                     .await
                     .map_err(|err| ftp_err("starttls", &config.host, err))?;
-                if config.passive_mode {
-                    stream.set_mode(suppaftp::Mode::Passive);
-                }
-                stream
-                    .login(&config.username, &config.password)
-                    .await
-                    .map_err(|err| ftp_err("login", &config.host, err))?;
                 FtpConnection::Tls(Box::new(stream))
             }
         };

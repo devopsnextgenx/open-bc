@@ -20,13 +20,13 @@ smb = ["network"]
 async-trait.workspace = true
 openbc-core = { path = "../openbc-core" }
 openbc-observability = { path = "../openbc-observability" }
-ssh2 = { version = "0.9", optional = true }
 # `tokio` async backend + explicit-FTPS via native-tls. If the workspace
 # already pulls in rustls elsewhere, swap this for `tokio-async-rustls` and
 # `suppaftp::RustlsFtpStream`/`AsyncRustlsFtpStream` in ftp.rs instead.
-suppaftp = { version = "9", optional = true, default-features = false, features = [
-    "tokio",
-    "tokio-async-native-tls",
-] }
+rustls = "0.23"
+tokio-rustls = "0.26"
+rustls-native-certs = "0.8"
+suppaftp = { version = "9.0", optional = true, features = ["tokio", "tokio-rustls-ring"] }
+ssh2 = { version = "0.9", optional = true, features = ["vendored-openssl"] }
 thiserror.workspace = true
 tokio.workspace = true

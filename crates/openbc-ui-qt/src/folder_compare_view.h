@@ -790,32 +790,39 @@ public:
         updateTitle();
         updateFooter();
 
-        if (left.isEmpty() || right.isEmpty()) {
+        if (left.isEmpty() && right.isEmpty()) {
             leftTree_->clear();
             rightTree_->clear();
-            log("Select two folders to compare");
+            log("Select a folder to list, or two folders to compare");
             return;
         }
-        if (onComparisonRequested) onComparisonRequested(left, right);
+        // One side picked, the other still blank: list that side on its own
+        // (every entry shows up as orphaned against the missing side)
+        // instead of waiting for both paths before anything is shown -
+        // collectEntriesFromEngine/compareFolderLevel already support an
+        // absent side (see the left/rightPresent flags on
+        // openbc_engine_compare_folder_level), only this guard was stopping
+        // it from ever being used that way.
+        if (!left.isEmpty() && !right.isEmpty() && onComparisonRequested) onComparisonRequested(left, right);
 
         RemoteProfile leftProfile, rightProfile;
-        const bool leftRemote = RemoteProfileStore::findProfileForPath(left, &leftProfile);
-        const bool rightRemote = RemoteProfileStore::findProfileForPath(right, &rightProfile);
-        if (!leftRemote && !QFileInfo(left).isDir()) {
+        const bool leftRemote = !left.isEmpty() && RemoteProfileStore::findProfileForPath(left, &leftProfile);
+        const bool rightRemote = !right.isEmpty() && RemoteProfileStore::findProfileForPath(right, &rightProfile);
+        if (!left.isEmpty() && !leftRemote && !QFileInfo(left).isDir()) {
             leftTree_->clear();
             rightTree_->clear();
             log("Left folder not found: " + QDir::toNativeSeparators(left));
             return;
         }
-        if (!rightRemote && !QFileInfo(right).isDir()) {
+        if (!right.isEmpty() && !rightRemote && !QFileInfo(right).isDir()) {
             leftTree_->clear();
             rightTree_->clear();
             log("Right folder not found: " + QDir::toNativeSeparators(right));
             return;
         }
 
-        leftFree_->setText(leftRemote ? "-" : freeSpaceText(left));
-        rightFree_->setText(rightRemote ? "-" : freeSpaceText(right));
+        leftFree_->setText(left.isEmpty() ? QString() : leftRemote ? "-" : freeSpaceText(left));
+        rightFree_->setText(right.isEmpty() ? QString() : rightRemote ? "-" : freeSpaceText(right));
 
         CompareOptions options;
         options.checkContent = contentsAction_->isChecked();
@@ -840,10 +847,15 @@ public:
             if (run_.get() != expected) return;
             log("Folder comparison failed: " + error);
         };
-        log("Load comparison: " + QDir::toNativeSeparators(left) + " <-> " +
-            QDir::toNativeSeparators(right));
-        log(contentsAction_->isChecked() ? "Comparing folder contents (byte-for-byte)..."
-                                         : "Comparing folder structure (size and timestamp)...");
+        if (!left.isEmpty() && !right.isEmpty()) {
+            log("Load comparison: " + QDir::toNativeSeparators(left) + " <-> " +
+                QDir::toNativeSeparators(right));
+            log(contentsAction_->isChecked() ? "Comparing folder contents (byte-for-byte)..."
+                                             : "Comparing folder structure (size and timestamp)...");
+        } else {
+            log("Listing " + QString(left.isEmpty() ? "right" : "left") + " folder: " +
+                QDir::toNativeSeparators(left.isEmpty() ? right : left));
+        }
         run_->start(left, right, leftProfile, leftRemote, rightProfile, rightRemote);
     }
 
