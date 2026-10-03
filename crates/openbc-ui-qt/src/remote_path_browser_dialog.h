@@ -331,7 +331,8 @@ private:
             item->setIcon(0, protocolIcon(profile.protocol));
             item->setData(0, kNodeKindRole, int(NodeKind::RemoteProfile));
             // The connection node stands for the remote root. Its children
-            // are the entries in "/", listed on first expand.
+            // are the entries in "/", listed on first expand. The profile's
+            // initial folder is expanded to after connecting.
             item->setData(0, kPathRole, QString("/"));
             item->setData(0, kIsDirRole, true);
             item->setData(0, kGroupRole, node.path);
@@ -457,11 +458,48 @@ private:
                 return;
             }
             status_->setText("Connected to " + profile.name + ".");
-            // Just list the root ("/"). Deeper levels are pulled in as the
-            // user expands them. The item's kLoadedRole is set by
-            // loadRemoteDirForProfile once the listing actually arrives -
-            // setting it here would leave the node stuck on "Loading...".
-            loadRemoteDirForProfile(item, profile, {});
+            // List "/" and then walk down to the profile's initial folder,
+            // loading only the levels along that path. Other levels are
+            // pulled in as the user expands them. The item's kLoadedRole is
+            // set by loadRemoteDirForProfile once the listing actually
+            // arrives - setting it here would leave the node stuck on
+            // "Loading...".
+            loadRemoteDirForProfile(item, profile, [this, item, profile](bool ok) {
+                if (ok) expandRemoteTo(item, profile, profile.remoteRoot);
+            });
+        });
+    }
+
+    // Expands (loading level by level) from `item` down to `targetPath` and
+    // selects the final node. Stops quietly if a segment can't be found.
+    void expandRemoteTo(QTreeWidgetItem* item, const RemoteProfile& profile,
+                        const QString& targetPath) {
+        const QStringList segments = targetPath.split('/', Qt::SkipEmptyParts);
+        expandRemoteStep(item, profile, segments, 0);
+    }
+
+    void expandRemoteStep(QTreeWidgetItem* item, const RemoteProfile& profile,
+                          const QStringList& segments, int index) {
+        if (!item) return;
+        // `item` is already loaded here; expanding it won't trigger a reload.
+        item->setExpanded(true);
+        if (index >= segments.size()) {
+            tree_->setCurrentItem(item);
+            tree_->scrollToItem(item);
+            onItemClicked(item);
+            return;
+        }
+        QTreeWidgetItem* next = nullptr;
+        for (int i = 0; i < item->childCount(); ++i) {
+            auto* child = item->child(i);
+            if (child->data(0, kIsDirRole).toBool() && child->text(0) == segments[index]) {
+                next = child;
+                break;
+            }
+        }
+        if (!next) return;
+        loadRemoteDirForProfile(next, profile, [this, next, profile, segments, index](bool ok) {
+            if (ok) expandRemoteStep(next, profile, segments, index + 1);
         });
     }
 
