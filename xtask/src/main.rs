@@ -17,14 +17,14 @@ fn cmake_build() -> Result<()> {
         "cmake",
         &["-S", ".", "-B", "build", "-DCMAKE_BUILD_TYPE=Release"],
     )?;
-    run("cmake", &["--build", "build", "--target", "OpenBC"])
+    run("cmake", &["--build", "build", "--target", "openbc"])
 }
 
 fn cmake_executable() -> &'static str {
     if cfg!(target_os = "windows") {
-        "build/OpenBC.exe"
+        "build/openbc.exe"
     } else {
-        "build/OpenBC"
+        "build/openbc"
     }
 }
 

@@ -9,5 +9,9 @@ openbc-core = { path = "../openbc-core" }
 openbc-observability = { path = "../openbc-observability" }
 openbc-vfs = { path = "../openbc-vfs" }
 rayon.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+image = "0.25"

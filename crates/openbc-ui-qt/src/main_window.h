@@ -15,8 +15,11 @@
 #include <QAction>
 #include <QApplication>
 #include <QDir>
+#include <QDialog>
 #include <QFile>
 #include <QFileDialog>
+#include <QFontDatabase>
+#include <QIcon>
 #include <QKeySequence>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -26,6 +29,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QPoint>
+#include <QPlainTextEdit>
 #include <QThreadPool>
 #include <QSettings>
 #include <QStatusBar>
@@ -33,11 +37,13 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QToolButton>
+#include <QVBoxLayout>
 #include <functional>
 
 #include "folder_compare_view.h"
 #include "backend_api.h"
 #include "home_view.h"
+#include "picture_compare_view.h"
 #include "qt_style.h"
 #include "session_history.h"
 #include "text_compare_view.h"
@@ -92,6 +98,7 @@ extern "C" int openbc_run_gui() {
     char application_name[] = "openbc-qt";
     char* argv[] = {application_name, nullptr};
     QApplication application(argc, argv);
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/openbc.png")));
 
     QApplication::setStyle(QStyleFactory::create("Fusion"));
     application.setPalette(openbc::ui::darkPalette());
@@ -100,6 +107,7 @@ extern "C" int openbc_run_gui() {
     QSettings preferences(SessionHistory::rootPath() + "/preferences.ini", QSettings::IniFormat);
 
     PersistedMainWindow window(preferences);
+    window.setWindowIcon(QApplication::windowIcon());
 
     auto* sessionMenu = window.menuBar()->addMenu("&Session");
     auto* actionsMenu = window.menuBar()->addMenu("&Actions");
@@ -153,6 +161,13 @@ extern "C" int openbc_run_gui() {
     tabs->setTabToolTip(homeIndex, "OpenBC home and session history");
 
     auto currentSession = [&]() { return dynamic_cast<CompareSession*>(tabs->currentWidget()); };
+    auto registerInstrumentationSession = [](const QString& sessionId, const QString& label) {
+        const QByteArray idBytes = sessionId.toUtf8();
+        const QByteArray labelBytes = label.toUtf8();
+        openbc_register_instrumentation_session(
+            reinterpret_cast<const std::uint8_t*>(idBytes.constData()), idBytes.size(),
+            reinterpret_cast<const std::uint8_t*>(labelBytes.constData()), labelBytes.size());
+    };
     auto* darkThemeAction = new QAction("Dark Theme", &window);
     darkThemeAction->setCheckable(true);
     darkThemeAction->setChecked(preferences.value("theme/dark", true).toBool());
@@ -188,22 +203,29 @@ extern "C" int openbc_run_gui() {
         // its own, so that one is simply left empty rather than stale.
         CompareSession* session = currentSession();
         auto* textView = dynamic_cast<TextCompareView*>(tabs->currentWidget());
+        auto* pictureView = dynamic_cast<PictureCompareView*>(tabs->currentWidget());
         fill(actionsMenu, session   ? session->actionsMenuItems()
                           : textView ? textView->actionsMenuItems()
+                          : pictureView ? pictureView->actionsMenuItems()
                                      : QList<QAction*>());
         fill(editMenu, session   ? session->editMenuItems()
                        : textView ? textView->editMenuItems()
+                       : pictureView ? pictureView->editMenuItems()
                                   : QList<QAction*>());
         fill(searchMenu, session   ? session->searchMenuItems()
                          : textView ? textView->searchMenuItems()
+                         : pictureView ? pictureView->searchMenuItems()
                                     : QList<QAction*>());
         fill(viewMenu, session   ? session->viewMenuItems()
                        : textView ? textView->viewMenuItems()
+                       : pictureView ? pictureView->viewMenuItems()
                                   : QList<QAction*>());
         viewMenu->addSeparator();
         viewMenu->addAction(darkThemeAction);
         if (textView) viewMenu->addAction(textView->syntaxStyleMenuAction());
-        fill(toolsMenu, session ? session->toolsMenuItems() : QList<QAction*>());
+        fill(toolsMenu, session   ? session->toolsMenuItems()
+                        : pictureView ? pictureView->toolsMenuItems()
+                                      : QList<QAction*>());
     };
     auto updateWindowTitle = [&]() {
         CompareSession* session = currentSession();
@@ -211,6 +233,8 @@ extern "C" int openbc_run_gui() {
             window.setWindowTitle(session->title() + " - Folder Compare - OpenBC");
         } else if (auto* textView = dynamic_cast<TextCompareView*>(tabs->currentWidget())) {
             window.setWindowTitle(textView->title() + " - Text Compare - OpenBC");
+        } else if (auto* pictureView = dynamic_cast<PictureCompareView*>(tabs->currentWidget())) {
+            window.setWindowTitle(pictureView->title() + " - Picture Compare - OpenBC");
         } else {
             window.setWindowTitle("OpenBC - Folder Compare");
         }
@@ -219,15 +243,17 @@ extern "C" int openbc_run_gui() {
     std::function<CompareSession*(const QString&, const QString&, bool)> addSession;
     std::function<void(const QString&, const QString&, const QString&, const QString&, CompareSession*)>
         addTextView;
+    std::function<void(const QString&, const QString&, bool)> addPictureView;
     std::function<void(int)> closeTab;
 
     addSession = [&](const QString& left, const QString& right, bool run) -> CompareSession* {
         auto* session = new CompareSession(&preferences);
         session->setPaths(left, right);
-        if (run && !left.isEmpty() && !right.isEmpty()) {
-            SessionHistory::record("folder", left, right);
+        registerInstrumentationSession(session->instrumentationSessionId(), session->title());
+        session->onComparisonRequested = [&](const QString& requestedLeft, const QString& requestedRight) {
+            SessionHistory::record("folder", requestedLeft, requestedRight);
             home->refreshHistory();
-        }
+        };
         const int index =
             tabs->addTab(session, openbc::ui::icons::folderIcon(openbc::ui::color::folderYellow()),
                          session->title());
@@ -244,6 +270,7 @@ extern "C" int openbc_run_gui() {
                          [&, session]() { closeTab(tabs->indexOf(session)); });
 
         session->onTitleChanged = [&, session]() {
+            registerInstrumentationSession(session->instrumentationSessionId(), session->title());
             const int i = tabs->indexOf(session);
             if (i < 0) {
                 return;
@@ -258,6 +285,12 @@ extern "C" int openbc_run_gui() {
                                      const QString& leftText, const QString& rightText) {
             addTextView(leftPath, rightPath, leftText, rightText, session);
         };
+        session->onPictureCompare = [&](const QString& leftPath, const QString& rightPath) {
+            addPictureView(leftPath, rightPath, true);
+        };
+        session->onNewFolderCompare = [&](const QString& leftPath, const QString& rightPath) {
+            addSession(leftPath, rightPath, true);
+        };
         tabs->setCurrentIndex(index);
         if (run) {
             session->refresh();
@@ -268,6 +301,7 @@ extern "C" int openbc_run_gui() {
     addTextView = [&](const QString& leftPath, const QString& rightPath, const QString& leftText,
                       const QString& rightText, CompareSession* origin) {
         auto* textView = new TextCompareView(leftPath, rightPath, leftText, rightText);
+        registerInstrumentationSession(textView->instrumentationSessionId(), textView->title());
         const int textIndex = tabs->addTab(
             textView, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Compare),
             textView->title());
@@ -287,6 +321,7 @@ extern "C" int openbc_run_gui() {
         };
         textView->onSessionsRequested = textView->onHomeRequested;
         textView->onTitleChanged = [&, textView]() {
+            registerInstrumentationSession(textView->instrumentationSessionId(), textView->title());
             const int i = tabs->indexOf(textView);
             if (i < 0) return;
             tabs->setTabText(i, textView->title());
@@ -295,6 +330,35 @@ extern "C" int openbc_run_gui() {
         SessionHistory::record("text", leftPath, rightPath);
         home->refreshHistory();
         tabs->setCurrentIndex(textIndex);
+    };
+
+    addPictureView = [&](const QString& left, const QString& right, bool run) {
+        auto* view = new PictureCompareView(&preferences);
+        view->setPaths(left, right);
+        const int pictureIndex = tabs->addTab(view, sessionTypeIcon("picture-compare"), view->title());
+        tabs->setTabToolTip(pictureIndex, view->detailedTitle());
+        auto* pictureClose = new QToolButton;
+        pictureClose->setObjectName("tabClose");
+        pictureClose->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Close));
+        pictureClose->setToolTip("Close tab (Ctrl+W)");
+        pictureClose->setFocusPolicy(Qt::NoFocus);
+        pictureClose->setAutoRaise(true);
+        tabs->tabBar()->setTabButton(pictureIndex, QTabBar::RightSide, pictureClose);
+        QObject::connect(pictureClose, &QToolButton::clicked, view,
+                         [&, view]() { closeTab(tabs->indexOf(view)); });
+        view->onComparisonRequested = [&](const QString& requestedLeft, const QString& requestedRight) {
+            SessionHistory::record("picture", requestedLeft, requestedRight);
+            home->refreshHistory();
+        };
+        view->onTitleChanged = [&, view]() {
+            const int i = tabs->indexOf(view);
+            if (i < 0) return;
+            tabs->setTabText(i, view->title());
+            tabs->setTabToolTip(i, view->detailedTitle());
+            if (tabs->currentIndex() == i) updateWindowTitle();
+        };
+        tabs->setCurrentIndex(pictureIndex);
+        if (run && !left.isEmpty() && !right.isEmpty()) view->compare();
     };
 
     closeTab = [&](int index) {
@@ -323,6 +387,10 @@ extern "C" int openbc_run_gui() {
 
     auto duplicateTab = [&](int index) {
         if (index < 0 || index >= tabs->count()) {
+            return;
+        }
+        if (auto* picture = dynamic_cast<PictureCompareView*>(tabs->widget(index))) {
+            addPictureView(picture->leftText(), picture->rightText(), true);
             return;
         }
         auto* source = dynamic_cast<CompareSession*>(tabs->widget(index));
@@ -374,8 +442,21 @@ extern "C" int openbc_run_gui() {
     home->onNewTextCompare = [&]() {
         addTextView(QString(), QString(), QString(), QString(), nullptr);
     };
+    // When onNewSession is set HomeView no longer falls back to onNewFolderCompare /
+    // onNewTextCompare, so every launchable kind is routed here.
+    home->onNewSession = [&](const QString& kind, const QStringList& paths) {
+        if (kind == "folder-compare") {
+            addSession(paths.value(0), paths.value(1), paths.size() >= 2);
+        } else if (kind == "text-compare") {
+            addTextView(QString(), QString(), QString(), QString(), nullptr);
+        } else if (kind == "picture-compare") {
+            addPictureView(paths.value(0), paths.value(1), paths.size() >= 2);
+        }
+    };
     home->onOpenHistory = [&](const SessionHistoryEntry& entry) {
-        if (entry.kind == "folder") {
+        if (entry.kind == "picture") {
+            addPictureView(entry.left, entry.right, true);
+        } else if (entry.kind == "folder") {
             addSession(entry.left, entry.right, true);
         } else if (!entry.left.isEmpty() || !entry.right.isEmpty()) {
             const QPointer<PersistedMainWindow> mainWindow(&window);
@@ -404,6 +485,48 @@ extern "C" int openbc_run_gui() {
     plus->setAutoRaise(true);
     tabs->setCornerWidget(plus, Qt::TopRightCorner);
     QObject::connect(plus, &QToolButton::clicked, [&]() { addSession(QString(), QString(), false); });
+    QObject::connect(tabs->tabBar(), &QTabBar::tabBarDoubleClicked, [&](int index) {
+        if (index < 0) addSession(QString(), QString(), false);
+    });
+
+    auto activeInstrumentationSessionId = [&]() {
+        if (auto* session = currentSession()) return session->instrumentationSessionId();
+        if (auto* textView = dynamic_cast<TextCompareView*>(tabs->currentWidget())) {
+            return textView->instrumentationSessionId();
+        }
+        return QString();
+    };
+    auto* instrumentationButton = new QToolButton(&window);
+    instrumentationButton->setText("Instrumentation");
+    instrumentationButton->setToolTip("Open the current tab's instrumentation report");
+    instrumentationButton->setAutoRaise(true);
+    window.statusBar()->addPermanentWidget(instrumentationButton);
+    QObject::connect(instrumentationButton, &QToolButton::clicked, [&]() {
+        const QString sessionId = activeInstrumentationSessionId();
+        if (sessionId.isEmpty()) return;
+        const QByteArray sessionIdBytes = sessionId.toUtf8();
+        std::size_t reportLength = 0;
+        char* report = openbc_instrumentation_session_report(
+            reinterpret_cast<const std::uint8_t*>(sessionIdBytes.constData()),
+            sessionIdBytes.size(), &reportLength);
+        QString reportText = report
+                                 ? QString::fromUtf8(report, static_cast<int>(reportLength))
+                                 : QString("No instrumentation report is available for this tab.");
+        if (report) openbc_instrumentation_report_destroy(report);
+
+        auto* dialog = new QDialog(&window);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle("Instrumentation - " + tabs->tabText(tabs->currentIndex()));
+        dialog->resize(820, 520);
+        auto* layout = new QVBoxLayout(dialog);
+        auto* reportView = new QPlainTextEdit(dialog);
+        reportView->setReadOnly(true);
+        reportView->setLineWrapMode(QPlainTextEdit::NoWrap);
+        reportView->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        reportView->setPlainText(reportText);
+        layout->addWidget(reportView);
+        dialog->show();
+    });
 
     tabs->tabBar()->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(tabs->tabBar(), &QWidget::customContextMenuRequested, [&](const QPoint& pos) {
@@ -430,11 +553,13 @@ extern "C" int openbc_run_gui() {
     QObject::connect(tabs, &QTabWidget::currentChanged, [&](int) {
         rebuildMenus();
         updateWindowTitle();
+        instrumentationButton->setEnabled(!activeInstrumentationSessionId().isEmpty());
     });
 
     tabs->setCurrentIndex(homeIndex);
     rebuildMenus();
     updateWindowTitle();
+    instrumentationButton->setEnabled(!activeInstrumentationSessionId().isEmpty());
     window.show();
 
     return application.exec();

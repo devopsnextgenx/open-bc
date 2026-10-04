@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
-project(OpenBC LANGUAGES C CXX)
+project(openbc LANGUAGES C CXX)
+
+if(WIN32)
+    enable_language(RC)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,6 +28,19 @@ set(Rust_COMPILER "${RUSTC_EXECUTABLE}" CACHE FILEPATH "Rust compiler used by Co
 
 # 1. Find Qt6 Installation
 find_package(Qt6 COMPONENTS Core Gui Widgets REQUIRED)
+
+# The Rust static lib (via Corrosion) pulls in a dependency that links
+# zlib (e.g. suppaftp's TLS backend, or another crate using libz-sys).
+# Static archives don't carry transitive link deps forward, so the final
+# C++ link needs zlib named explicitly - otherwise `ld` reports undefined
+# references to symbols like `inflateEnd` even though libz.so is present.
+find_package(ZLIB REQUIRED)
+
+# suppaftp's `tokio-async-native-tls` feature pulls in `native-tls`, which
+# on Linux is backed by system OpenSSL via `openssl-sys`. Same "DSO missing
+# from command line" issue as zlib above, this time for libssl/libcrypto -
+# link them explicitly too.
+find_package(OpenSSL REQUIRED)
 
 # 2. Integrate Rust Cargo via Corrosion
 include(FetchContent)
@@ -57,26 +74,33 @@ set(OPENBC_HEADERS
 
 
 # 3. Create C++ Qt Application Entrypoint
-add_executable(OpenBC
-    crates/openbc-ui-qt/src/qt_app.cpp ${OPENBC_HEADERS}
+add_executable(openbc
+    crates/openbc-ui-qt/src/qt_app.cpp
+    ${OPENBC_HEADERS}
+    openbc.qrc
 )
 
-target_include_directories(OpenBC PRIVATE
+target_include_directories(openbc PRIVATE
     crates/openbc-ui-qt/src
 )
 
 # 4. Link Rust static library & Qt6 modules
-target_link_libraries(OpenBC PRIVATE
+target_link_libraries(openbc PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
     openbc_ui_qt-static
+    ZLIB::ZLIB
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )
 
-target_compile_definitions(OpenBC PRIVATE OPENBC_BUILD_EXECUTABLE)
+target_compile_definitions(openbc PRIVATE OPENBC_BUILD_EXECUTABLE)
 
 # 5. Windows-Specific Linker Flags
 if(WIN32)
-    set_target_properties(OpenBC PROPERTIES WIN32_EXECUTABLE TRUE)
-    target_link_libraries(OpenBC PRIVATE ws2_32 userenv advapi32 ntdll)
+    configure_file(openbc.rc.in "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc" @ONLY)
+    target_sources(openbc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc")
+    set_target_properties(openbc PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_libraries(openbc PRIVATE ws2_32 userenv advapi32 ntdll)
 endif()

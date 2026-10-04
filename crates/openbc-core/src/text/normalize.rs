@@ -32,9 +32,57 @@ impl LogNormalizer {
                 .replace_all(&result, "<CONTAINER>")
                 .into_owned();
         }
+        for sample in &options.ignore_samples {
+            if let Some(pattern) = sample_pattern(sample) {
+                result = pattern.replace_all(&result, "<SAMPLE>").into_owned();
+            }
+        }
         if options.ignore_whitespace {
             result = result.split_whitespace().collect::<Vec<_>>().join(" ");
         }
         result
+    }
+}
+
+fn sample_pattern(sample: &str) -> Option<Regex> {
+    if sample.is_empty() {
+        return None;
+    }
+    let mut pattern = String::new();
+    let mut digits = false;
+    for character in sample.chars() {
+        if character.is_ascii_digit() {
+            if !digits {
+                pattern.push_str(r"\d+");
+                digits = true;
+            }
+        } else {
+            pattern.push_str(&regex::escape(&character.to_string()));
+            digits = false;
+        }
+    }
+    Regex::new(&pattern).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LogNormalizer;
+    use crate::text::models::CompareOptions;
+
+    #[test]
+    fn sample_uses_the_current_string_shape() {
+        let options = CompareOptions {
+            ignore_samples: vec!["35,964".to_owned()],
+            ..CompareOptions::default()
+        };
+
+        assert_eq!(
+            LogNormalizer::normalize("value=35,964", &options),
+            "value=<SAMPLE>"
+        );
+        assert_eq!(
+            LogNormalizer::normalize("value=00:29:35,964", &options),
+            "value=00:29:<SAMPLE>"
+        );
     }
 }

@@ -15,7 +15,9 @@
 #include <QIconEngine>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
+#include <QList>
 #include <QModelIndex>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPalette>
@@ -59,6 +61,9 @@ constexpr int kPathRole = Qt::UserRole;
 constexpr int kStatusRole = Qt::UserRole + 1;
 constexpr int kClassRole = Qt::UserRole + 2;
 constexpr int kIsDirRole = Qt::UserRole + 3;
+constexpr int kChildrenLoadedRole = Qt::UserRole + 4;
+constexpr int kCompareRevisionRole = Qt::UserRole + 5;
+constexpr int kFolderStatusMaskRole = Qt::UserRole + 6;
 
 inline constexpr quint32 statusBit(RowStatus status) {
     return 1u << static_cast<int>(status);
@@ -94,6 +99,31 @@ inline QColor folderRed() { return QColor(0xff, 0x8f, 0x8f); }
 inline QColor folderGreen() { return QColor(0x6e, 0xf0, 0x8f); }
 inline QColor folderOrange() { return QColor(0xff, 0xb2, 0x7a); }
 inline QColor folderPurple() { return QColor(0xb7, 0x87, 0xff); }
+inline QColor folderBlue() { return QColor(0x6d, 0xb7, 0xff); }
+
+// Colours for "group" nodes in the session-history tree (date buckets, the
+// Personal node, and any other named node). These are deliberately a
+// separate palette from the diff-status folder colours above, since group
+// nodes never represent an actual folder-compare session.
+inline QColor groupToday() { return QColor(0x5a, 0xb8, 0xf2); }
+inline QColor groupYesterday() { return QColor(0x4c, 0xd6, 0xb0); }
+inline QColor groupThisWeek() { return QColor(0xb0, 0x7a, 0xf2); }
+inline QColor groupLastWeek() { return QColor(0xf2, 0xb4, 0x4a); }
+inline QColor groupOlder() { return QColor(0x8a, 0x8f, 0xa8); }
+inline QColor groupPersonal() { return QColor(0xf2, 0x7a, 0xb8); }
+inline QColor groupDefault() { return QColor(0x8f, 0x9b, 0xb3); }
+
+// Pool of bright, mutually-distinct colours handed out (and persisted) to
+// new named nodes created under "Personal", so siblings stay easy to tell
+// apart at a glance.
+inline QList<QColor> groupNodePalette() {
+    return {
+        QColor(0x6c, 0xa0, 0xf5), QColor(0x4c, 0xd6, 0xc0), QColor(0xf2, 0x8a, 0x6a),
+        QColor(0xe0, 0x7a, 0xd6), QColor(0xa8, 0xdc, 0x4a), QColor(0x5a, 0xd6, 0xe8),
+        QColor(0xf2, 0xd0, 0x4a), QColor(0x9a, 0x8a, 0xf2), QColor(0xff, 0x8f, 0xc8),
+        QColor(0x7d, 0xe8, 0x9a),
+    };
+}
 }  // namespace color
 
 inline QColor statusTextColor(RowStatus status) {
@@ -204,21 +234,42 @@ inline QString applicationStyleSheet(Theme theme = Theme::Dark) {
         QToolButton#newTab:hover { background: #4d4d4d; }
 
         /* ---- home tab ---- */
-        QWidget#homeView { background: #262833; }
-        QLabel#homeHeading { color: #f8f8f2; font-size: 28px; font-weight: 700; }
-        QLabel#homeSubtitle { color: #b9b9c7; font-size: 14px; padding-bottom: 14px; }
-        QLabel#homeSectionTitle { color: #f8f8f2; font-size: 16px; font-weight: 600; padding-top: 18px; }
-        QTreeWidget#homeHistory { background: #30323d; border: 1px solid #505260; }
-        QTreeWidget#homeHistory::item { height: 28px; padding: 2px 6px; }
-        QTreeWidget#homeHistory::item:selected { background: #44475a; }
-        QTreeWidget#homeHistory::item:hover:!selected { background: #393c49; }
-        QSplitter#homeSplit::handle { background: #505260; width: 2px; }
-        QToolButton#homeAction {
-            background: #30323d; border: 1px solid #505260; border-radius: 4px;
-            color: #f8f8f2; padding: 10px 16px; min-width: 108px;
+        QWidget#homeView { background: #3f3f3f; }
+        QSplitter#homeSplit::handle { background: #2d2d2d; width: 1px; }
+        QWidget#homeSidebar { background: #333333; }
+        QLabel#homeSessionsHeader { background: #3a3a3a; color: #f0f0f0; padding: 6px 9px 5px 9px; }
+        QTreeWidget#homeHistory { background: #333333; border: 0; outline: 0; }
+        QTreeWidget#homeHistory::item { height: 18px; padding: 0 2px; }
+        QTreeWidget#homeHistory::item:hover:!selected { background: #3d3d3d; }
+        QTreeWidget#homeHistory::item:selected { background: #3b4b66; border: 1px solid #d8dae6; }
+        QWidget#homeSidebarBar { background: #333333; }
+        QToolButton#homeBarButton {
+            background: #3f3f3f; border: 1px solid #555555; border-radius: 0;
+            min-width: 20px; max-width: 20px; min-height: 18px; max-height: 18px; padding: 0;
         }
-        QToolButton#homeAction:hover { background: #3d4050; border-color: #72779a; }
-        QToolButton#homeAction:pressed { background: #23242c; }
+        QToolButton#homeBarButton:hover { background: #4d4d4d; }
+        QLineEdit#homeSearch { background: #2a2a2a; border: 1px solid #555555; border-radius: 0; min-height: 16px; }
+        QWidget#homeContent { background: #3f3f3f; }
+        QLabel#homeInfoName { color: #f0f0f0; font-size: 15px; }
+        QLabel#homeInfoPath { color: #f0f0f0; font-size: 11px; }
+        QPushButton#homeOpen, QPushButton#homeEdit {
+            min-width: 82px; max-width: 82px; min-height: 22px; max-height: 22px;
+            border-radius: 0; padding: 0; background: #353535; border: 1px solid #4a4a4a;
+        }
+        QPushButton#homeOpen { background: #1b3452; border-color: #2f6db5; }
+        QPushButton#homeOpen:hover { background: #234268; }
+        QPushButton#homeEdit:hover { background: #444444; }
+        QLabel#homeHint { color: #e6e6e6; font-size: 12px; }
+        QToolButton#homeTile {
+            background: transparent; border: 0; border-radius: 3px; color: #f0f0f0; padding: 4px;
+        }
+        QToolButton#homeTile:hover { background: rgba(255, 255, 255, 22); }
+        QToolButton#homeTile:pressed { background: rgba(0, 0, 0, 60); }
+        QFrame#homeFooter { background: #262626; border: 0; border-top: 1px solid #1d1d1d; }
+        QLabel#homeFooterTitle { color: #f0f0f0; font-size: 13px; font-weight: 700; background: transparent; }
+        QLabel#homeFooterText { color: #d8d8d8; font-size: 11px; background: transparent; }
+        QLineEdit#homeFooterSearch { background: #1b1b1b; border: 1px solid #555555; border-radius: 0; }
+        QToolButton#homeFooterIcon { background: transparent; border: 0; }
 
         /* ---- per-tab toolbar ---- */
         QToolBar {
@@ -290,6 +341,14 @@ inline QString applicationStyleSheet(Theme theme = Theme::Dark) {
         QLabel#compareStatus {
             background: #3e3e3e; color: #f8f8f2;
             border-top: 1px solid #505050; padding: 3px 8px;
+        }
+        QFrame#compareRuleBar {
+            background: #2b2b2b; border-top: 1px solid #505050;
+        }
+        QFrame#compareRuleBar QLabel { color: #c7cbe0; }
+        QLineEdit#compareRuleInput {
+            background: #1e1e1e; color: #f8f8f2; border: 1px solid #505050;
+            border-radius: 3px; padding: 2px 6px;
         }
 
         QWidget#textCompareView { background: #262833; }
@@ -470,9 +529,10 @@ inline QIcon folderIconForMask(quint32 mask) {
     }
     std::vector<QColor> colors;
     if (mask & statusBit(RowStatus::Different)) colors.push_back(color::folderRed());
-    if (mask & statusBit(RowStatus::Newer)) colors.push_back(color::folderGreen());
-    if (mask & statusBit(RowStatus::Older)) colors.push_back(color::folderOrange());
-    if (mask & statusBit(RowStatus::Orphan)) colors.push_back(color::folderPurple());
+    if (mask & statusBit(RowStatus::Orphan)) colors.push_back(color::folderBlue());
+    if (mask & statusBit(RowStatus::Equal)) colors.push_back(color::folderGreen());
+    if (mask & statusBit(RowStatus::Newer)) colors.push_back(color::folderOrange());
+    if (mask & statusBit(RowStatus::Older)) colors.push_back(color::folderPurple());
     QIcon icon;
     if (colors.empty()) {
         icon = folderIcon(color::folderYellow());
@@ -483,6 +543,24 @@ inline QIcon folderIconForMask(quint32 mask) {
     }
     cache.insert(mask, icon);
     return icon;
+}
+
+// A "group" icon - two overlapping rounded cards - used for every node in
+// the session-history tree that groups sessions together (date buckets, the
+// Personal node, and any other named node). folderIcon() above stays
+// reserved for rows that represent an actual folder-compare session, so the
+// two are never visually confused.
+inline QIcon groupNodeIcon(const QColor& color) {
+    return make([color](QPainter& p, QIcon::Mode, QIcon::State state) {
+        p.setPen(Qt::NoPen);
+        const bool open = state == QIcon::On;
+        p.setBrush(color.darker(150));
+        p.drawRoundedRect(QRectF(4.4, 1.6, 9.4, 9.0), 2.2, 2.2);
+        p.setBrush(open ? color.lighter(112) : color);
+        p.drawRoundedRect(QRectF(2.2, 4.8, 9.4, 9.0), 2.2, 2.2);
+        p.setPen(QPen(color.darker(190), 1.1));
+        p.drawLine(QPointF(4.6, 9.1), QPointF(9.4, 9.1));
+    });
 }
 
 // Small square shown in front of file names, coloured by status.
@@ -836,6 +914,86 @@ inline QIcon saveIcon(const QColor& body) {
 }
 
 // ---------------------------------------------------------------------------
+// Picture Compare icons: the Tol / Range / Blend mode glyphs (a square and a
+// circle overlapping, with the overlap in a third colour), the "fit to window"
+// glyph (a frame with arrowheads pointing outward), the metadata toggle and the
+// controls-left/right toggle. QIcon::On is the checked state.
+// ---------------------------------------------------------------------------
+namespace pictureicons {
+
+inline QIcon overlap(const QColor& square, const QColor& circle, const QColor& both) {
+    return make([square, circle, both](QPainter& p, QIcon::Mode, QIcon::State) {
+        const QRectF sq(1.3, 1.3, 8.4, 8.4);
+        const QRectF ci(6.0, 6.0, 8.6, 8.6);
+        p.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1.0));
+        p.setBrush(square);
+        p.drawRect(sq);
+        p.setBrush(circle);
+        p.drawEllipse(ci);
+        QPainterPath a;
+        a.addRect(sq);
+        QPainterPath b;
+        b.addEllipse(ci);
+        p.setPen(Qt::NoPen);
+        p.setBrush(both);
+        p.drawPath(a.intersected(b));
+    });
+}
+
+inline QIcon tolerance() { return overlap(QColor(0xe8, 0x30, 0x30), QColor(0xe8, 0x30, 0x30), QColor(0x1e, 0x7b, 0xf0)); }
+inline QIcon range() { return overlap(QColor(0xc8, 0xc0, 0x10), QColor(0xc8, 0xc0, 0x10), QColor(0x6e, 0x66, 0x08)); }
+inline QIcon blend() { return overlap(QColor(0x20, 0xd0, 0x20), QColor(0x6c, 0x78, 0xf0), QColor(0x10, 0xc8, 0xc8)); }
+
+// Fit to window: square frame, arrowheads pointing out of all four sides.
+inline QIcon fit() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        const QColor ink(0xf0, 0xf2, 0xfa);
+        p.setPen(QPen(ink, 1.3));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(QRectF(4.8, 4.8, 6.4, 6.4), 0.8, 0.8);
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        p.drawPolygon(QPolygonF({QPointF(8.0, 0.8), QPointF(10.4, 3.6), QPointF(5.6, 3.6)}));
+        p.drawPolygon(QPolygonF({QPointF(8.0, 15.2), QPointF(10.4, 12.4), QPointF(5.6, 12.4)}));
+        p.drawPolygon(QPolygonF({QPointF(0.8, 8.0), QPointF(3.6, 5.6), QPointF(3.6, 10.4)}));
+        p.drawPolygon(QPolygonF({QPointF(15.2, 8.0), QPointF(12.4, 5.6), QPointF(12.4, 10.4)}));
+    });
+}
+
+// "i" in a ring (Metadata).
+inline QIcon info() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        const QColor ink(0xdd, 0xe0, 0xee);
+        p.setPen(QPen(ink, 1.4));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QRectF(1.8, 1.8, 12.4, 12.4));
+        p.setPen(QPen(ink, 1.6, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(8.0, 7.2), QPointF(8.0, 11.2));
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        p.drawEllipse(QPointF(8.0, 5.0), 1.0, 1.0);
+    });
+}
+
+// A window with a filled side strip: strip on the left when unchecked (controls
+// on the left), on the right when checked (controls on the right).
+inline QIcon controlsSide() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State state) {
+        const QColor ink(0xdd, 0xe0, 0xee);
+        const QColor accent(0x4e, 0x9c, 0xff);
+        p.setPen(QPen(ink, 1.2));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(QRectF(1.6, 2.6, 12.8, 10.8), 1.2, 1.2);
+        p.setPen(Qt::NoPen);
+        p.setBrush(accent);
+        const bool right = state == QIcon::On;
+        p.drawRect(QRectF(right ? 9.4 : 2.2, 3.2, 4.4, 9.6));
+    });
+}
+
+}  // namespace pictureicons
+
+// ---------------------------------------------------------------------------
 // Context-menu icons. Same 16x16 design space as the toolbar glyphs, drawn in
 // code so the menus need no image resources.
 // ---------------------------------------------------------------------------
@@ -1050,6 +1208,11 @@ public:
             opt.icon.paint(painter, iconRect, Qt::AlignCenter, QIcon::Normal,
                            open ? QIcon::On : QIcon::Off);
             content.setLeft(iconRect.right() + 6);
+        } else if (index.column() == 1 && !opt.icon.isNull()) {
+            constexpr int iconSize = 16;
+            const QRect iconRect(content.left() + (content.width() - iconSize) / 2,
+                                 r.top() + (r.height() - iconSize) / 2, iconSize, iconSize);
+            opt.icon.paint(painter, iconRect, Qt::AlignCenter);
         }
 
         const QBrush fg = index.data(Qt::ForegroundRole).value<QBrush>();
@@ -1067,8 +1230,8 @@ public:
 class CompareTree : public QTreeWidget {
 public:
     explicit CompareTree(QWidget* parent = nullptr) : QTreeWidget(parent) {
-        setColumnCount(5);
-        setHeaderLabels({"Name", "Ext", "Size", "Modified", "Attributes"});
+        setColumnCount(6);
+        setHeaderLabels({"Name", "Status", "Ext", "Size", "Modified", "Attributes"});
         setItemDelegate(new CompareDelegate(this));
         setRootIsDecorated(true);
         setIndentation(20);
@@ -1076,7 +1239,7 @@ public:
         setAlternatingRowColors(false);  // banding is painted by the delegate
         setAllColumnsShowFocus(true);
         setSelectionBehavior(QAbstractItemView::SelectRows);
-        setSelectionMode(QAbstractItemView::SingleSelection);
+        setSelectionMode(QAbstractItemView::ExtendedSelection);
         setVerticalScrollMode(QAbstractItemView::ScrollPerItem);
         setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
         setEditTriggers(QAbstractItemView::EditKeyPressed);
@@ -1089,17 +1252,32 @@ public:
         h->setHighlightSections(false);
         h->setMinimumSectionSize(36);
         h->setSectionResizeMode(0, QHeaderView::Stretch);
-        for (int column = 1; column < 5; ++column) {
+        for (int column = 1; column < 6; ++column) {
             h->setSectionResizeMode(column, QHeaderView::Interactive);
         }
-        h->resizeSection(1, 64);
-        h->resizeSection(2, 110);
-        h->resizeSection(3, 150);
-        h->resizeSection(4, 78);
-        headerItem()->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
+        h->resizeSection(1, 30);
+        h->resizeSection(2, 64);
+        h->resizeSection(3, 110);
+        h->resizeSection(4, 150);
+        h->resizeSection(5, 78);
+        headerItem()->setTextAlignment(1, Qt::AlignCenter);
+        headerItem()->setTextAlignment(3, Qt::AlignRight | Qt::AlignVCenter);
     }
 
 protected:
+    void mousePressEvent(QMouseEvent* event) override {
+        if (event->button() == Qt::LeftButton &&
+            event->modifiers().testFlag(Qt::ControlModifier)) {
+            if (auto* item = itemAt(event->pos())) {
+                setCurrentItem(item);
+                item->setSelected(!item->isSelected());
+                event->accept();
+                return;
+            }
+        }
+        QTreeWidget::mousePressEvent(event);
+    }
+
     void keyPressEvent(QKeyEvent* event) override {
         if (event->key() == Qt::Key_F2) {
             if (auto* item = currentItem()) {

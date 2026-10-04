@@ -5,6 +5,12 @@
 #pragma once
 
 #include <QEvent>
+#include <QFocusEvent>
+#include <QKeyEvent>
+#include <QPair>
+#include <QPen>
+#include <QPolygonF>
+#include <QTextCursor>
 #include <QGuiApplication>
 #include <QFontMetrics>
 #include <QMouseEvent>
@@ -51,8 +57,13 @@ public:
                         repositionGutters();
                     }
                 });
-        connect(this, &QPlainTextEdit::cursorPositionChanged, this,
-                [this]() { lineNumberArea_->update(); });
+        connect(this, &QPlainTextEdit::cursorPositionChanged, this, [this]() {
+            lineNumberArea_->update();
+            if (arrowArea_) arrowArea_->update();
+        });
+        connect(this, &QPlainTextEdit::selectionChanged, this, [this]() {
+            if (arrowArea_) arrowArea_->update();
+        });
         lineNumberArea_ = new QWidget(this);
         lineNumberArea_->setObjectName("lineNumberGutter");
         lineNumberArea_->setCursor(Qt::ArrowCursor);
@@ -86,6 +97,7 @@ public:
     void setDiffData(const QVector<TextDiffLine>& rows, const QVector<DiffGroup>& groups) {
         diffRows_ = rows;
         diffGroups_ = groups;
+        gutterRow_ = -1;
         if (arrowArea_) arrowArea_->update();
     }
 
@@ -123,6 +135,24 @@ protected:
     void resizeEvent(QResizeEvent* event) override {
         QPlainTextEdit::resizeEvent(event);
         repositionGutters();
+    }
+
+    // The blue arrow follows focus and any user-driven cursor movement.
+    void focusInEvent(QFocusEvent* event) override {
+        QPlainTextEdit::focusInEvent(event);
+        if (arrowArea_) arrowArea_->update();
+    }
+    void focusOutEvent(QFocusEvent* event) override {
+        QPlainTextEdit::focusOutEvent(event);
+        if (arrowArea_) arrowArea_->update();
+    }
+    void mousePressEvent(QMouseEvent* event) override {
+        gutterRow_ = -1;
+        QPlainTextEdit::mousePressEvent(event);
+    }
+    void keyPressEvent(QKeyEvent* event) override {
+        gutterRow_ = -1;
+        QPlainTextEdit::keyPressEvent(event);
     }
 
     // (paintEvent unchanged)
@@ -224,77 +254,172 @@ private:
         });
     }
 
-    void paintArrows(QPaintEvent* event) {
-        QPainter painter(arrowArea_);
-        painter.fillRect(event->rect(), QGuiApplication::palette().color(QPalette::Base));
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        for (const DiffGroup& group : diffGroups_) {
-            if (!groupHasSource(group)) continue;
-            int top = -1;
-            int bottom = -1;
-            forEachVisibleBlock(event, [&](int blockNumber, int blockTop, int blockBottom) {
-                if (blockNumber < group.start || blockNumber > group.end) return;
-                if (top < 0) top = blockTop;
-                bottom = blockBottom;
-            });
-            if (top < 0) continue;
-            drawGroupArrow(painter, top, bottom, group.whitespaceOnly);
+    // Geometry of the rows currently shown, indexed from firstRow.
+    struct VisibleRows {
+        int firstRow = 0;
+        QVector<QPair<int, int>> spans;  // (top, bottom) per consecutive row
+
+        int rowAt(int y) const {
+            for (int i = 0; i < spans.size(); ++i) {
+                if (y >= spans[i].first && y < spans[i].second) return firstRow + i;
+            }
+            return -1;
         }
-        if (!dirtyRows_.isEmpty()) {
-            forEachVisibleBlock(event, [&](int blockNumber, int top, int bottom) {
-                if (!dirtyRows_.contains(blockNumber)) return;
-                painter.setPen(Qt::NoPen);
-                painter.setBrush(QColor(0x2e, 0xcc, 0x71));
-                painter.drawRoundedRect(QRectF(2, top + 2, kArrowWidth - 4, bottom - top - 4), 2, 2);
-            });
+
+        // Vertical extent of rows [start, end] clipped to what is visible.
+        // `startVisible` / `endVisible` are false when the span's first / last
+        // row is scrolled out of view.
+        bool extent(int start, int end, int& top, int& bottom, bool& startVisible,
+                    bool& endVisible) const {
+            if (spans.isEmpty()) return false;
+            const int lo = qMax(start, firstRow);
+            const int hi = qMin(end, firstRow + static_cast<int>(spans.size()) - 1);
+            if (lo > hi) return false;
+            top = spans[lo - firstRow].first;
+            bottom = spans[hi - firstRow].second;
+            startVisible = start >= firstRow;
+            endVisible = end <= firstRow + static_cast<int>(spans.size()) - 1;
+            return true;
         }
+    };
+
+    VisibleRows collectVisibleRows() {
+        VisibleRows rows;
+        bool first = true;
+        forEachVisibleBlock(nullptr, [&](int blockNumber, int top, int bottom) {
+            if (first) {
+                rows.firstRow = blockNumber;
+                first = false;
+            }
+            rows.spans.push_back({top, bottom});
+        });
+        return rows;
     }
 
-    void drawGroupArrow(QPainter& painter, int top, int bottom, bool whitespaceOnly) {
-        const QColor color = whitespaceOnly ? QColor(0x4e, 0xa1, 0xff) : QColor(0xf2, 0xc0, 0x4a);
-        const int mid = (top + bottom) / 2;
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(color);
-        if (bottom - top > fontMetrics().height() + 4) {
-            const int stripeX = arrowSide_ == GutterSide::Right ? 2 : kArrowWidth - 5;
-            painter.fillRect(QRectF(stripeX, top + 2, 3, bottom - top - 4), color);
+    // The range the blue arrow acts on: the selected lines of the focused
+    // pane, or the single line picked by clicking the blank gutter.
+    bool selectedRowRange(int& start, int& end) const {
+        if (!hasFocus()) return false;
+        const QTextCursor cursor = textCursor();
+        if (cursor.hasSelection()) {
+            start = document()->findBlock(cursor.selectionStart()).blockNumber();
+            const QTextBlock endBlock = document()->findBlock(cursor.selectionEnd());
+            end = endBlock.blockNumber();
+            // A selection that ends at column 0 doesn't include that line.
+            if (end > start && cursor.selectionEnd() == endBlock.position()) --end;
+            return true;
         }
-        QPolygonF arrow;
-        if (arrowSide_ == GutterSide::Right) {
-            arrow << QPointF(3, mid - 6) << QPointF(3, mid + 6) << QPointF(kArrowWidth - 4, mid);
-        } else {
-            arrow << QPointF(kArrowWidth - 3, mid - 6) << QPointF(kArrowWidth - 3, mid + 6)
-                  << QPointF(4, mid);
-        }
-        painter.drawPolygon(arrow);
-    }
-
-    bool groupHasSource(const DiffGroup& group) const {
-        for (int row = group.start; row <= group.end && row < diffRows_.size(); ++row) {
-            const bool has = arrowSide_ == GutterSide::Right ? diffRows_[row].leftNumber != 0
-                                                             : diffRows_[row].rightNumber != 0;
-            if (has) return true;
+        if (gutterRow_ >= 0 && cursor.blockNumber() == gutterRow_) {
+            start = end = gutterRow_;
+            return true;
         }
         return false;
     }
 
-    void handleArrowClick(QMouseEvent* event) {
-        const qreal y = event->position().y();
+    void paintArrows(QPaintEvent* event) {
+        QPainter painter(arrowArea_);
+        painter.fillRect(event->rect(), QGuiApplication::palette().color(QPalette::Base));
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const VisibleRows rows = collectVisibleRows();
+
+        if (!dirtyRows_.isEmpty()) {
+            for (int i = 0; i < rows.spans.size(); ++i) {
+                if (!dirtyRows_.contains(rows.firstRow + i)) continue;
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(0x2e, 0xcc, 0x71));
+                painter.drawRoundedRect(QRectF(2, rows.spans[i].first + 2, kArrowWidth - 4,
+                                               rows.spans[i].second - rows.spans[i].first - 4),
+                                        2, 2);
+            }
+        }
+
+        int selStart = -1;
+        int selEnd = -1;
+        const bool hasSelection = selectedRowRange(selStart, selEnd);
+
+        // Yellow: differing / missing text. One arrow at the top of the
+        // group with a line spanning its height. A selection starting on the
+        // same row takes over that spot with the blue arrow.
         for (const DiffGroup& group : diffGroups_) {
-            if (!groupHasSource(group)) continue;
-            int top = -1;
-            int bottom = -1;
-            forEachVisibleBlock(nullptr, [&](int blockNumber, int blockTop, int blockBottom) {
-                if (blockNumber < group.start || blockNumber > group.end) return;
-                if (top < 0) top = blockTop;
-                bottom = blockBottom;
-            });
-            if (top < 0) continue;
-            if (y >= top && y < bottom && onArrowClicked) {
-                onArrowClicked(group.start, group.end);
+            if (hasSelection && selStart == group.start) continue;
+            int top = 0;
+            int bottom = 0;
+            bool startVisible = false;
+            bool endVisible = false;
+            if (!rows.extent(group.start, group.end, top, bottom, startVisible, endVisible)) continue;
+            const QColor color = group.whitespaceOnly ? QColor(0xb0, 0x8d, 0x3a)
+                                                      : QColor(0xf2, 0xc0, 0x4a);
+            drawSpanArrow(painter, top, bottom, startVisible, endVisible, color);
+        }
+
+        // Blue: the selected line / block, copied as a whole when clicked.
+        if (hasSelection) {
+            int top = 0;
+            int bottom = 0;
+            bool startVisible = false;
+            bool endVisible = false;
+            if (rows.extent(selStart, selEnd, top, bottom, startVisible, endVisible)) {
+                drawSpanArrow(painter, top, bottom, startVisible, endVisible, QColor(0x4e, 0x8f, 0xff));
+            }
+        }
+    }
+
+    // Arrow aligned with the first line of the span, plus a thin vertical
+    // line with a closing tick that shows how far the span reaches.
+    void drawSpanArrow(QPainter& painter, int top, int bottom, bool drawArrow, bool drawEnd,
+                       const QColor& color) {
+        const bool right = arrowSide_ == GutterSide::Right;
+        const auto x = [&](qreal v) { return right ? v : kArrowWidth - v; };
+        const int lineHeight = fontMetrics().lineSpacing();
+        const int mid = top + lineHeight / 2;
+
+        if (bottom - top > lineHeight + 2) {
+            painter.setPen(QPen(QColor(0x9a, 0x9a, 0x9a), 1));
+            const qreal lineX = x(2.5);
+            const qreal lineEnd = drawEnd ? bottom - 2.5 : bottom;
+            painter.drawLine(QPointF(lineX, drawArrow ? mid + 7 : top), QPointF(lineX, lineEnd));
+            if (drawEnd) painter.drawLine(QPointF(lineX, lineEnd), QPointF(x(8.5), lineEnd));
+        }
+        if (!drawArrow) return;
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        QPolygonF arrow;
+        arrow << QPointF(x(2), mid - 2) << QPointF(x(9), mid - 2) << QPointF(x(9), mid - 5)
+              << QPointF(x(16), mid) << QPointF(x(9), mid + 5) << QPointF(x(9), mid + 2)
+              << QPointF(x(2), mid + 2);
+        painter.drawPolygon(arrow);
+    }
+
+    // Clicking the arrow copies its span; clicking blank gutter selects that
+    // row, which makes the blue arrow appear on it.
+    void handleArrowClick(QMouseEvent* event) {
+        if (event->button() != Qt::LeftButton) return;
+        const int y = static_cast<int>(event->position().y());
+        const VisibleRows rows = collectVisibleRows();
+        const int row = rows.rowAt(y);
+        if (row < 0) return;
+
+        int selStart = -1;
+        int selEnd = -1;
+        const bool hasSelection = selectedRowRange(selStart, selEnd);
+        if (hasSelection && selStart == row) {
+            if (onArrowClicked) onArrowClicked(selStart, selEnd);
+            return;
+        }
+        for (const DiffGroup& group : diffGroups_) {
+            if (group.start == row) {
+                if (onArrowClicked) onArrowClicked(group.start, group.end);
                 return;
             }
         }
+        const QTextBlock block = document()->findBlockByNumber(row);
+        if (!block.isValid()) return;
+        gutterRow_ = row;
+        QTextCursor cursor(block);
+        cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+        setTextCursor(cursor);
+        setFocus();
+        arrowArea_->update();
     }
 
     template <typename Fn>
@@ -324,6 +449,7 @@ private:
     QVector<TextDiffLine> diffRows_;
     QVector<DiffGroup> diffGroups_;
     QSet<int> dirtyRows_;
+    int gutterRow_ = -1;  // row picked by clicking the blank arrow gutter
 
     QVector<QVector<CharSegment>> inlineDiffs_;
 

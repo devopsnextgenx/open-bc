@@ -13,6 +13,8 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QContextMenuEvent>
+#include <QDesktopServices>
+#include <QFileDialog>
 #include <QDateTime>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -20,6 +22,7 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QList>
 #include <QLocale>
 #include <QMenu>
@@ -28,6 +31,8 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPointer>
+#include <QProcess>
+#include <QUuid>
 #include <QSet>
 #include <QThreadPool>
 #include <QSplitter>
@@ -51,6 +56,8 @@
 #include "minimap.h"
 #include "path_selector.h"
 #include "qt_style.h"
+#include "remote_profile_store.h"
+#include "remote_vfs_bridge.h"
 #include "syntax_highlighter.h"
 
 namespace openbc::app {
@@ -75,6 +82,8 @@ public:
         const QString rightName = rightPath_.isEmpty() ? "(missing)" : QFileInfo(rightPath_).fileName();
         return leftName + " <-> " + rightName;
     }
+
+    QString instrumentationSessionId() const { return instrumentationSessionId_; }
 
     std::function<void()> onHomeRequested;
     std::function<void()> onSessionsRequested;
@@ -234,13 +243,13 @@ private:
     }
 
     void computeInlineDiffs(const QVector<TextDiffLine>& rows) {
-        const auto diffs = computeInlineDiffsForRows(rows);
+        const auto diffs = computeInlineDiffsForRows(rows, instrumentationSessionId_);
         leftInline_ = diffs.first;
         rightInline_ = diffs.second;
     }
 
     static QPair<QVector<QVector<CharSegment>>, QVector<QVector<CharSegment>>>
-    computeInlineDiffsForRows(const QVector<TextDiffLine>& rows) {
+    computeInlineDiffsForRows(const QVector<TextDiffLine>& rows, const QString& sessionId) {
         QPair<QVector<QVector<CharSegment>>, QVector<QVector<CharSegment>>> result;
         auto& left = result.first;
         auto& right = result.second;
@@ -248,7 +257,7 @@ private:
         right.reserve(rows.size());
         for (const TextDiffLine& row : rows) {
             if (row.changed && row.leftNumber > 0 && row.rightNumber > 0) {
-                const InlineDiff diff = computeInlineDiff(row.left, row.right);
+                const InlineDiff diff = computeInlineDiff(row.left, row.right, sessionId);
                 left.push_back(diff.left);
                 right.push_back(diff.right);
             } else {
@@ -279,6 +288,8 @@ private:
         const QString leftText = leftRaw_.isNull() ? leftOriginal_.join('\n') : leftRaw_;
         const QString rightText = rightRaw_.isNull() ? rightOriginal_.join('\n') : rightRaw_;
         const bool minor = minorAction_->isChecked();
+        const QString ignoreSample = activeIgnoreSample();
+        const QString sessionId = instrumentationSessionId_;
         const bool deferHighlighting = leftText.size() + rightText.size() > 4 * 1024 * 1024;
         progress_->show();
         status_->setText(QString("Loading comparison... %1 / %2 line(s) read")
@@ -286,16 +297,17 @@ private:
 
         const QPointer<TextCompareView> view(this);
         QThreadPool::globalInstance()->start(
-            [view, generation, leftText, rightText, minor, deferHighlighting]() {
+            [view, generation, leftText, rightText, minor, ignoreSample, deferHighlighting,
+             sessionId]() {
             const QStringList left = leftText.split('\n');
             const QStringList right = rightText.split('\n');
-            QVector<TextDiffLine> rows = alignTextLines(left, right);
+            QVector<TextDiffLine> rows = alignTextLines(left, right, ignoreSample, sessionId);
             if (minor) {
                 for (auto& row : rows) {
                     if (row.whitespaceOnly) row.changed = false;
                 }
             }
-            const auto inlineDiffs = computeInlineDiffsForRows(rows);
+            const auto inlineDiffs = computeInlineDiffsForRows(rows, sessionId);
             if (!view) return;
             QMetaObject::invokeMethod(view, [view, generation, deferHighlighting, left, right,
                                              rows = std::move(rows),
@@ -394,7 +406,9 @@ private:
         pathRow->setSpacing(4);
         PathSelector*& selector = left ? leftSelector_ : rightSelector_;
         QToolButton*& saveButton = left ? leftSaveButton_ : rightSaveButton_;
-        selector = new PathSelector(PathSelector::Mode::File, left ? "Left" : "Right", frame);
+        selector = new PathSelector(PathSelector::Mode::File, left ? "Left" : "Right", frame,
+                                    /*showUp=*/false, "All files (*.*)", /*enableRemote=*/true,
+                                    &sharedVfsBridge());
         selector->combo()->setObjectName("sidePath");
         selector->onBrowsed = [this, left](const QString& path) { loadSide(left, path); };
         pathRow->addWidget(selector, 1);
@@ -504,6 +518,7 @@ private:
         minorAction_->setToolTip("Treat whitespace-only differences as unimportant");
         rulesAction_ = toolbar_->addAction(icons::glyph(Glyph::Rules), "Rules");
         rulesAction_->setCheckable(true);
+        rulesAction_->setToolTip("Ignore matching samples such as timestamps, UUIDs, or pod IDs");
         formatAction_ = toolbar_->addAction(icons::glyph(Glyph::Format), "Format");
         formatAction_->setCheckable(true);
         formatAction_->setToolTip("Wrap long lines");
@@ -513,6 +528,7 @@ private:
         pixelMinimapAction_->setCheckable(true);
         pixelMinimapAction_->setToolTip(
             "Minimap: one pixel-thin line per differing row, instead of one bar per change block");
+        pixelMinimapAction_->setChecked(true);
         findAction_ = toolbar_->addAction(icons::glyph(Glyph::Find), "Find");
         findAction_->setShortcut(QKeySequence::Find);
         findAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
@@ -574,8 +590,8 @@ private:
         leftEditor_->setUndoRedoEnabled(false);
         rightEditor_->setUndoRedoEnabled(false);
 
-        leftHighlighter_ = new SyntaxHighlighter(leftEditor_->document());
-        rightHighlighter_ = new SyntaxHighlighter(rightEditor_->document());
+        leftHighlighter_ = new SyntaxHighlighter(leftEditor_->document(), instrumentationSessionId_);
+        rightHighlighter_ = new SyntaxHighlighter(rightEditor_->document(), instrumentationSessionId_);
         leftHighlighter_->setInlineDiffProvider([this](int block) {
             return block >= 0 && block < leftInline_.size() ? leftInline_[block]
                                                              : QVector<CharSegment>();
@@ -624,6 +640,25 @@ private:
 
         preview_ = new DiffLinePreview(this);
         root->addWidget(preview_);
+
+        ruleBar_ = new QFrame(this);
+        ruleBar_->setObjectName("compareRuleBar");
+        auto* ruleLayout = new QHBoxLayout(ruleBar_);
+        ruleLayout->setContentsMargins(8, 4, 8, 4);
+        ruleLayout->setSpacing(6);
+        ruleLayout->addWidget(new QLabel("Rules:", ruleBar_));
+        ruleEdit_ = new QLineEdit(ruleBar_);
+        ruleEdit_->setObjectName("compareRuleInput");
+        ruleEdit_->setPlaceholderText("timestamp, correlation-id, pod-123, or a,,b for a literal comma");
+        ruleEdit_->setToolTip("Separate samples with commas; use two commas for a literal comma");
+        ruleLayout->addWidget(ruleEdit_, 1);
+        ruleClose_ = new QToolButton(ruleBar_);
+        ruleClose_->setText(QString::fromUtf8("\u2715"));
+        ruleClose_->setToolTip("Close rules");
+        ruleClose_->setAutoRaise(true);
+        ruleLayout->addWidget(ruleClose_);
+        root->addWidget(ruleBar_);
+        ruleBar_->hide();
 
         status_ = new QLabel(this);
         status_->setObjectName("compareStatus");
@@ -795,6 +830,26 @@ private:
             setHighlightStyle(SyntaxHighlighter::Style::VsCodeDark);
         });
         connect(minorAction_, &QAction::toggled, this, [this](bool) { rebuild(); });
+        connect(rulesAction_, &QAction::toggled, this, [this](bool checked) {
+            ruleBar_->setVisible(checked);
+            if (checked) ruleEdit_->setFocus();
+            beginAsyncRebuild();
+        });
+        connect(ruleEdit_, &QLineEdit::textChanged, this, [this](const QString& text) {
+            ignoreSample_ = text;
+            if (rulesAction_->isChecked()) {
+                if (ruleEditTimer_) ruleEditTimer_->start();
+            }
+        });
+        connect(ruleClose_, &QToolButton::clicked, this, [this]() {
+            rulesAction_->setChecked(false);
+        });
+        ruleEditTimer_ = new QTimer(this);
+        ruleEditTimer_->setSingleShot(true);
+        ruleEditTimer_->setInterval(250);
+        connect(ruleEditTimer_, &QTimer::timeout, this, [this]() {
+            if (rulesAction_->isChecked()) beginAsyncRebuild();
+        });
         connect(formatAction_, &QAction::toggled, this, [this](bool checked) {
             const auto mode = checked ? QPlainTextEdit::WidgetWidth : QPlainTextEdit::NoWrap;
             leftEditor_->setLineWrapMode(mode);
@@ -979,7 +1034,19 @@ private:
                 pushSideHistory(sideIsLeft);
             }
         } else if (chosen == openDefault || chosen == openChoose) {
-            status_->setText("Open With: " + (isLeft ? leftPath_ : rightPath_));
+            const QString path = isLeft ? leftPath_ : rightPath_;
+            RemoteProfile profile;
+            if (RemoteProfileStore::findProfileForPath(path, &profile)) {
+                QMessageBox::information(this, "Open With",
+                                         "Remote files must be downloaded before opening in a local application.");
+                return;
+            }
+            if (chosen == openDefault) {
+                QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+            } else {
+                const QString program = QFileDialog::getOpenFileName(this, "Choose application");
+                if (!program.isEmpty()) QProcess::startDetached(program, {path});
+            }
         }
     }
 
@@ -1010,7 +1077,8 @@ private:
         }
         const QStringList clipboardLines = clipboard.split('\n');
         const QStringList& fileLines = isLeft ? leftOriginal_ : rightOriginal_;
-        const QVector<TextDiffLine> comparison = alignTextLines(fileLines, clipboardLines);
+        const QVector<TextDiffLine> comparison =
+            alignTextLines(fileLines, clipboardLines, QString(), instrumentationSessionId_);
         int differences = 0;
         for (const auto& line : comparison) {
             if (line.changed) ++differences;
@@ -1317,6 +1385,10 @@ private:
         });
     }
 
+    QString activeIgnoreSample() const {
+        return rulesAction_ && rulesAction_->isChecked() ? ignoreSample_ : QString();
+    }
+
     QVector<TextDiffLine> alignWithManualOverrides() const {
         QVector<TextDiffLine> result;
         int leftStart = 0;
@@ -1325,7 +1397,8 @@ private:
             if (leftStart >= leftEnd && rightStart >= rightEnd) return;
             const QStringList leftPart = leftOriginal_.mid(leftStart, leftEnd - leftStart);
             const QStringList rightPart = rightOriginal_.mid(rightStart, rightEnd - rightStart);
-            QVector<TextDiffLine> segment = alignTextLines(leftPart, rightPart);
+            QVector<TextDiffLine> segment =
+                alignTextLines(leftPart, rightPart, activeIgnoreSample(), instrumentationSessionId_);
             for (TextDiffLine& row : segment) {
                 if (row.leftNumber > 0) row.leftNumber += leftStart;
                 if (row.rightNumber > 0) row.rightNumber += rightStart;
@@ -1527,16 +1600,32 @@ private:
         const QPointer<TextCompareView> view(this);
         progress_->show();
         status_->setText("Loading " + QFileInfo(path).fileName() + "...");
-        QThreadPool::globalInstance()->start([view, left, path]() {
-            QFile file(path);
-            const bool opened = file.open(QIODevice::ReadOnly | QIODevice::Text);
-            const QString text = opened ? QTextStream(&file).readAll() : QString();
+        // Resolved on the GUI thread (cheap: an in-memory profile-tree
+        // lookup) so the background lambda below only ever needs the
+        // profile struct, not RemoteProfileStore itself.
+        RemoteProfile remoteProfile;
+        const bool isRemote = RemoteProfileStore::findProfileForPath(path, &remoteProfile);
+        QThreadPool::globalInstance()->start([view, left, path, isRemote, remoteProfile]() {
+            bool opened = false;
+            QString text;
+            QString openError;
+            if (isRemote) {
+                QByteArray bytes;
+                opened = sharedVfsBridge().remoteReadFile(
+                    remoteProfile, remoteRelativePath(path, remoteProfile), &bytes, &openError);
+                if (opened) text = QString::fromUtf8(bytes);
+            } else {
+                QFile file(path);
+                opened = file.open(QIODevice::ReadOnly | QIODevice::Text);
+                if (opened) text = QTextStream(&file).readAll();
+            }
             if (!view) return;
-            QMetaObject::invokeMethod(view, [view, left, path, opened, text]() {
+            QMetaObject::invokeMethod(view, [view, left, path, opened, text, openError]() {
                 if (!view) return;
                 if (!opened) {
                     view->progress_->hide();
-                    view->status_->setText("Could not open " + path);
+                    view->status_->setText("Could not open " + path +
+                                            (openError.isEmpty() ? QString() : " (" + openError + ")"));
                     return;
                 }
                 view->flushPendingEdits();
@@ -1563,6 +1652,37 @@ private:
 
     void saveSide(bool left) {
         const QString& path = left ? leftPath_ : rightPath_;
+        RemoteProfile remoteProfile;
+        if (RemoteProfileStore::findProfileForPath(path, &remoteProfile)) {
+            const QString contents = (left ? leftOriginal_ : rightOriginal_).join('\n');
+            const QByteArray bytes = contents.toUtf8();
+            const QString relativePath = remoteRelativePath(path, remoteProfile);
+            const QPointer<TextCompareView> view(this);
+            status_->setText("Saving " + QFileInfo(relativePath).fileName() + "...");
+            QThreadPool::globalInstance()->start([view, left, path, remoteProfile, relativePath,
+                                                  contents, bytes]() {
+                QString error;
+                const bool saved = sharedVfsBridge().remoteWriteFile(
+                    remoteProfile, relativePath, bytes, &error);
+                QMetaObject::invokeMethod(qApp, [view, left, path, contents, saved, error]() {
+                    if (!view) return;
+                    if (!saved) {
+                        view->status_->setText("Could not save " + path +
+                                               (error.isEmpty() ? QString() : " (" + error + ")"));
+                        return;
+                    }
+                    QStringList& current = left ? view->leftOriginal_ : view->rightOriginal_;
+                    if (current.join('\n') == contents) {
+                        (left ? view->leftDirtyLines_ : view->rightDirtyLines_).clear();
+                        if (left) view->leftUnsaved_ = false; else view->rightUnsaved_ = false;
+                        view->refreshDirtyIndicators();
+                        view->refreshSideHeader(left);
+                    }
+                    view->status_->setText(QFileInfo(path).fileName() + " saved.");
+                }, Qt::QueuedConnection);
+            });
+            return;
+        }
         QFile file(path);
         if (path.isEmpty() || !file.open(QIODevice::WriteOnly | QIODevice::Text)) {
             status_->setText("Could not save " + (path.isEmpty() ? QString("(no file)") : path));
@@ -1598,10 +1718,12 @@ private:
         refreshSideHeader(left);
     }
 
+    QString instrumentationSessionId_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QString leftPath_;
     QString rightPath_;
     QString leftRaw_;
     QString rightRaw_;
+    QString ignoreSample_;
     QStringList leftOriginal_;
     QStringList rightOriginal_;
     QVector<TextDiffLine> rows_;
@@ -1682,6 +1804,10 @@ private:
     QVector<QVector<CharSegment>> leftInline_;
     QVector<QVector<CharSegment>> rightInline_;
     FindReplaceBar* findBar_ = nullptr;
+    QFrame* ruleBar_ = nullptr;
+    QLineEdit* ruleEdit_ = nullptr;
+    QToolButton* ruleClose_ = nullptr;
+    QTimer* ruleEditTimer_ = nullptr;
 
     // Per-side undo/redo history. Each side is an independent stack of
     // historical versions of that side; Ctrl+Z / Ctrl+Y walk only the

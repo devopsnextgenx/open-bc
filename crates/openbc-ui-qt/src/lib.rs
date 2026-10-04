@@ -1,3 +1,6 @@
+mod image_compare_ffi;
+mod vfs_bridge;
+
 use openbc_core::text::highlight_to_html as render_highlight_to_html;
 use openbc_core::text::{
     compute_inline_diff, highlight_to_spans, ChangeKind, CompareOptions, HighlightSpan, InlineDiff,
@@ -42,11 +45,89 @@ pub extern "C" fn openbc_log_message(message: *const u8, length: usize) {
     openbc_observability::log("openbc-ui-qt", "qt_action", "INFO", &message);
 }
 
+#[no_mangle]
+pub extern "C" fn openbc_register_instrumentation_session(
+    session_id: *const u8,
+    session_id_length: usize,
+    label: *const u8,
+    label_length: usize,
+) {
+    let session_id = unsafe { input_text(session_id, session_id_length) };
+    let label = unsafe { input_text(label, label_length) };
+    openbc_observability::register_session(&session_id, &label);
+}
+
+#[no_mangle]
+pub extern "C" fn openbc_instrumentation_session_report(
+    session_id: *const u8,
+    session_id_length: usize,
+    report_length: *mut usize,
+) -> *mut std::ffi::c_char {
+    let session_id = unsafe { input_text(session_id, session_id_length) };
+    let Some(report) = openbc_observability::session_report(&session_id) else {
+        if !report_length.is_null() {
+            unsafe { *report_length = 0 };
+        }
+        return std::ptr::null_mut();
+    };
+    let Ok(report) = std::ffi::CString::new(report) else {
+        return std::ptr::null_mut();
+    };
+    if !report_length.is_null() {
+        unsafe { *report_length = report.as_bytes().len() };
+    }
+    report.into_raw()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn openbc_instrumentation_report_destroy(report: *mut std::ffi::c_char) {
+    if !report.is_null() {
+        drop(std::ffi::CString::from_raw(report));
+    }
+}
+
 unsafe fn input_text(pointer: *const u8, length: usize) -> String {
     if pointer.is_null() || length == 0 {
         return String::new();
     }
     String::from_utf8_lossy(std::slice::from_raw_parts(pointer, length)).into_owned()
+}
+
+fn parse_ignore_samples(input: &str) -> Vec<String> {
+    let mut samples = Vec::new();
+    let mut current = String::new();
+    let mut characters = input.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == ',' {
+            if characters.peek() == Some(&',') {
+                current.push(',');
+                characters.next();
+            } else {
+                if !current.is_empty() {
+                    samples.push(std::mem::take(&mut current));
+                }
+            }
+        } else {
+            current.push(character);
+        }
+    }
+    if !current.is_empty() {
+        samples.push(current);
+    }
+    samples
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_ignore_samples;
+
+    #[test]
+    fn parses_multiple_samples_and_escaped_commas() {
+        assert_eq!(
+            parse_ignore_samples("timestamp,correlation-id,a,,b"),
+            vec!["timestamp", "correlation-id", "a,b"]
+        );
+    }
 }
 
 #[no_mangle]
@@ -59,16 +140,24 @@ pub extern "C" fn openbc_compare_buffers(
     ignore_timestamps: u8,
     ignore_container_ids: u8,
     fuzzy_threshold: f64,
+    ignore_sample: *const u8,
+    ignore_sample_length: usize,
+    session_id: *const u8,
+    session_id_length: usize,
 ) -> *mut DiffHandle {
+    let session_id = unsafe { input_text(session_id, session_id_length) };
+    let _session_scope = openbc_observability::session_scope(&session_id);
     trace_backend(format_args!(
         "compare start left_bytes={left_length} right_bytes={right_length}"
     ));
     let left = unsafe { input_text(left, left_length) };
     let right = unsafe { input_text(right, right_length) };
+    let ignore_sample = unsafe { input_text(ignore_sample, ignore_sample_length) };
     let options = CompareOptions {
         ignore_whitespace: ignore_whitespace != 0,
         ignore_timestamps: ignore_timestamps != 0,
         ignore_container_ids: ignore_container_ids != 0,
+        ignore_samples: parse_ignore_samples(&ignore_sample),
         fuzzy_threshold,
     };
     let rows = openbc_core::text::TextCompareEngine::compare_buffers(&left, &right, &options);
@@ -162,7 +251,11 @@ pub extern "C" fn openbc_inline_diff(
     left_length: usize,
     right: *const u8,
     right_length: usize,
+    session_id: *const u8,
+    session_id_length: usize,
 ) -> *mut InlineHandle {
+    let session_id = unsafe { input_text(session_id, session_id_length) };
+    let _session_scope = openbc_observability::session_scope(&session_id);
     trace_backend(format_args!(
         "inline start left_bytes={left_length} right_bytes={right_length}"
     ));
@@ -259,7 +352,11 @@ pub extern "C" fn openbc_highlight_buffer(
     extension_length: usize,
     source: *const u8,
     source_length: usize,
+    session_id: *const u8,
+    session_id_length: usize,
 ) -> *mut HighlightHandle {
+    let session_id = unsafe { input_text(session_id, session_id_length) };
+    let _session_scope = openbc_observability::session_scope(&session_id);
     let extension = unsafe { input_text(extension, extension_length) };
     let source = unsafe { input_text(source, source_length) };
     Box::into_raw(Box::new(HighlightHandle {
@@ -274,7 +371,11 @@ pub extern "C" fn openbc_highlight_buffer_with_theme(
     source: *const u8,
     source_length: usize,
     theme: u8,
+    session_id: *const u8,
+    session_id_length: usize,
 ) -> *mut HighlightHandle {
+    let session_id = unsafe { input_text(session_id, session_id_length) };
+    let _session_scope = openbc_observability::session_scope(&session_id);
     let extension = unsafe { input_text(extension, extension_length) };
     let source = unsafe { input_text(source, source_length) };
     Box::into_raw(Box::new(HighlightHandle {

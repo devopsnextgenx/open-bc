@@ -1,5 +1,18 @@
 # OpenBC Copilot Instructions
 
+
+## Windows build environment (read before using any terminal)
+
+On Windows, always use the **Git Bash** shell and set the MSYS2 toolchain PATH first, exactly as `win-build.sh` does. Without it `cargo` fails (e.g. `dlltool.exe: program not found`) and builds/tests are not valid.
+
+```bash
+export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
+export OPENSSL_DIR=/c/msys64/ucrt64
+```
+
+- Prefix every compile/test/run command with these exports (shell state does not persist between tool calls), e.g. `export PATH=... OPENSSL_DIR=... && cargo check --workspace`.
+- Toolchain is `x86_64-pc-windows-gnu` (cargo/rustc/dlltool/perl/cmake/ninja come from `/c/msys64/ucrt64/bin`). Keep `win-build.sh` as the source of truth for these paths.
+
 Read `ARCHITECTURE.md` and `docs/CODING_GUIDELINES.md` before adding modules, traits, dependencies, or cross-crate APIs.
 
 ## Boundary rules
