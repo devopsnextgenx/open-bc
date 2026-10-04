@@ -40,13 +40,15 @@
 #include <QVBoxLayout>
 #include <functional>
 
+#include "home_view.h"
+#include "3d_compare_view.h"
+#include "picture_compare_view.h"
 #include "folder_compare_view.h"
+#include "text_compare_view.h"
 #include "backend_api.h"
 #include "home_view.h"
-#include "picture_compare_view.h"
 #include "qt_style.h"
 #include "session_history.h"
-#include "text_compare_view.h"
 
 namespace openbc::app {
 
@@ -204,27 +206,33 @@ extern "C" int openbc_run_gui() {
         CompareSession* session = currentSession();
         auto* textView = dynamic_cast<TextCompareView*>(tabs->currentWidget());
         auto* pictureView = dynamic_cast<PictureCompareView*>(tabs->currentWidget());
+        auto* model3dView = dynamic_cast<Model3dCompareView*>(tabs->currentWidget());
         fill(actionsMenu, session   ? session->actionsMenuItems()
                           : textView ? textView->actionsMenuItems()
                           : pictureView ? pictureView->actionsMenuItems()
+                          : model3dView ? model3dView->actionsMenuItems()
                                      : QList<QAction*>());
         fill(editMenu, session   ? session->editMenuItems()
                        : textView ? textView->editMenuItems()
                        : pictureView ? pictureView->editMenuItems()
+                       : model3dView ? model3dView->editMenuItems()
                                   : QList<QAction*>());
         fill(searchMenu, session   ? session->searchMenuItems()
                          : textView ? textView->searchMenuItems()
                          : pictureView ? pictureView->searchMenuItems()
+                         : model3dView ? model3dView->searchMenuItems()
                                     : QList<QAction*>());
         fill(viewMenu, session   ? session->viewMenuItems()
                        : textView ? textView->viewMenuItems()
                        : pictureView ? pictureView->viewMenuItems()
+                       : model3dView ? model3dView->viewMenuItems()
                                   : QList<QAction*>());
         viewMenu->addSeparator();
         viewMenu->addAction(darkThemeAction);
         if (textView) viewMenu->addAction(textView->syntaxStyleMenuAction());
         fill(toolsMenu, session   ? session->toolsMenuItems()
                         : pictureView ? pictureView->toolsMenuItems()
+                        : model3dView ? model3dView->toolsMenuItems()
                                       : QList<QAction*>());
     };
     auto updateWindowTitle = [&]() {
@@ -235,6 +243,8 @@ extern "C" int openbc_run_gui() {
             window.setWindowTitle(textView->title() + " - Text Compare - OpenBC");
         } else if (auto* pictureView = dynamic_cast<PictureCompareView*>(tabs->currentWidget())) {
             window.setWindowTitle(pictureView->title() + " - Picture Compare - OpenBC");
+        } else if (auto* model3dView = dynamic_cast<Model3dCompareView*>(tabs->currentWidget())) {
+            window.setWindowTitle(model3dView->title() + " - 3D Model Compare - OpenBC");
         } else {
             window.setWindowTitle("OpenBC - Folder Compare");
         }
@@ -244,6 +254,7 @@ extern "C" int openbc_run_gui() {
     std::function<void(const QString&, const QString&, const QString&, const QString&, CompareSession*)>
         addTextView;
     std::function<void(const QString&, const QString&, bool)> addPictureView;
+    std::function<void(const QString&, const QString&, bool)> addModel3dView;
     std::function<void(int)> closeTab;
 
     addSession = [&](const QString& left, const QString& right, bool run) -> CompareSession* {
@@ -361,6 +372,35 @@ extern "C" int openbc_run_gui() {
         if (run && !left.isEmpty() && !right.isEmpty()) view->compare();
     };
 
+    addModel3dView = [&](const QString& left, const QString& right, bool run) {
+        auto* view = new Model3dCompareView(&preferences);
+        view->setPaths(left, right);
+        const int index = tabs->addTab(view, sessionTypeIcon("model3d-compare"), view->title());
+        tabs->setTabToolTip(index, view->detailedTitle());
+        auto* close = new QToolButton;
+        close->setObjectName("tabClose");
+        close->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Close));
+        close->setToolTip("Close tab (Ctrl+W)");
+        close->setFocusPolicy(Qt::NoFocus);
+        close->setAutoRaise(true);
+        tabs->tabBar()->setTabButton(index, QTabBar::RightSide, close);
+        QObject::connect(close, &QToolButton::clicked, view,
+                        [&, view]() { closeTab(tabs->indexOf(view)); });
+        view->onComparisonRequested = [&](const QString& l, const QString& r) {
+            SessionHistory::record("model3d", l, r);
+            home->refreshHistory();
+        };
+        view->onTitleChanged = [&, view]() {
+            const int i = tabs->indexOf(view);
+            if (i < 0) return;
+            tabs->setTabText(i, view->title());
+            tabs->setTabToolTip(i, view->detailedTitle());
+            if (tabs->currentIndex() == i) updateWindowTitle();
+        };
+        tabs->setCurrentIndex(index);
+        if (run && !left.isEmpty() && !right.isEmpty()) view->compare();
+    };
+
     closeTab = [&](int index) {
         if (index < 0 || index >= tabs->count()) {
             return;
@@ -391,6 +431,10 @@ extern "C" int openbc_run_gui() {
         }
         if (auto* picture = dynamic_cast<PictureCompareView*>(tabs->widget(index))) {
             addPictureView(picture->leftText(), picture->rightText(), true);
+            return;
+        }
+        if (auto* m = dynamic_cast<Model3dCompareView*>(tabs->widget(index))) {
+            addModel3dView(m->leftText(), m->rightText(), true);
             return;
         }
         auto* source = dynamic_cast<CompareSession*>(tabs->widget(index));
@@ -451,6 +495,8 @@ extern "C" int openbc_run_gui() {
             addTextView(QString(), QString(), QString(), QString(), nullptr);
         } else if (kind == "picture-compare") {
             addPictureView(paths.value(0), paths.value(1), paths.size() >= 2);
+        } else if (kind == "model3d-compare") {
+            addModel3dView(paths.value(0), paths.value(1), paths.size() >= 2);
         }
     };
     home->onOpenHistory = [&](const SessionHistoryEntry& entry) {
@@ -458,6 +504,8 @@ extern "C" int openbc_run_gui() {
             addPictureView(entry.left, entry.right, true);
         } else if (entry.kind == "folder") {
             addSession(entry.left, entry.right, true);
+        } else if (entry.kind == "model3d") {
+            addModel3dView(entry.left, entry.right, true);
         } else if (!entry.left.isEmpty() || !entry.right.isEmpty()) {
             const QPointer<PersistedMainWindow> mainWindow(&window);
             window.statusBar()->showMessage("Loading comparison files...");

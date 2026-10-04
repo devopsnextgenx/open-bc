@@ -2,6 +2,7 @@
 
 pub mod text_runner;
 pub mod image_compare;
+pub mod model3d_compare;
 
 use openbc_compute::ComputeDispatcher;
 use openbc_core::{

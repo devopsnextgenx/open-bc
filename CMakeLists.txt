@@ -27,7 +27,7 @@ endif()
 set(Rust_COMPILER "${RUSTC_EXECUTABLE}" CACHE FILEPATH "Rust compiler used by Corrosion")
 
 # 1. Find Qt6 Installation
-find_package(Qt6 COMPONENTS Core Gui Widgets REQUIRED)
+find_package(Qt6 COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets REQUIRED)
 
 # The Rust static lib (via Corrosion) pulls in a dependency that links
 # zlib (e.g. suppaftp's TLS backend, or another crate using libz-sys).
@@ -69,6 +69,12 @@ set(OPENBC_HEADERS
     crates/openbc-ui-qt/src/diff_line_preview.h
     crates/openbc-ui-qt/src/text_compare_view.h
     crates/openbc-ui-qt/src/folder_compare_view.h
+    crates/openbc-ui-qt/src/picture_compare_view.h
+    crates/openbc-ui-qt/src/3d_compare_view.h
+    crates/openbc-ui-qt/src/model3d_viewport.h
+    crates/openbc-ui-qt/src/model3d_compare_api.h
+    crates/openbc-ui-qt/src/model3d_extensions.h
+    crates/openbc-ui-qt/src/model3d_icons.h
     crates/openbc-ui-qt/src/main_window.h
 )
 
@@ -89,6 +95,8 @@ target_link_libraries(openbc PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
+    Qt6::OpenGL
+    Qt6::OpenGLWidgets
     openbc_ui_qt-static
     ZLIB::ZLIB
     OpenSSL::SSL

@@ -92,6 +92,7 @@ inline const QList<SessionTypeSpec>& sessionTypes() {
         {"hex-compare", "Hex Compare", false, true},
         {"media-compare", "Media Compare", false, true},
         {"picture-compare", "Picture Compare", false, true},
+        {"model3d-compare", "3D Compare", false, true},
         {"registry-compare", "Registry Compare", false, true},
         {"table-compare", "Table Compare", false, true},
         {"version-compare", "Version Compare", false, true},
@@ -191,6 +192,17 @@ inline QIcon sessionTypeIcon(const QString& kind) {
                                      QPointF(11.0, 10.4), QPointF(12.6, 14.6)}));
             p.setBrush(QColor(0xf4, 0xc0, 0x40));
             p.drawEllipse(QPointF(10.6, 6.2), 1.4, 1.4);
+        });
+    }
+    if (kind == "model3d-compare") {
+        return icons::make([](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(QPen(QColor(0x7d, 0x82, 0x94), 0.7));
+            p.setBrush(QColor(0xdd, 0xec, 0xff));   // top
+            p.drawPolygon(QPolygonF({QPointF(8, 1.5), QPointF(14, 4.5), QPointF(8, 7.5), QPointF(2, 4.5)}));
+            p.setBrush(QColor(0x8f, 0xb8, 0xf0));   // left
+            p.drawPolygon(QPolygonF({QPointF(2, 4.5), QPointF(8, 7.5), QPointF(8, 14.5), QPointF(2, 11.5)}));
+            p.setBrush(QColor(0x4e, 0x9c, 0xff));   // right
+            p.drawPolygon(QPolygonF({QPointF(14, 4.5), QPointF(8, 7.5), QPointF(8, 14.5), QPointF(14, 11.5)}));
         });
     }
     if (kind == "registry-compare") {
@@ -699,8 +711,10 @@ private:
         const QString label = entry.label.isEmpty() ? SessionHistory::defaultLabel(entry.kind, entry.left, entry.right) : entry.label;
         auto* item = new QTreeWidgetItem(parent, {label});
         item->setIcon(0, entry.kind == "folder"
-                              ? openbc::ui::icons::folderIcon(openbc::ui::color::folderYellow())
-                              : historyFileIcon(entry.left));
+                      ? openbc::ui::icons::folderIcon(openbc::ui::color::folderYellow())
+                  : entry.kind == "model3d"
+                      ? sessionTypeIcon("model3d-compare")
+                      : historyFileIcon(entry.left));
         item->setToolTip(0, entry.left + "\n<->\n" + entry.right);
         item->setData(0, Qt::UserRole, saved);
         item->setData(0, Qt::UserRole + 1, index);

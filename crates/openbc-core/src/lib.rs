@@ -4,6 +4,8 @@
 pub mod text;
 /// Image comparison domain types (options, verdicts, pixel probe).
 pub mod image_compare;
+/// 3D model comparison domain types (options, verdicts, mesh probe).
+pub mod model3d;
 
 use std::path::PathBuf;
 use std::time::SystemTime;

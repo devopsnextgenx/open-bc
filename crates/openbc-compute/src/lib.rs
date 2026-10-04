@@ -1,6 +1,7 @@
 //! CPU/GPU execution policy for hashing and binary comparison.
 
 pub mod image;
+pub mod model3d;
 
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use sha2::{Digest, Sha256};

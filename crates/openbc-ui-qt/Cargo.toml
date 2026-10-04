@@ -5,6 +5,7 @@ edition.workspace = true
 
 [features]
 default = ["qt"]
+gpu = ["openbc-engine/gpu"]
 qt = ["dep:cxx", "dep:cxx-qt", "dep:cxx-qt-build"]
 
 [lib]

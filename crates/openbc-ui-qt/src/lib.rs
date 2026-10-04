@@ -1,4 +1,5 @@
 mod image_compare_ffi;
+mod model3d_compare_ffi;
 mod vfs_bridge;
 
 use openbc_core::text::highlight_to_html as render_highlight_to_html;
