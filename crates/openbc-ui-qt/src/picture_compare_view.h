@@ -51,6 +51,7 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QThreadPool>
+#include <QToolBar>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -66,8 +67,11 @@
 #include "image_compare_api.h"
 #include "picture_extensions.h"
 #include "picture_metadata.h"
+#include "qt_style.h"
 
 namespace openbc::app {
+
+namespace icons = openbc::ui::icons;
 
 struct PictureOptions {
     int mode = 0;  // 0 Tol, 1 Range, 2 Blend
@@ -385,11 +389,11 @@ public:
         auto* root = new QVBoxLayout(this);
         root->setContentsMargins(0, 0, 0, 0);
         root->setSpacing(0);
+        createActions();  // the toolbar and the controls panel are built from these
         root->addWidget(buildToolbar());
         root->addWidget(buildPathRows());
         root->addWidget(buildBody(), 1);
         root->addWidget(buildStatusRow());
-        createActions();
         syncControlsFromOptions();
         wirePanes();
 
@@ -442,7 +446,9 @@ public:
     QList<QAction*> editMenuItems() const { return {}; }
     QList<QAction*> searchMenuItems() const { return {}; }
     QList<QAction*> toolsMenuItems() const { return {}; }
-    QList<QAction*> viewMenuItems() const { return {actZoomIn_, actZoomOut_, actFit_, actActual_}; }
+    QList<QAction*> viewMenuItems() const {
+        return {actZoomIn_, actZoomOut_, actFit_, actActual_, nullptr, actControlsRight_};
+    }
 
 protected:
     void dragEnterEvent(QDragEnterEvent* e) override {
@@ -717,6 +723,10 @@ private:
         zoomLabel_->setText(QString("Zoom:  %1%").arg(percent));
         const QSignalBlocker block(zoomSlider_);
         zoomSlider_->setValue(std::clamp(percent, zoomSlider_->minimum(), zoomSlider_->maximum()));
+        if (fitButton_) {
+            const QSignalBlocker fitBlock(fitButton_);
+            fitButton_->setChecked(view_.fit);
+        }
     }
 
     void setZoomPercent(int percent) {
@@ -736,6 +746,39 @@ private:
         updateAllPanes();
     }
 
+    // ===== controls panel side ================================================
+    void setControlsOnRight(bool right) {
+        controlsRight_ = right;
+        if (prefs_) prefs_->setValue("picture/controlsRight", right);
+        applyControlsSide();
+    }
+
+    // (Re)inserts the controls panel and the result pane into the bottom row, in
+    // the order the preference asks for, and syncs the toggle button + menu item.
+    void applyControlsSide() {
+        if (bottomLayout_ && controlsPanel_ && overlayPane_) {
+            bottomLayout_->removeWidget(controlsPanel_);
+            bottomLayout_->removeWidget(overlayPane_);
+            if (controlsRight_) {
+                bottomLayout_->addWidget(overlayPane_, 1);
+                bottomLayout_->addWidget(controlsPanel_);
+            } else {
+                bottomLayout_->addWidget(controlsPanel_);
+                bottomLayout_->addWidget(overlayPane_, 1);
+            }
+        }
+        if (sideButton_) {
+            const QSignalBlocker b(sideButton_);
+            sideButton_->setChecked(controlsRight_);
+            sideButton_->setToolTip(controlsRight_ ? "Controls are on the right - click to move them left"
+                                                   : "Controls are on the left - click to move them right");
+        }
+        if (actControlsRight_) {
+            const QSignalBlocker b(actControlsRight_);
+            actControlsRight_->setChecked(controlsRight_);
+        }
+    }
+
     // ===== options <-> controls ===============================================
     void setMode(int mode) {
         options_.mode = mode;
@@ -744,10 +787,6 @@ private:
     }
 
     void syncControlsFromOptions() {
-        for (int i = 0; i < 3; ++i) {
-            const QSignalBlocker b(modeButtons_[i]);
-            modeButtons_[i]->setChecked(i == options_.mode);
-        }
         if (actTol_) {
             QAction* acts[3] = {actTol_, actRange_, actBlend_};
             for (int i = 0; i < 3; ++i) {
@@ -780,6 +819,7 @@ private:
         options_.compareAlpha = prefs_->value("picture/compareAlpha", false).toBool();
         showMetadata_ = prefs_->value("picture/showMetadata", true).toBool();
         metaDiffOnly_ = prefs_->value("picture/metadataDiffOnly", false).toBool();
+        controlsRight_ = prefs_->value("picture/controlsRight", false).toBool();
     }
 
     void savePreferences() {
@@ -789,6 +829,7 @@ private:
         prefs_->setValue("picture/resize", options_.resize);
         prefs_->setValue("picture/compareAlpha", options_.compareAlpha);
         prefs_->setValue("picture/showMetadata", showMetadata_);
+        prefs_->setValue("picture/controlsRight", controlsRight_);
         prefs_->setValue("picture/metadataDiffOnly", metaPanel_ ? metaPanel_->onlyDifferences() : metaDiffOnly_);
     }
 
@@ -908,11 +949,40 @@ private:
             connect(a, &QAction::triggered, this, [fn](bool) { fn(); });
             return a;
         };
+        using icons::Glyph;
         actSwap_ = make("Swap Sides", QKeySequence(), [this]() { swapSides(); });
+        actSwap_->setIcon(icons::glyph(Glyph::Swap));
+        actSwap_->setIconText("Swap");  // short caption under the toolbar icon
+        actSwap_->setToolTip("Swap left and right");
         actReload_ = make("Reload", QKeySequence("F5"), [this]() { reload(); });
+        actReload_->setIcon(icons::glyph(Glyph::Refresh));
+        actReload_->setToolTip("Reload both images (F5)");
+
         actTol_ = make("Tolerance Mode", QKeySequence(), [this]() { setMode(0); }, true);
+        actTol_->setIcon(icons::pictureicons::tolerance());
+        actTol_->setIconText("Tol");
+        actTol_->setToolTip("Highlight pixels that differ by more than the tolerance");
         actRange_ = make("Range Mode", QKeySequence(), [this]() { setMode(1); }, true);
+        actRange_->setIcon(icons::pictureicons::range());
+        actRange_->setIconText("Range");
+        actRange_->setToolTip("Show per-pixel difference magnitude inside a range");
         actBlend_ = make("Blend Mode", QKeySequence(), [this]() { setMode(2); }, true);
+        actBlend_->setIcon(icons::pictureicons::blend());
+        actBlend_->setIconText("Blend");
+        actBlend_->setToolTip("Blend both images");
+        for (QAction* a : {actTol_, actRange_, actBlend_}) a->setIconVisibleInMenu(false);
+
+        actMetadata_ = new QAction("Metadata", this);
+        actMetadata_->setCheckable(true);
+        actMetadata_->setChecked(showMetadata_);
+        actMetadata_->setIcon(icons::pictureicons::info());
+        actMetadata_->setIconVisibleInMenu(false);
+        actMetadata_->setToolTip("Show a side-by-side list of file / image / EXIF properties");
+        connect(actMetadata_, &QAction::toggled, this, [this](bool on) {
+            showMetadata_ = on;
+            if (metaPanel_) metaPanel_->setVisible(on);
+        });
+
         actResetOffset_ = make("Reset Offset", QKeySequence(), [this]() {
             options_.offset = QPoint(0, 0);
             updateOffsetLabel();
@@ -921,45 +991,37 @@ private:
         actZoomIn_ = make("Zoom In", QKeySequence(Qt::CTRL | Qt::Key_Plus), [this]() { zoomBy(1); });
         actZoomOut_ = make("Zoom Out", QKeySequence(Qt::CTRL | Qt::Key_Minus), [this]() { zoomBy(-1); });
         actFit_ = make("Fit to Window", QKeySequence(Qt::CTRL | Qt::Key_0), [this]() { fitToWindow(); });
+        actFit_->setIcon(icons::pictureicons::fit());
         actActual_ = make("Actual Size (1:1)", QKeySequence(Qt::CTRL | Qt::Key_1), [this]() { setZoomPercent(100); });
+
+        actControlsRight_ = new QAction("Controls on Right", this);
+        actControlsRight_->setCheckable(true);
+        actControlsRight_->setChecked(controlsRight_);
+        connect(actControlsRight_, &QAction::triggered, this,
+                [this](bool on) { setControlsOnRight(on); });
     }
 
     // ===== widget construction ================================================
+    // Same look as the Text Compare toolbar (icon over caption, styled through the
+    // shared "textCompareToolbar" rule in qt_style.h); every button is an action.
     QWidget* buildToolbar() {
-        auto* bar = new QWidget(this);
-        auto* row = new QHBoxLayout(bar);
-        row->setContentsMargins(6, 4, 6, 4);
-        row->setSpacing(4);
+        toolbar_ = new QToolBar(this);
+        toolbar_->setObjectName("textCompareToolbar");
+        toolbar_->setMovable(false);
+        toolbar_->setFloatable(false);
+        toolbar_->setIconSize(QSize(20, 20));
+        toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
 
-        const char* labels[3] = {"Tol", "Range", "Blend"};
-        const char* tips[3] = {"Highlight pixels that differ by more than the tolerance",
-                               "Show per-pixel difference magnitude inside a range",
-                               "Blend both images"};
-        for (int i = 0; i < 3; ++i) {
-            auto* b = new QToolButton(bar);
-            b->setText(labels[i]);
-            b->setToolTip(tips[i]);
-            b->setCheckable(true);
-            b->setAutoExclusive(true);
-            connect(b, &QToolButton::clicked, this, [this, i]() { setMode(i); });
-            modeButtons_[i] = b;
-            row->addWidget(b);
-        }
-        row->addSpacing(10);
+        toolbar_->addAction(actTol_);
+        toolbar_->addAction(actRange_);
+        toolbar_->addAction(actBlend_);
+        toolbar_->addSeparator();
+        toolbar_->addAction(actSwap_);
+        toolbar_->addAction(actReload_);
+        toolbar_->addSeparator();
 
-        auto* swap = new QToolButton(bar);
-        swap->setText("Swap");
-        swap->setToolTip("Swap left and right");
-        connect(swap, &QToolButton::clicked, this, [this]() { swapSides(); });
-        row->addWidget(swap);
-        auto* reloadButton = new QToolButton(bar);
-        reloadButton->setText("Reload");
-        connect(reloadButton, &QToolButton::clicked, this, [this]() { reload(); });
-        row->addWidget(reloadButton);
-        row->addSpacing(10);
-
-        row->addWidget(new QLabel("Size:", bar));
-        resizeCombo_ = new QComboBox(bar);
+        toolbar_->addWidget(new QLabel("Size:", toolbar_));
+        resizeCombo_ = new QComboBox(toolbar_);
         resizeCombo_->addItems({"Auto scale", "Native size", "Fit to left", "Fit to right", "Fit to larger",
                                 "Fit to smaller"});
         resizeCombo_->setToolTip("How differently sized images are matched before comparing");
@@ -967,27 +1029,17 @@ private:
             options_.resize = i;
             sendOptions();
         });
-        row->addWidget(resizeCombo_);
+        toolbar_->addWidget(resizeCombo_);
 
-        alphaCheck_ = new QCheckBox("Compare alpha", bar);
+        alphaCheck_ = new QCheckBox("Compare alpha", toolbar_);
         connect(alphaCheck_, &QCheckBox::toggled, this, [this](bool on) {
             options_.compareAlpha = on;
             sendOptions();
         });
-        row->addWidget(alphaCheck_);
-
-        metaToggle_ = new QToolButton(bar);
-        metaToggle_->setText("Metadata");
-        metaToggle_->setToolTip("Show a side-by-side list of file / image / EXIF properties");
-        metaToggle_->setCheckable(true);
-        metaToggle_->setChecked(showMetadata_);
-        connect(metaToggle_, &QToolButton::toggled, this, [this](bool on) {
-            showMetadata_ = on;
-            if (metaPanel_) metaPanel_->setVisible(on);
-        });
-        row->addWidget(metaToggle_);
-        row->addStretch(1);
-        return bar;
+        toolbar_->addWidget(alphaCheck_);
+        toolbar_->addSeparator();
+        toolbar_->addAction(actMetadata_);
+        return toolbar_;
     }
 
     QWidget* buildPathRows() {
@@ -1039,13 +1091,14 @@ private:
         top->setStretchFactor(2, 2);
 
         auto* bottom = new QWidget(vertical);
-        auto* row = new QHBoxLayout(bottom);
-        row->setContentsMargins(6, 6, 6, 6);
-        row->addWidget(buildControls(bottom));
+        bottomLayout_ = new QHBoxLayout(bottom);
+        bottomLayout_->setContentsMargins(6, 6, 6, 6);
+        bottomLayout_->setSpacing(8);
+        controlsPanel_ = buildControls(bottom);
         overlayPane_ = new PictureImagePane(&view_, bottom);
         overlayPane_->setPlaceholder("Result");
         overlayPane_->setDragMovesOffset(true);
-        row->addWidget(overlayPane_, 1);
+        applyControlsSide();  // adds controls + result in the saved order
 
         vertical->addWidget(top);
         vertical->addWidget(bottom);
@@ -1063,7 +1116,19 @@ private:
 
         offsetLabel_ = new QLabel(panel);
         zoomLabel_ = new QLabel("Zoom:  100%", panel);
-        col->addWidget(offsetLabel_);
+
+        auto* head = new QHBoxLayout;
+        head->setContentsMargins(0, 0, 0, 0);
+        head->setSpacing(4);
+        head->addWidget(offsetLabel_, 1);
+        sideButton_ = new QToolButton(panel);
+        sideButton_->setIcon(icons::pictureicons::controlsSide());
+        sideButton_->setIconSize(QSize(16, 16));
+        sideButton_->setCheckable(true);
+        sideButton_->setCursor(Qt::PointingHandCursor);
+        connect(sideButton_, &QToolButton::clicked, this, [this](bool on) { setControlsOnRight(on); });
+        head->addWidget(sideButton_);
+        col->addLayout(head);
         col->addWidget(zoomLabel_);
 
         auto* zoomRow = new QHBoxLayout;
@@ -1072,13 +1137,24 @@ private:
         connect(zoomSlider_, &QSlider::valueChanged, this, [this](int v) { setZoomPercent(v); });
         auto* actual = new QToolButton(panel);
         actual->setText("1:1");
+        actual->setToolTip("Actual size (Ctrl+1)");
+        actual->setMinimumSize(32, 26);
+        QFont actualFont = actual->font();
+        actualFont.setBold(true);
+        actual->setFont(actualFont);
         connect(actual, &QToolButton::clicked, this, [this]() { setZoomPercent(100); });
-        auto* fit = new QToolButton(panel);
-        fit->setText("Fit");
-        connect(fit, &QToolButton::clicked, this, [this]() { fitToWindow(); });
+        fitButton_ = new QToolButton(panel);
+        fitButton_->setIcon(icons::pictureicons::fit());
+        fitButton_->setIconSize(QSize(16, 16));
+        fitButton_->setToolTip("Fit to window (Ctrl+0)");
+        fitButton_->setCheckable(true);  // lit while the view is in fit mode
+        fitButton_->setChecked(view_.fit);
+        fitButton_->setMinimumSize(32, 26);
+        fitButton_->setStyleSheet("QToolButton:checked { border-color: #0a64c8; }");
+        connect(fitButton_, &QToolButton::clicked, this, [this]() { fitToWindow(); });
         zoomRow->addWidget(zoomSlider_, 1);
         zoomRow->addWidget(actual);
-        zoomRow->addWidget(fit);
+        zoomRow->addWidget(fitButton_);
         col->addLayout(zoomRow);
 
         paramStack_ = new QStackedWidget(panel);
@@ -1208,7 +1284,6 @@ private:
 
     ViewInfo leftInfo_, rightInfo_;
     PictureMetadataPanel* metaPanel_ = nullptr;
-    QToolButton* metaToggle_ = nullptr;
     QHash<QString, PictureMetadata> metaExtra_;  // by path; header-only extras
     int metaGeneration_ = 0;
     bool showMetadata_ = true;
@@ -1219,12 +1294,17 @@ private:
     QLineEdit* rightEdit_ = nullptr;
     QLabel* leftInfoLabel_ = nullptr;
     QLabel* rightInfoLabel_ = nullptr;
-    QToolButton* modeButtons_[3] = {};
+    QToolBar* toolbar_ = nullptr;
     QComboBox* resizeCombo_ = nullptr;
     QCheckBox* alphaCheck_ = nullptr;
     PictureImagePane* leftPane_ = nullptr;
     PictureImagePane* rightPane_ = nullptr;
     PictureImagePane* overlayPane_ = nullptr;
+    QHBoxLayout* bottomLayout_ = nullptr;
+    QWidget* controlsPanel_ = nullptr;
+    QToolButton* sideButton_ = nullptr;  // controls left/right toggle
+    QToolButton* fitButton_ = nullptr;
+    bool controlsRight_ = false;         // pref "picture/controlsRight"
     QLabel* offsetLabel_ = nullptr;
     QLabel* zoomLabel_ = nullptr;
     QSlider* zoomSlider_ = nullptr;
@@ -1249,6 +1329,8 @@ private:
     QAction* actTol_ = nullptr;
     QAction* actRange_ = nullptr;
     QAction* actBlend_ = nullptr;
+    QAction* actMetadata_ = nullptr;
+    QAction* actControlsRight_ = nullptr;
     QAction* actResetOffset_ = nullptr;
     QAction* actZoomIn_ = nullptr;
     QAction* actZoomOut_ = nullptr;

@@ -914,6 +914,86 @@ inline QIcon saveIcon(const QColor& body) {
 }
 
 // ---------------------------------------------------------------------------
+// Picture Compare icons: the Tol / Range / Blend mode glyphs (a square and a
+// circle overlapping, with the overlap in a third colour), the "fit to window"
+// glyph (a frame with arrowheads pointing outward), the metadata toggle and the
+// controls-left/right toggle. QIcon::On is the checked state.
+// ---------------------------------------------------------------------------
+namespace pictureicons {
+
+inline QIcon overlap(const QColor& square, const QColor& circle, const QColor& both) {
+    return make([square, circle, both](QPainter& p, QIcon::Mode, QIcon::State) {
+        const QRectF sq(1.3, 1.3, 8.4, 8.4);
+        const QRectF ci(6.0, 6.0, 8.6, 8.6);
+        p.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1.0));
+        p.setBrush(square);
+        p.drawRect(sq);
+        p.setBrush(circle);
+        p.drawEllipse(ci);
+        QPainterPath a;
+        a.addRect(sq);
+        QPainterPath b;
+        b.addEllipse(ci);
+        p.setPen(Qt::NoPen);
+        p.setBrush(both);
+        p.drawPath(a.intersected(b));
+    });
+}
+
+inline QIcon tolerance() { return overlap(QColor(0xe8, 0x30, 0x30), QColor(0xe8, 0x30, 0x30), QColor(0x1e, 0x7b, 0xf0)); }
+inline QIcon range() { return overlap(QColor(0xc8, 0xc0, 0x10), QColor(0xc8, 0xc0, 0x10), QColor(0x6e, 0x66, 0x08)); }
+inline QIcon blend() { return overlap(QColor(0x20, 0xd0, 0x20), QColor(0x6c, 0x78, 0xf0), QColor(0x10, 0xc8, 0xc8)); }
+
+// Fit to window: square frame, arrowheads pointing out of all four sides.
+inline QIcon fit() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        const QColor ink(0xf0, 0xf2, 0xfa);
+        p.setPen(QPen(ink, 1.3));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(QRectF(4.8, 4.8, 6.4, 6.4), 0.8, 0.8);
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        p.drawPolygon(QPolygonF({QPointF(8.0, 0.8), QPointF(10.4, 3.6), QPointF(5.6, 3.6)}));
+        p.drawPolygon(QPolygonF({QPointF(8.0, 15.2), QPointF(10.4, 12.4), QPointF(5.6, 12.4)}));
+        p.drawPolygon(QPolygonF({QPointF(0.8, 8.0), QPointF(3.6, 5.6), QPointF(3.6, 10.4)}));
+        p.drawPolygon(QPolygonF({QPointF(15.2, 8.0), QPointF(12.4, 5.6), QPointF(12.4, 10.4)}));
+    });
+}
+
+// "i" in a ring (Metadata).
+inline QIcon info() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        const QColor ink(0xdd, 0xe0, 0xee);
+        p.setPen(QPen(ink, 1.4));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QRectF(1.8, 1.8, 12.4, 12.4));
+        p.setPen(QPen(ink, 1.6, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(8.0, 7.2), QPointF(8.0, 11.2));
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        p.drawEllipse(QPointF(8.0, 5.0), 1.0, 1.0);
+    });
+}
+
+// A window with a filled side strip: strip on the left when unchecked (controls
+// on the left), on the right when checked (controls on the right).
+inline QIcon controlsSide() {
+    return make([](QPainter& p, QIcon::Mode, QIcon::State state) {
+        const QColor ink(0xdd, 0xe0, 0xee);
+        const QColor accent(0x4e, 0x9c, 0xff);
+        p.setPen(QPen(ink, 1.2));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(QRectF(1.6, 2.6, 12.8, 10.8), 1.2, 1.2);
+        p.setPen(Qt::NoPen);
+        p.setBrush(accent);
+        const bool right = state == QIcon::On;
+        p.drawRect(QRectF(right ? 9.4 : 2.2, 3.2, 4.4, 9.6));
+    });
+}
+
+}  // namespace pictureicons
+
+// ---------------------------------------------------------------------------
 // Context-menu icons. Same 16x16 design space as the toolbar glyphs, drawn in
 // code so the menus need no image resources.
 // ---------------------------------------------------------------------------
