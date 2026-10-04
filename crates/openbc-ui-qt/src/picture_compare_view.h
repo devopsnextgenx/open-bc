@@ -44,6 +44,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QRunnable>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -97,6 +98,7 @@ public:
     std::function<void()> onLeave;
     std::function<void(const QPoint& deltaCanvas)> onDragOffset;  // result pane only
     std::function<void(const QPointF& deltaImage)> onPan;
+    std::function<void(const QPointF& panImage)> onPanTo;  // absolute pan, from the scroll bars
     std::function<void(int steps)> onWheelZoom;
     std::function<void()> onResized;
 
@@ -105,9 +107,51 @@ public:
         setMinimumSize(400, 400);
         setFocusPolicy(Qt::ClickFocus);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+        // Thin overlay scroll bars (they never take space from the viewport, so showing or
+        // hiding them cannot change the overflow and feed back into itself).
+        hBar_ = new QScrollBar(Qt::Horizontal, this);
+        vBar_ = new QScrollBar(Qt::Vertical, this);
+        hBar_->hide();
+        vBar_->hide();
+        connect(hBar_, &QScrollBar::valueChanged, this, [this](int v) {
+            if (!onPanTo || state_->fit) return;
+            QPointF p = state_->pan;
+            p.setX((hBar_->maximum() / 2.0 - v) / effectiveScale());
+            onPanTo(p);
+        });
+        connect(vBar_, &QScrollBar::valueChanged, this, [this](int v) {
+            if (!onPanTo || state_->fit) return;
+            QPointF p = state_->pan;
+            p.setY((vBar_->maximum() / 2.0 - v) / effectiveScale());
+            onPanTo(p);
+        });
     }
 
-    void setImage(const QImage& image) { image_ = image; update(); }
+    void setImage(const QImage& image) { image_ = image; viewChanged(); }
+
+    // Call after the shared zoom/pan changed: repaint and refresh the scroll bars.
+    void viewChanged() {
+        syncScrollBars();
+        update();
+    }
+
+    // How far the scaled image exceeds the viewport, in widget pixels (0 when it fits).
+    QSizeF overflow() const {
+        if (image_.isNull() || state_->fit) return {};
+        const double s = effectiveScale();
+        return QSizeF(std::max(0.0, image_.width() * s - width()), std::max(0.0, image_.height() * s - height()));
+    }
+
+    // Keeps the image edges from leaving the viewport; an axis that fits stays centred.
+    QPointF clampPan(const QPointF& pan) const {
+        if (image_.isNull() || state_->fit) return QPointF();
+        const double s = effectiveScale();
+        const QSizeF ov = overflow();
+        const double mx = ov.width() / 2.0 / s;
+        const double my = ov.height() / 2.0 / s;
+        return QPointF(std::clamp(pan.x(), -mx, mx), std::clamp(pan.y(), -my, my));
+    }
     void setPlaceholder(const QString& text) { placeholder_ = text; update(); }
     // canvas = native * scale + origin
     void setMapping(const QSizeF& scale, const QPoint& origin) { scale_ = scale; origin_ = origin; update(); }
@@ -129,7 +173,7 @@ public:
 protected:
     QPointF topLeft() const {
         const double s = effectiveScale();
-        const QPointF pan = state_->fit ? QPointF() : state_->pan;
+        const QPointF pan = clampPan(state_->pan);
         return QPointF((width() - image_.width() * s) / 2.0, (height() - image_.height() * s) / 2.0) + pan * s;
     }
 
@@ -167,6 +211,7 @@ protected:
 
     void resizeEvent(QResizeEvent* e) override {
         QWidget::resizeEvent(e);
+        syncScrollBars();
         if (onResized) onResized();
     }
 
@@ -218,8 +263,16 @@ protected:
     }
 
     void wheelEvent(QWheelEvent* e) override {
+        const QSizeF ov = overflow();
         if ((e->modifiers() & Qt::ControlModifier) && onWheelZoom) {
             onWheelZoom(e->angleDelta().y() > 0 ? 1 : -1);
+            e->accept();
+        } else if (onPan && (ov.width() > 0 || ov.height() > 0)) {
+            // Plain wheel scrolls vertically, Shift+wheel horizontally (all panes follow).
+            QPointF d = e->pixelDelta().isNull() ? QPointF(e->angleDelta()) / 120.0 * 60.0
+                                                 : QPointF(e->pixelDelta());
+            if ((e->modifiers() & Qt::ShiftModifier) && d.x() == 0) d = QPointF(d.y(), 0);
+            onPan(d / effectiveScale());
             e->accept();
         } else {
             e->ignore();
@@ -227,7 +280,41 @@ protected:
     }
 
 private:
+    void syncScrollBars() {
+        const QSizeF ov = overflow();
+        const bool needH = ov.width() > 0.5;
+        const bool needV = ov.height() > 0.5;
+        hBar_->setVisible(needH);
+        vBar_->setVisible(needV);
+
+        const int th = hBar_->sizeHint().height();
+        const int tw = vBar_->sizeHint().width();
+        hBar_->setGeometry(0, height() - th, width() - (needV ? tw : 0), th);
+        vBar_->setGeometry(width() - tw, 0, tw, height() - (needH ? th : 0));
+        hBar_->raise();
+        vBar_->raise();
+
+        const double s = effectiveScale();
+        const QPointF pan = clampPan(state_->pan);
+        if (needH) {
+            const QSignalBlocker block(hBar_);
+            hBar_->setRange(0, int(std::ceil(ov.width())));
+            hBar_->setPageStep(std::max(1, width()));
+            hBar_->setSingleStep(40);
+            hBar_->setValue(int(std::lround(ov.width() / 2.0 - pan.x() * s)));
+        }
+        if (needV) {
+            const QSignalBlocker block(vBar_);
+            vBar_->setRange(0, int(std::ceil(ov.height())));
+            vBar_->setPageStep(std::max(1, height()));
+            vBar_->setSingleStep(40);
+            vBar_->setValue(int(std::lround(ov.height() / 2.0 - pan.y() * s)));
+        }
+    }
+
     PictureViewState* state_;
+    QScrollBar* hBar_ = nullptr;
+    QScrollBar* vBar_ = nullptr;
     QImage image_;
     QString placeholder_;
     QSizeF scale_{1.0, 1.0};
@@ -621,7 +708,7 @@ private:
     }
 
     void updateAllPanes() {
-        for (auto* pane : {leftPane_, rightPane_, overlayPane_}) pane->update();
+        for (auto* pane : {leftPane_, rightPane_, overlayPane_}) pane->viewChanged();
         updateZoomLabel();
     }
 
@@ -1094,8 +1181,14 @@ private:
             pane->onHover = [this](const QPoint& canvas) { hoverAt(canvas); };
             pane->onLeave = [this]() { clearProbe(); };
             pane->onWheelZoom = [this](int steps) { zoomBy(steps); };
-            pane->onPan = [this](const QPointF& d) {
-                view_.pan += d;
+            // Pan state is shared; each pane clamps against its own size, so the pane the
+            // user is interacting with decides the limits (no dead zone past the edge).
+            pane->onPan = [this, pane](const QPointF& d) {
+                view_.pan = pane->clampPan(view_.pan + d);
+                updateAllPanes();
+            };
+            pane->onPanTo = [this, pane](const QPointF& p) {
+                view_.pan = pane->clampPan(p);
                 updateAllPanes();
             };
         }
