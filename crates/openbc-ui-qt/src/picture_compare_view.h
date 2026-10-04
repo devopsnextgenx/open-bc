@@ -19,7 +19,9 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QElapsedTimer>
@@ -27,6 +29,7 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QImage>
 #include <QKeyEvent>
 #include <QLabel>
@@ -37,13 +40,16 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPointer>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QRunnable>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QThreadPool>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -57,6 +63,8 @@
 #include <optional>
 
 #include "image_compare_api.h"
+#include "picture_extensions.h"
+#include "picture_metadata.h"
 
 namespace openbc::app {
 
@@ -509,6 +517,7 @@ private:
                 leftPane_->setImage(leftImage_);
                 rightPane_->setImage(rightImage_);
                 updateInfoLabels();
+                refreshMetadata(true);
                 break;
             case OPENBC_IMAGE_RESULT:
                 applyResult(e);
@@ -519,6 +528,8 @@ private:
                 (right ? rightInfoLabel_ : leftInfoLabel_)->setText(e.message);
                 (right ? rightInfoLabel_ : leftInfoLabel_)->setStyleSheet("color:#e5534b;");
                 (right ? rightPane_ : leftPane_)->setImage(QImage());
+                (right ? rightInfo_ : leftInfo_) = ViewInfo();
+                refreshMetadata(false);
                 overlayPane_->setImage(QImage());
                 clearProbe();
                 setStatus("Cannot open " + QFileInfo(e.path).fileName(), true);
@@ -680,6 +691,8 @@ private:
         options_.tolerance = std::clamp(prefs_->value("picture/tolerance", 25).toInt(), 0, 255);
         options_.resize = std::clamp(prefs_->value("picture/resize", 0).toInt(), 0, 5);
         options_.compareAlpha = prefs_->value("picture/compareAlpha", false).toBool();
+        showMetadata_ = prefs_->value("picture/showMetadata", true).toBool();
+        metaDiffOnly_ = prefs_->value("picture/metadataDiffOnly", false).toBool();
     }
 
     void savePreferences() {
@@ -688,6 +701,8 @@ private:
         prefs_->setValue("picture/tolerance", options_.tolerance);
         prefs_->setValue("picture/resize", options_.resize);
         prefs_->setValue("picture/compareAlpha", options_.compareAlpha);
+        prefs_->setValue("picture/showMetadata", showMetadata_);
+        prefs_->setValue("picture/metadataDiffOnly", metaPanel_ ? metaPanel_->onlyDifferences() : metaDiffOnly_);
     }
 
     // ===== info rows / status ================================================
@@ -714,6 +729,59 @@ private:
         statusLabel_->setStyleSheet(emphasise ? "color:#e5534b; font-weight:600;" : QString());
     }
 
+    // ===== metadata ===========================================================
+    // Rows the backend already reported (file + image) are available instantly;
+    // the header-only extras (EXIF, GPS, text chunks, frames) are read on a
+    // worker thread and merged in when they arrive.
+    PictureMetadata composeMetadata(const ViewInfo& i) const {
+        PictureMetadata rows;
+        if (i.path.isEmpty()) return rows;
+        const QFileInfo file(i.path);
+        rows.push_back({"File", "Name", file.fileName()});
+        rows.push_back({"File", "Folder", QDir::toNativeSeparators(file.absolutePath())});
+        rows.push_back({"File", "Size", QLocale().toString(i.size) + " bytes"});
+        if (i.hasModified) {
+            rows.push_back({"File", "Modified",
+                            QDateTime::fromMSecsSinceEpoch(i.modifiedMs).toString("yyyy-MM-dd HH:mm:ss")});
+        }
+        if (!i.format.isEmpty()) rows.push_back({"Image", "Format", i.format});
+        if (i.width > 0 && i.height > 0) {
+            rows.push_back({"Image", "Dimensions", QString("%1 x %2").arg(i.width).arg(i.height)});
+            rows.push_back({"Image", "Megapixels",
+                            QString::number(double(i.width) * double(i.height) / 1e6, 'f', 2)});
+        }
+        rows.push_back({"Image", "Bits per pixel", QString::number(i.bpp)});
+        rows += metaExtra_.value(i.path);
+        return rows;
+    }
+
+    // fetch = true after a (re)load: drop the cache and read both files again.
+    void refreshMetadata(bool fetch) {
+        if (fetch) {
+            metaExtra_.clear();
+            const int generation = ++metaGeneration_;
+            QStringList paths;
+            for (const QString& path : {leftInfo_.path, rightInfo_.path}) {
+                if (!path.isEmpty() && !paths.contains(path)) paths << path;
+            }
+            QPointer<PictureCompareView> self(this);
+            for (const QString& path : paths) {
+                QThreadPool::globalInstance()->start(QRunnable::create([self, path, generation]() {
+                    PictureMetadata extra = collectPictureMetadata(path);
+                    QMetaObject::invokeMethod(
+                        qApp,
+                        [self, path, generation, extra = std::move(extra)]() mutable {
+                            if (!self || generation != self->metaGeneration_) return;  // superseded
+                            self->metaExtra_.insert(path, std::move(extra));
+                            self->refreshMetadata(false);
+                        },
+                        Qt::QueuedConnection);
+                }));
+            }
+        }
+        if (metaPanel_) metaPanel_->setMetadata(composeMetadata(leftInfo_), composeMetadata(rightInfo_));
+    }
+
     // ===== actions ============================================================
     void swapSides() {
         if (!handle_) return;
@@ -727,6 +795,7 @@ private:
         rightPane_->setImage(rightImage_);
         options_.offset = -options_.offset;  // shown immediately; the Result echo confirms it
         updateInfoLabels();
+        refreshMetadata(false);  // extras are cached per path, so a swap needs no re-read
         updateOffsetLabel();
         if (onTitleChanged) onTitleChanged();
     }
@@ -738,8 +807,7 @@ private:
     void browse(QLineEdit* edit) {
         const QString start = edit->text().isEmpty() ? QString() : QFileInfo(edit->text()).absolutePath();
         const QString file = QFileDialog::getOpenFileName(
-            this, "Select image", start,
-            "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff);;All files (*)");
+            this, "Select image", start, pictureFileDialogFilter());
         if (file.isEmpty()) return;
         edit->setText(file);
         compare();
@@ -820,6 +888,17 @@ private:
             sendOptions();
         });
         row->addWidget(alphaCheck_);
+
+        metaToggle_ = new QToolButton(bar);
+        metaToggle_->setText("Metadata");
+        metaToggle_->setToolTip("Show a side-by-side list of file / image / EXIF properties");
+        metaToggle_->setCheckable(true);
+        metaToggle_->setChecked(showMetadata_);
+        connect(metaToggle_, &QToolButton::toggled, this, [this](bool on) {
+            showMetadata_ = on;
+            if (metaPanel_) metaPanel_->setVisible(on);
+        });
+        row->addWidget(metaToggle_);
         row->addStretch(1);
         return bar;
     }
@@ -863,6 +942,14 @@ private:
         rightPane_->setPlaceholder("Drop or choose the right image");
         top->addWidget(leftPane_);
         top->addWidget(rightPane_);
+        metaPanel_ = new PictureMetadataPanel(top);
+        metaPanel_->setOnlyDifferences(metaDiffOnly_);
+        metaPanel_->setVisible(showMetadata_);
+        top->addWidget(metaPanel_);
+        top->setChildrenCollapsible(false);
+        top->setStretchFactor(0, 3);
+        top->setStretchFactor(1, 3);
+        top->setStretchFactor(2, 2);
 
         auto* bottom = new QWidget(vertical);
         auto* row = new QHBoxLayout(bottom);
@@ -1027,6 +1114,12 @@ private:
     QElapsedTimer loadTimer_;
 
     ViewInfo leftInfo_, rightInfo_;
+    PictureMetadataPanel* metaPanel_ = nullptr;
+    QToolButton* metaToggle_ = nullptr;
+    QHash<QString, PictureMetadata> metaExtra_;  // by path; header-only extras
+    int metaGeneration_ = 0;
+    bool showMetadata_ = true;
+    bool metaDiffOnly_ = false;
     QImage leftImage_, rightImage_;
 
     QLineEdit* leftEdit_ = nullptr;

@@ -43,6 +43,7 @@
 #include <QSettings>
 #include <QRunnable>
 #include <QSplitter>
+#include <QTemporaryDir>
 #include <QThreadPool>
 #include <QTimer>
 #include <QToolBar>
@@ -59,6 +60,7 @@
 
 #include "folder_model.h"
 #include "path_selector.h"
+#include "picture_extensions.h"
 #include "qt_style.h"
 #include "remote_profile_store.h"
 #include "remote_vfs_bridge.h"
@@ -674,6 +676,10 @@ public:
     std::function<void()> onTitleChanged;
     std::function<void(const QString&, const QString&, const QString&, const QString&)>
         onTextCompare;
+    // Image files (see pictureExtensions()) open here - left path, right path -
+    // instead of in the text diff. Either path may be empty (orphan row). When
+    // this is not installed, images fall back to the text compare as before.
+    std::function<void(const QString&, const QString&)> onPictureCompare;
     std::function<void(const QString&, const QString&)> onNewFolderCompare;
     std::function<void(const QString&, const QString&)> onComparisonRequested;
 
@@ -1271,6 +1277,10 @@ private:
     }
 
     void openTextComparePaths(const QString& leftPath, const QString& rightPath) {
+        if (shouldOpenAsPicture(leftPath, rightPath)) {
+            openPictureComparePaths(leftPath, rightPath);
+            return;
+        }
         RemoteProfile leftProfile;
         RemoteProfile rightProfile;
         const bool leftRemote = !leftPath.isEmpty() &&
@@ -1331,6 +1341,89 @@ private:
         QThreadPool::globalInstance()->start(task);
         log("Opening text comparison: " + QDir::toNativeSeparators(leftPath) + " <-> " +
             QDir::toNativeSeparators(rightPath));
+    }
+
+    // Both present sides must be pictures (a.png vs a.txt still goes to the text
+    // compare); a lone image on an orphan row counts as a picture too.
+    bool shouldOpenAsPicture(const QString& leftPath, const QString& rightPath) const {
+        if (!onPictureCompare) return false;
+        if (leftPath.isEmpty() && rightPath.isEmpty()) return false;
+        return (leftPath.isEmpty() || isPictureFilePath(leftPath)) &&
+               (rightPath.isEmpty() || isPictureFilePath(rightPath));
+    }
+
+    // Temp copies of remote images must outlive the Picture Compare tab (its
+    // Reload re-reads the file), so they are kept until the application exits.
+    static std::vector<std::shared_ptr<QTemporaryDir>>& pictureTempDirs() {
+        static std::vector<std::shared_ptr<QTemporaryDir>> dirs;
+        return dirs;
+    }
+
+    // Picture Compare decodes local files, so a remote image is first copied to
+    // a temp file (off the GUI thread); local images are handed over directly.
+    void openPictureComparePaths(const QString& leftPath, const QString& rightPath) {
+        RemoteProfile leftProfile;
+        RemoteProfile rightProfile;
+        const bool leftRemote = !leftPath.isEmpty() &&
+                                RemoteProfileStore::findProfileForPath(leftPath, &leftProfile);
+        const bool rightRemote = !rightPath.isEmpty() &&
+                                 RemoteProfileStore::findProfileForPath(rightPath, &rightProfile);
+        log("Opening picture comparison: " + QDir::toNativeSeparators(leftPath) + " <-> " +
+            QDir::toNativeSeparators(rightPath));
+        if (!leftRemote && !rightRemote) {
+            onPictureCompare(leftPath, rightPath);
+            return;
+        }
+
+        auto tempDir = std::make_shared<QTemporaryDir>();
+        if (!tempDir->isValid()) {
+            log("Could not create a temporary folder for the remote image");
+            return;
+        }
+        const QString root = tempDir->path();
+        QPointer<CompareSession> self(this);
+        auto* task = QRunnable::create([self, tempDir, root, leftPath, rightPath, leftRemote,
+                                        leftProfile, rightRemote, rightProfile]() {
+            QString error;
+            auto fetch = [&](const QString& path, bool remote, const RemoteProfile& profile,
+                             const QString& sub, QString* local) {
+                *local = path;
+                if (path.isEmpty() || !remote) return true;
+                QByteArray bytes;
+                if (!sharedVfsBridge().remoteReadFile(profile, remoteRelativePath(path, profile),
+                                                      &bytes, &error)) {
+                    error = "Could not download " + path + " (" + error + ")";
+                    return false;
+                }
+                QDir().mkpath(root + '/' + sub);
+                const QString target = root + '/' + sub + '/' + QFileInfo(path).fileName();
+                QFile out(target);
+                if (!out.open(QIODevice::WriteOnly) || out.write(bytes) != bytes.size()) {
+                    error = "Could not write " + target;
+                    return false;
+                }
+                *local = target;
+                return true;
+            };
+            QString localLeft;
+            QString localRight;
+            const bool ok = fetch(leftPath, leftRemote, leftProfile, "left", &localLeft) &&
+                            fetch(rightPath, rightRemote, rightProfile, "right", &localRight);
+            QMetaObject::invokeMethod(
+                qApp,
+                [self, tempDir, localLeft, localRight, ok, error]() {
+                    if (!self) return;
+                    if (!ok) {
+                        self->log(error);
+                        return;
+                    }
+                    pictureTempDirs().push_back(tempDir);
+                    if (self->onPictureCompare) self->onPictureCompare(localLeft, localRight);
+                },
+                Qt::QueuedConnection);
+        });
+        task->setAutoDelete(true);
+        QThreadPool::globalInstance()->start(task);
     }
 
     void loadFolderLevel(QTreeWidget* tree, QTreeWidget* other, QTreeWidgetItem* item) {
