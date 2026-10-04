@@ -94,7 +94,7 @@ public:
 
     PictureImagePane(PictureViewState* state, QWidget* parent = nullptr) : QWidget(parent), state_(state) {
         setMouseTracking(true);
-        setMinimumSize(80, 80);
+        setMinimumSize(400, 400);
         setFocusPolicy(Qt::ClickFocus);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     }
