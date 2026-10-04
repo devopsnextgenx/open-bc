@@ -1,6 +1,7 @@
 //! Non-blocking, level-at-a-time folder scanning orchestration.
 
 pub mod text_runner;
+pub mod image_compare;
 
 use openbc_compute::ComputeDispatcher;
 use openbc_core::{

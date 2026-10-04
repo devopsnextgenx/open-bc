@@ -2,6 +2,8 @@
 
 /// Pure text and log comparison algorithms.
 pub mod text;
+/// Image comparison domain types (options, verdicts, pixel probe).
+pub mod image_compare;
 
 use std::path::PathBuf;
 use std::time::SystemTime;

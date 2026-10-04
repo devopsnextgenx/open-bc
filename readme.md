@@ -1,5 +1,18 @@
 # OpenBC
 
+## OpenBC image compare
+
+Picture Compare tab (Tol / Range / Blend, offset drag, zoom, 9x9 pixel details, auto-resize)
+backed by core -> compute -> engine -> ui-qt, per ARCHITECTURE.md.
+
+Start with `cargo/module-registration.md`, then the `cargo/*.snippet` files, then `patches/main_window.patch`.
+
+NOT COMPILED: this package was written without rustc or Qt available. Run
+`cargo test -p openbc-core -p openbc-compute -p openbc-engine -p openbc-ui-qt` first; expect to fix a
+few small compile errors (crate-version API drift in `image`, imports).
+
+## OpenBC file/folder compare
+
 OpenBC is an open-source, native file and folder comparison tool. It aims to become a capable, transparent alternative to [Beyond Compare](https://www.scootersoftware.com/), built in the open with a modern Rust core and a Qt desktop interface.
 
 The project is actively evolving. The goal is not only to reproduce familiar comparison workflows, but to build a fast, extensible tool that the community can inspect, improve, and adapt.

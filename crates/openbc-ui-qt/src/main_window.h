@@ -43,6 +43,7 @@
 #include "folder_compare_view.h"
 #include "backend_api.h"
 #include "home_view.h"
+#include "picture_compare_view.h"
 #include "qt_style.h"
 #include "session_history.h"
 #include "text_compare_view.h"
@@ -202,22 +203,29 @@ extern "C" int openbc_run_gui() {
         // its own, so that one is simply left empty rather than stale.
         CompareSession* session = currentSession();
         auto* textView = dynamic_cast<TextCompareView*>(tabs->currentWidget());
+        auto* pictureView = dynamic_cast<PictureCompareView*>(tabs->currentWidget());
         fill(actionsMenu, session   ? session->actionsMenuItems()
                           : textView ? textView->actionsMenuItems()
+                          : pictureView ? pictureView->actionsMenuItems()
                                      : QList<QAction*>());
         fill(editMenu, session   ? session->editMenuItems()
                        : textView ? textView->editMenuItems()
+                       : pictureView ? pictureView->editMenuItems()
                                   : QList<QAction*>());
         fill(searchMenu, session   ? session->searchMenuItems()
                          : textView ? textView->searchMenuItems()
+                         : pictureView ? pictureView->searchMenuItems()
                                     : QList<QAction*>());
         fill(viewMenu, session   ? session->viewMenuItems()
                        : textView ? textView->viewMenuItems()
+                       : pictureView ? pictureView->viewMenuItems()
                                   : QList<QAction*>());
         viewMenu->addSeparator();
         viewMenu->addAction(darkThemeAction);
         if (textView) viewMenu->addAction(textView->syntaxStyleMenuAction());
-        fill(toolsMenu, session ? session->toolsMenuItems() : QList<QAction*>());
+        fill(toolsMenu, session   ? session->toolsMenuItems()
+                        : pictureView ? pictureView->toolsMenuItems()
+                                      : QList<QAction*>());
     };
     auto updateWindowTitle = [&]() {
         CompareSession* session = currentSession();
@@ -225,6 +233,8 @@ extern "C" int openbc_run_gui() {
             window.setWindowTitle(session->title() + " - Folder Compare - OpenBC");
         } else if (auto* textView = dynamic_cast<TextCompareView*>(tabs->currentWidget())) {
             window.setWindowTitle(textView->title() + " - Text Compare - OpenBC");
+        } else if (auto* pictureView = dynamic_cast<PictureCompareView*>(tabs->currentWidget())) {
+            window.setWindowTitle(pictureView->title() + " - Picture Compare - OpenBC");
         } else {
             window.setWindowTitle("OpenBC - Folder Compare");
         }
@@ -233,6 +243,7 @@ extern "C" int openbc_run_gui() {
     std::function<CompareSession*(const QString&, const QString&, bool)> addSession;
     std::function<void(const QString&, const QString&, const QString&, const QString&, CompareSession*)>
         addTextView;
+    std::function<void(const QString&, const QString&, bool)> addPictureView;
     std::function<void(int)> closeTab;
 
     addSession = [&](const QString& left, const QString& right, bool run) -> CompareSession* {
@@ -318,6 +329,35 @@ extern "C" int openbc_run_gui() {
         tabs->setCurrentIndex(textIndex);
     };
 
+    addPictureView = [&](const QString& left, const QString& right, bool run) {
+        auto* view = new PictureCompareView(&preferences);
+        view->setPaths(left, right);
+        const int pictureIndex = tabs->addTab(view, sessionTypeIcon("picture-compare"), view->title());
+        tabs->setTabToolTip(pictureIndex, view->detailedTitle());
+        auto* pictureClose = new QToolButton;
+        pictureClose->setObjectName("tabClose");
+        pictureClose->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Close));
+        pictureClose->setToolTip("Close tab (Ctrl+W)");
+        pictureClose->setFocusPolicy(Qt::NoFocus);
+        pictureClose->setAutoRaise(true);
+        tabs->tabBar()->setTabButton(pictureIndex, QTabBar::RightSide, pictureClose);
+        QObject::connect(pictureClose, &QToolButton::clicked, view,
+                         [&, view]() { closeTab(tabs->indexOf(view)); });
+        view->onComparisonRequested = [&](const QString& requestedLeft, const QString& requestedRight) {
+            SessionHistory::record("picture", requestedLeft, requestedRight);
+            home->refreshHistory();
+        };
+        view->onTitleChanged = [&, view]() {
+            const int i = tabs->indexOf(view);
+            if (i < 0) return;
+            tabs->setTabText(i, view->title());
+            tabs->setTabToolTip(i, view->detailedTitle());
+            if (tabs->currentIndex() == i) updateWindowTitle();
+        };
+        tabs->setCurrentIndex(pictureIndex);
+        if (run && !left.isEmpty() && !right.isEmpty()) view->compare();
+    };
+
     closeTab = [&](int index) {
         if (index < 0 || index >= tabs->count()) {
             return;
@@ -344,6 +384,10 @@ extern "C" int openbc_run_gui() {
 
     auto duplicateTab = [&](int index) {
         if (index < 0 || index >= tabs->count()) {
+            return;
+        }
+        if (auto* picture = dynamic_cast<PictureCompareView*>(tabs->widget(index))) {
+            addPictureView(picture->leftText(), picture->rightText(), true);
             return;
         }
         auto* source = dynamic_cast<CompareSession*>(tabs->widget(index));
@@ -395,8 +439,21 @@ extern "C" int openbc_run_gui() {
     home->onNewTextCompare = [&]() {
         addTextView(QString(), QString(), QString(), QString(), nullptr);
     };
+    // When onNewSession is set HomeView no longer falls back to onNewFolderCompare /
+    // onNewTextCompare, so every launchable kind is routed here.
+    home->onNewSession = [&](const QString& kind, const QStringList& paths) {
+        if (kind == "folder-compare") {
+            addSession(paths.value(0), paths.value(1), paths.size() >= 2);
+        } else if (kind == "text-compare") {
+            addTextView(QString(), QString(), QString(), QString(), nullptr);
+        } else if (kind == "picture-compare") {
+            addPictureView(paths.value(0), paths.value(1), paths.size() >= 2);
+        }
+    };
     home->onOpenHistory = [&](const SessionHistoryEntry& entry) {
-        if (entry.kind == "folder") {
+        if (entry.kind == "picture") {
+            addPictureView(entry.left, entry.right, true);
+        } else if (entry.kind == "folder") {
             addSession(entry.left, entry.right, true);
         } else if (!entry.left.isEmpty() || !entry.right.isEmpty()) {
             const QPointer<PersistedMainWindow> mainWindow(&window);

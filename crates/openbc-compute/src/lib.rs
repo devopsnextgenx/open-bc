@@ -1,5 +1,7 @@
 //! CPU/GPU execution policy for hashing and binary comparison.
 
+pub mod image;
+
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;

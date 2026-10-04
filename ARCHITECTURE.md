@@ -46,6 +46,17 @@ flowchart LR
 - If no compatible adapter is available, initialization fails into the CPU backend without affecting scan correctness.
 - Hash algorithm selection belongs to core policy; backend implementations must return equivalent results for the same input.
 
+## Image compare
+
+Image compare (Picture Compare tab) follows the same layering as folder compare:
+
+- `openbc-core::image_compare`: `RgbaImage`, `ImageCompareOptions` (mode, tolerance, range, blend, offset, resize policy), `ImageCompareOutput`, 9x9 `PixelProbe`, and the reference integer-only `PixelRenderer`. All backends must be bit-exact with it.
+- `openbc-compute::image`: decode, bilinear resize and compare on Rayon; a GPU executor trait and WGSL kernel for canvases at or above the GPU threshold (never below 1 MiB), with automatic CPU fallback. Work is cancelled cooperatively, per row.
+- `openbc-engine::image_compare`: one actor per tab. File bytes come through `ImageByteSource` (local FS today, `AsyncVfs` adapters later), decode/compare run on Rayon, and `ImageCompareEvent`s flow to the UI over a bounded `tokio::sync::mpsc` channel. Option changes (tolerance, mode, offset, ...) travel on a latest-wins `watch` channel and re-run only the compare phase, superseding any in-flight pass.
+- `openbc-ui-qt`: a C ABI (`image_compare_ffi.rs`) with a callback that runs on a Rust worker thread; the Qt tab copies the event and re-posts it to the GUI thread. The 9x9 hover probe is a synchronous read of the newest finished compare and never touches the pipeline.
+
+Memory is bounded: the event channel holds at most four events (each can carry a canvas-sized overlay), and files above `ImageCompareConfig::max_file_bytes` or decoders above `MAX_DECODE_ALLOC` are rejected per path without affecting the other side.
+
 ## Failure model
 
 VFS failures are attached to the affected path and emitted as scan events. A single unreadable file must not terminate unrelated sibling work. Fatal configuration and channel-closure errors terminate the scan with an explicit error.

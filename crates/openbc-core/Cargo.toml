@@ -6,6 +6,8 @@ edition.workspace = true
 [dependencies]
 openbc-observability = { path = "../openbc-observability" }
 regex = "1.10"
+serde.workspace = true
+serde_bytes = "0.11"
 similar = "2.4"
 strsim = "0.11"
 thiserror.workspace = true
