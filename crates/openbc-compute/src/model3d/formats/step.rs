@@ -1,5 +1,6 @@
-//! STEP via truck (cargo feature `fmt-step`, on by default). Tessellates every shell; units
-//! assumed mm. Assembly placements are not applied (truck-stepio reads shells as-is).
+//! STEP via truck (cargo feature `fmt-step`, on by default). Tessellates every shell; the
+//! file's length unit is detected and converted to mm. Assembly placements are not applied
+//! (truck-stepio reads shells as-is).
 use super::{finish, malformed};
 use openbc_core::model3d::*;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -8,8 +9,23 @@ use truck_stepio::r#in::Table;
 
 pub struct StepLoader;
 
-/// Chord tolerance in mm.
-const TOL: f64 = 0.05;
+/// Chord tolerance in mm (converted to the file's native unit before tessellating).
+const TOL_MM: f64 = 0.05;
+
+/// Millimetres per file length unit. STEP files are very often in metres (Onshape, SolidWorks
+/// exports), sometimes inches; defaults to 1.0 (mm) when nothing recognisable is found.
+fn length_scale_to_mm(text: &str) -> f64 {
+    let up = text.to_ascii_uppercase();
+    if up.contains("CONVERSION_BASED_UNIT('INCH'") { return 25.4; }
+    if up.contains("CONVERSION_BASED_UNIT('FOOT'") { return 304.8; }
+    let Some(p) = up.find("LENGTH_UNIT()") else { return 1.0 };
+    let start = up[..p].rfind('#').unwrap_or(0);
+    let end = up[p..].find(';').map_or(up.len(), |e| p + e);
+    let ent = &up[start..end];
+    if !ent.contains(".METRE.") { return 1.0; }
+    let prefixes: [(&str, f64); 6] = [(".MILLI.", 1.0), (".CENTI.", 10.0), (".DECI.", 100.0), (".MICRO.", 0.001), (".KILO.", 1e6), (".NANO.", 1e-6)];
+    prefixes.iter().find(|(k, _)| ent.contains(k)).map_or(1000.0, |(_, f)| *f)
+}
 
 impl MeshLoader for StepLoader {
     fn id(&self) -> &'static str { "step" }
@@ -25,6 +41,8 @@ impl MeshLoader for StepLoader {
         // truck can panic on unsupported geometry, and a panic inside rayon::spawn aborts the
         // whole process. Contain it per shell: one bad shell must not lose the whole model.
         let outer = catch_unwind(AssertUnwindSafe(|| -> Result<Mesh, LoadError> {
+            let scale = length_scale_to_mm(&text);
+            let tol = TOL_MM / scale;
             let table = Table::from_step(&text).ok_or_else(|| malformed("not a parsable STEP file"))?;
             if table.shell.is_empty() {
                 return Err(malformed("STEP file contains no shells (nothing to tessellate)"));
@@ -35,9 +53,9 @@ impl MeshLoader for StepLoader {
                 if ctx.cancel.is_cancelled() { return Err(LoadError::Cancelled); }
                 let one = catch_unwind(AssertUnwindSafe(|| -> Result<(Vec<V3>, Vec<u32>), String> {
                     let cshell = table.to_compressed_shell(shell).map_err(|e| format!("shell: {e:?}"))?;
-                    let mut poly = cshell.robust_triangulation(TOL).to_polygon();
+                    let mut poly = cshell.robust_triangulation(tol).to_polygon();
                     poly.triangulate();
-                    let pos: Vec<V3> = poly.positions().iter().map(|p| [p.x as f32, p.y as f32, p.z as f32]).collect();
+                    let pos: Vec<V3> = poly.positions().iter().map(|p| [(p.x * scale) as f32, (p.y * scale) as f32, (p.z * scale) as f32]).collect();
                     let idx: Vec<u32> = poly.faces().tri_faces().iter().flat_map(|t| t.iter().map(|v| v.pos as u32)).collect();
                     Ok((pos, idx))
                 }));
