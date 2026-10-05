@@ -36,6 +36,8 @@ find_package(Qt6 COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets REQUIRED)
 # references to symbols like `inflateEnd` even though libz.so is present.
 find_package(ZLIB REQUIRED)
 
+find_package(LibLZMA REQUIRED)
+
 # suppaftp's `tokio-async-native-tls` feature pulls in `native-tls`, which
 # on Linux is backed by system OpenSSL via `openssl-sys`. Same "DSO missing
 # from command line" issue as zlib above, this time for libssl/libcrypto -
@@ -101,6 +103,7 @@ target_link_libraries(openbc PRIVATE
     ZLIB::ZLIB
     OpenSSL::SSL
     OpenSSL::Crypto
+    LibLZMA::LibLZMA
 )
 
 target_compile_definitions(openbc PRIVATE OPENBC_BUILD_EXECUTABLE)
