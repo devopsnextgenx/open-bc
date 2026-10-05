@@ -16,6 +16,7 @@
 #include <QColor>
 #include <QMatrix4x4>
 #include <QMouseEvent>
+#include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLWidget>
@@ -92,10 +93,17 @@ public:
         setMouseTracking(true);
     }
     ~Model3dViewport() override {
+        // A viewport that was never shown (e.g. the 2nd one while the tab sits in Changes /
+        // Heatmap mode) never ran initializeGL(): its GL function table is still null, so any
+        // gl* call below would crash. Nothing was uploaded either, so there is nothing to free.
+        if (!glReady_ || !context()) return;
         makeCurrent();
-        for (auto& g : gl_) destroyMesh(g);
-        if (gridVbo_) glDeleteBuffers(1, &gridVbo_);
-        if (gridVao_) glDeleteVertexArrays(1, &gridVao_);
+        if (QOpenGLContext::currentContext()) {
+            for (auto& g : gl_) destroyMesh(g);
+            if (gridVbo_) glDeleteBuffers(1, &gridVbo_);
+            if (gridVao_) glDeleteVertexArrays(1, &gridVao_);
+            prog_.reset();                                   // needs the context current too
+        }
         doneCurrent();
     }
 
@@ -164,6 +172,7 @@ void main() {
         glDisableVertexAttribArray(1);
         glVertexAttrib1f(1, 0.0f);
         glBindVertexArray(0);
+        glReady_ = true;
     }
 
     void paintGL() override {
@@ -497,6 +506,7 @@ private:
     Camera3D* cam_;
     std::unique_ptr<QOpenGLShaderProgram> prog_;
     GlMesh gl_[kSlotCount];
+    bool glReady_ = false;               // initializeGL() completed (GL calls are safe)
     GLuint gridVao_ = 0, gridVbo_ = 0;
     QMatrix4x4 view_, proj_;
     std::vector<Layer> layers_, rightLayers_;
