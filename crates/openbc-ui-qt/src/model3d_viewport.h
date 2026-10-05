@@ -315,10 +315,14 @@ private:
             glGenBuffers(1, &g.vbo); glGenBuffers(1, &g.dev); glGenBuffers(1, &g.ibo); glGenBuffers(1, &g.ebo);
             glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
             glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(d->positions.size() * sizeof(float)), d->positions.data(), GL_STATIC_DRAW);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ibo);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(d->indices.size() * 4), d->indices.data(), GL_STATIC_DRAW);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ebo);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(d->edges.size() * 4), d->edges.data(), GL_STATIC_DRAW);
+            // Upload the index data through GL_ARRAY_BUFFER: the GL_ELEMENT_ARRAY_BUFFER binding is
+            // part of the *currently bound VAO*, and drawLayers() leaves the previous layer's VAO
+            // bound, so binding it here would silently swap that layer's index buffer for ours.
+            glBindVertexArray(0);
+            glBindBuffer(GL_ARRAY_BUFFER, g.ibo);
+            glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(d->indices.size() * 4), d->indices.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, g.ebo);
+            glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(d->edges.size() * 4), d->edges.data(), GL_STATIC_DRAW);
             g.triCount = GLsizei(d->indices.size());
             g.edgeCount = GLsizei(d->edges.size());
             g.ver = d->version;
