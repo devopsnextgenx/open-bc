@@ -14,6 +14,8 @@ mod stl;
 mod gltf_fmt;
 #[cfg(feature = "fmt-3mf")]
 mod threemf;
+#[cfg(feature = "fmt-step")]
+mod step;
 
 /// Later registrations win, so the placeholder goes first.
 pub fn builtin_registry() -> LoaderRegistry {
@@ -27,6 +29,8 @@ pub fn builtin_registry() -> LoaderRegistry {
     r.register(Arc::new(gltf_fmt::GltfLoader));
     #[cfg(feature = "fmt-3mf")]
     r.register(Arc::new(threemf::ThreeMfLoader));
+    #[cfg(feature = "fmt-step")]
+    r.register(Arc::new(step::StepLoader));
     r
 }
 
