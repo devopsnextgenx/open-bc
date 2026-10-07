@@ -25,6 +25,7 @@ Thumbs.db
 
 build/
 build_msi/
+build_deb/
 staging/
 openbc-installer.msi
 openbc-installer.wixpdb
