@@ -39,7 +39,9 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <functional>
-
+#include <QOpenGLWidget>
+#include <QSurfaceFormat>
+#include "model3d_viewport.h"
 #include "home_view.h"
 #include "3d_compare_view.h"
 #include "picture_compare_view.h"
@@ -99,6 +101,7 @@ extern "C" int openbc_run_gui() {
     int argc = 1;
     char application_name[] = "openbc-qt";
     char* argv[] = {application_name, nullptr};
+    QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);   // <-- new, must precede QApplication
     QApplication application(argc, argv);
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/openbc.png")));
 
@@ -111,6 +114,18 @@ extern "C" int openbc_run_gui() {
     PersistedMainWindow window(preferences);
     window.setWindowIcon(QApplication::windowIcon());
 
+    // Put the main window into GL-composed mode before it is first shown. Otherwise the first
+    // 3D tab flips the backing store and Qt recreates the native window mid-session, which
+    // shows up as the window minimizing/maximizing. 1x1, invisible, never interacted with.
+    {
+        auto* glWarmup = new QOpenGLWidget(&window);
+        glWarmup->setFormat(openbc::app::model3dSurfaceFormat());
+        glWarmup->setFixedSize(1, 1);
+        glWarmup->move(0, 0);
+        glWarmup->setAttribute(Qt::WA_TransparentForMouseEvents);
+        glWarmup->lower();
+    }
+    
     auto* sessionMenu = window.menuBar()->addMenu("&Session");
     auto* actionsMenu = window.menuBar()->addMenu("&Actions");
     auto* editMenu = window.menuBar()->addMenu("&Edit");

@@ -33,6 +33,17 @@
 #include <vector>
 
 namespace openbc::app {
+    
+// Single source of truth for the 3D viewport's GL format. The main window's warm-up widget
+// uses the same one, so the first real viewport reuses the already-initialised GL setup.
+inline QSurfaceFormat model3dSurfaceFormat() {
+    QSurfaceFormat f;
+    f.setVersion(3, 3);
+    f.setProfile(QSurfaceFormat::CoreProfile);
+    f.setDepthBufferSize(24);
+    f.setSamples(4);
+    return f;
+}
 
 enum MeshSlot { kSlotA = 0, kSlotB = 1, kSlotRemoved = 2, kSlotAdded = 3, kSlotCount = 4 };
 
@@ -83,15 +94,11 @@ public:
     std::function<void()> onResized;
 
     Model3dViewport(Scene3D* scene, Camera3D* camera, QWidget* parent = nullptr) : QOpenGLWidget(parent), scene_(scene), cam_(camera) {
-        QSurfaceFormat f;
-        f.setVersion(3, 3);
-        f.setProfile(QSurfaceFormat::CoreProfile);
-        f.setDepthBufferSize(24);
-        f.setSamples(4);
-        setFormat(f);
+        setFormat(model3dSurfaceFormat());
         setMinimumSize(240, 200);
         setMouseTracking(true);
     }
+    
     ~Model3dViewport() override {
         // A viewport that was never shown (e.g. the 2nd one while the tab sits in Changes /
         // Heatmap mode) never ran initializeGL(): its GL function table is still null, so any

@@ -5,6 +5,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -113,6 +114,35 @@ public:
     }
 
     static QString savedRootPath() { return rootPath() + "/saved"; }
+
+    // ----- sidebar tree expand/collapse state (persisted across launches) -----
+    // Keys are stable path-style ids chosen by the UI ("new", "auto",
+    // "auto/<bucket>", "saved/<node path>"); values are "expanded?". An empty
+    // result means nothing has been saved yet, so callers use their defaults.
+    static QString treeStatePath() { return rootPath() + "/sessions/tree_state.json"; }
+
+    static QHash<QString, bool> loadTreeState() {
+        QHash<QString, bool> result;
+        QFile file(treeStatePath());
+        if (!file.open(QIODevice::ReadOnly)) return result;
+        const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
+        for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
+            result.insert(it.key(), it.value().toBool());
+        }
+        return result;
+    }
+
+    static void saveTreeState(const QHash<QString, bool>& state) {
+        QJsonObject object;
+        for (auto it = state.constBegin(); it != state.constEnd(); ++it) {
+            object.insert(it.key(), it.value());
+        }
+        QDir().mkpath(rootPath() + "/sessions");
+        QFile file(treeStatePath());
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            file.write(QJsonDocument(object).toJson(QJsonDocument::Indented));
+        }
+    }
 
     static QList<SavedSessionNode> loadSavedNodes() {
         return loadSavedNodes(QString());

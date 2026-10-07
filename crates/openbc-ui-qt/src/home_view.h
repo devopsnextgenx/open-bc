@@ -2,7 +2,11 @@
 
 #include <QDropEvent>
 #include <QDragEnterEvent>
+#include <QDragLeaveEvent>
+#include <QDragMoveEvent>
 #include <QFileInfo>
+#include <QHash>
+#include <QPaintEvent>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -24,6 +28,7 @@
 #include <QWidget>
 #include <functional>
 
+#include "file_kinds.h"
 #include "session_history.h"
 #include "qt_style.h"
 #include "remote_connections_dialog.h"
@@ -38,16 +43,74 @@ public:
     explicit HistoryTree(QWidget* parent = nullptr) : QTreeWidget(parent) {}
 
 protected:
-    void dropEvent(QDropEvent* event) override {
+    // Whatever is under the cursor (the node row, one of its session rows, or the
+    // gap between two session rows) resolves to the saved-session node that owns
+    // it, by walking up to the nearest ancestor flagged as a node (UserRole + 4).
+    // Auto-saved rows, date buckets, "New" and empty space resolve to nullptr.
+    QTreeWidgetItem* dropNodeAt(const QPoint& position) const {
+        for (auto* item = itemAt(position); item; item = item->parent()) {
+            if (item->data(0, Qt::UserRole + 4).toBool()) return item;
+        }
+        return nullptr;
+    }
+
+    bool dragSourceIsSession() const {
         auto* source = currentItem();
-        auto* target = itemAt(event->position().toPoint());
+        return source && source->data(0, Qt::UserRole + 3).toBool();
+    }
+
+    void dragMoveEvent(QDragMoveEvent* event) override {
+        QTreeWidget::dragMoveEvent(event);
+        auto* node = dragSourceIsSession() ? dropNodeAt(event->position().toPoint()) : nullptr;
+        if (node) event->acceptProposedAction();  // base rejects hovering over plain session rows
+        else event->ignore();
+        if (node != dropHighlight_) {
+            dropHighlight_ = node;
+            viewport()->update();
+        }
+    }
+
+    void dragLeaveEvent(QDragLeaveEvent* event) override {
+        dropHighlight_ = nullptr;
+        viewport()->update();
+        QTreeWidget::dragLeaveEvent(event);
+    }
+
+    void dropEvent(QDropEvent* event) override {
+        dropHighlight_ = nullptr;
+        auto* source = currentItem();
+        auto* target = dragSourceIsSession() ? dropNodeAt(event->position().toPoint()) : nullptr;
         if (source && target && onSessionDropped) {
             onSessionDropped(source, target);
-            event->acceptProposedAction();
+            // The model is persisted and the tree rebuilt by the callback, so the
+            // view must not do its own item move/removal. A copy action stops
+            // QAbstractItemView from deleting the dragged row after a "move".
+            stopAutoScroll();
+            setState(NoState);
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+            viewport()->update();
             return;
         }
-        QTreeWidget::dropEvent(event);
+        // Never fall back to QTreeWidget::dropEvent: it would reshuffle the visible
+        // items without touching the saved data.
+        stopAutoScroll();
+        setState(NoState);
+        event->ignore();
+        viewport()->update();
     }
+
+    void paintEvent(QPaintEvent* event) override {
+        QTreeWidget::paintEvent(event);
+        if (!dropHighlight_) return;
+        QPainter painter(viewport());
+        painter.setPen(QPen(palette().highlight().color(), 1.5));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(visualItemRect(dropHighlight_).adjusted(1, 1, -1, -1));
+    }
+
+private:
+    QTreeWidgetItem* dropHighlight_ = nullptr;
 };
 
 inline QIcon historyFileIcon(const QString& path) {
@@ -246,6 +309,30 @@ inline QIcon sessionTypeIcon(const QString& kind) {
     });
 }
 
+// sessionTypeIcon() paints a fresh pixmap per call; the sessions tree can hold
+// hundreds of rows, so hand out cached copies.
+inline QIcon cachedSessionTypeIcon(const QString& kind) {
+    static QHash<QString, QIcon> cache;
+    auto it = cache.find(kind);
+    if (it == cache.end()) it = cache.insert(kind, sessionTypeIcon(kind));
+    return it.value();
+}
+
+// Which node icon a recorded session gets. The recorded kind wins; a plain
+// text session (or an unknown / legacy kind) is re-checked against the file
+// extension so pictures, 3D models, tables, media, .reg and executables get
+// their own icon instead of the generic text-file page.
+inline QIcon sessionEntryIcon(const SessionHistoryEntry& entry) {
+    QString kind = canonicalSessionKind(entry.kind);
+    if (kind.isEmpty() || kind == "text-compare") {
+        const QString path = entry.left.isEmpty() ? entry.right : entry.left;
+        const QString byFile = sessionKindForViewer(classifyFilePath(path));
+        if (byFile != "text-compare") kind = byFile;
+    }
+    if (kind.isEmpty() || kind == "text-compare") return historyFileIcon(entry.left.isEmpty() ? entry.right : entry.left);
+    return cachedSessionTypeIcon(kind);
+}
+
 // Big clickable icon that also accepts dropped folders / files.
 class SessionTile : public QToolButton {
 public:
@@ -322,6 +409,13 @@ public:
         connect(removeButton_, &QToolButton::clicked, this, [this]() { removePressed(); });
         connect(search_, &QLineEdit::textChanged, this, [this](const QString& text) { applyFilter(text); });
 
+        // Remember which tree nodes the user has open, across refreshes and launches.
+        treeState_ = SessionHistory::loadTreeState();
+        connect(history_, &QTreeWidget::itemExpanded, this,
+            [this](QTreeWidgetItem* item) { rememberExpanded(item, true); });
+        connect(history_, &QTreeWidget::itemCollapsed, this,
+            [this](QTreeWidgetItem* item) { rememberExpanded(item, false); });
+
         refreshHistory();
         clearDetails();
     }
@@ -347,7 +441,7 @@ public:
             child->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
             child->setData(0, Qt::UserRole + 6, spec.kind);
         }
-        newRoot->setExpanded(true);
+        restoreExpanded(newRoot, "new", true);
 
         // "Auto-saved": recent history grouped into date buckets. Only buckets
         // that hold a session are shown; just "Today" starts expanded.
@@ -370,9 +464,9 @@ public:
             bucketItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
             bucketItem->setData(0, Qt::UserRole + 5, true);
             for (int index : buckets[ordinal]) addSessionItem(bucketItem, entries[index], false, {}, index);
-            bucketItem->setExpanded(bucket == RecentBucket::Today);
+            restoreExpanded(bucketItem, QString("auto/%1").arg(ordinal), bucket == RecentBucket::Today);
         }
-        recent->setExpanded(true);
+        restoreExpanded(recent, "auto", true);
 
         for (const auto& node : SessionHistory::loadSavedNodes()) addNodeItem(nullptr, node);
         clearDetails();  // the old selected item was destroyed by clear()
@@ -682,7 +776,9 @@ private:
 
     void applyFilter(const QString& text) {
         const QString needle = text.trimmed();
+        applyingFilter_ = true;  // filterItem() expands matches; don't persist that
         for (int i = 0; i < history_->topLevelItemCount(); ++i) filterItem(history_->topLevelItem(i), needle, false);
+        applyingFilter_ = false;
     }
 
     // ----- tree items -----------------------------------------------------
@@ -710,11 +806,7 @@ private:
                         const QString& node, int index) {
         const QString label = entry.label.isEmpty() ? SessionHistory::defaultLabel(entry.kind, entry.left, entry.right) : entry.label;
         auto* item = new QTreeWidgetItem(parent, {label});
-        item->setIcon(0, entry.kind == "folder"
-                      ? openbc::ui::icons::folderIcon(openbc::ui::color::folderYellow())
-                  : entry.kind == "model3d"
-                      ? sessionTypeIcon("model3d-compare")
-                      : historyFileIcon(entry.left));
+        item->setIcon(0, sessionEntryIcon(entry));
         item->setToolTip(0, entry.left + "\n<->\n" + entry.right);
         item->setData(0, Qt::UserRole, saved);
         item->setData(0, Qt::UserRole + 1, index);
@@ -735,7 +827,35 @@ private:
             addSessionItem(item, node.sessions[index], true, node.path, index);
         }
         for (const auto& child : node.children) addNodeItem(item, child);
-        item->setExpanded(false);
+        restoreExpanded(item, "saved/" + node.path, false);
+    }
+
+    // ----- tree expand/collapse persistence -------------------------------
+    // Tags `item` with a stable key and applies its remembered state (or the
+    // default when the user never toggled it). Call after its children exist.
+    void restoreExpanded(QTreeWidgetItem* item, const QString& key, bool defaultExpanded) {
+        item->setData(0, Qt::UserRole + 8, key);
+        item->setExpanded(treeState_.value(key, defaultExpanded));
+    }
+
+    void rememberExpanded(QTreeWidgetItem* item, bool expanded) {
+        if (applyingFilter_ || !item) return;  // search auto-expands are temporary
+        const QString key = item->data(0, Qt::UserRole + 8).toString();
+        if (key.isEmpty() || treeState_.value(key, !expanded) == expanded) return;
+        treeState_.insert(key, expanded);
+        SessionHistory::saveTreeState(treeState_);
+    }
+
+    // Keeps saved keys attached to a node (and its descendants) when it is renamed.
+    void remapTreeKeys(const QString& from, const QString& to) {
+        QHash<QString, bool> updated;
+        for (auto it = treeState_.constBegin(); it != treeState_.constEnd(); ++it) {
+            QString key = it.key();
+            if (key == from || key.startsWith(from + "/")) key = to + key.mid(from.size());
+            updated.insert(key, it.value());
+        }
+        treeState_ = updated;
+        SessionHistory::saveTreeState(treeState_);
     }
 
     // ----- selection / details --------------------------------------------
@@ -855,6 +975,9 @@ private:
                 item->setText(0, QFileInfo(oldNode).fileName());
                 return;
             }
+            const QString parentPath = QFileInfo(oldNode).path();
+            remapTreeKeys("saved/" + oldNode,
+                          "saved/" + (parentPath == "." ? value : parentPath + "/" + value));
             refreshHistory();
             return;
         }
@@ -894,6 +1017,8 @@ private:
     QPushButton* edit_ = nullptr;
     SessionHistoryEntry selected_;
     bool selectedSaved_ = false;
+    QHash<QString, bool> treeState_;  // tree key -> expanded, mirrored to tree_state.json
+    bool applyingFilter_ = false;
 };
 
 }  // namespace openbc::app

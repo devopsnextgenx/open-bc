@@ -58,6 +58,7 @@
 #include <functional>
 #include <memory>
 
+#include "file_kinds.h"
 #include "folder_model.h"
 #include "path_selector.h"
 #include "picture_extensions.h"
@@ -680,6 +681,10 @@ public:
     // instead of in the text diff. Either path may be empty (orphan row). When
     // this is not installed, images fall back to the text compare as before.
     std::function<void(const QString&, const QString&)> onPictureCompare;
+    // 3D model files (see model3dExtensions in file_kinds.h) open here - left path,
+    // right path, either may be empty - instead of in the text diff. When this is
+    // not installed, 3D files fall back to the text compare as before.
+    std::function<void(const QString&, const QString&)> onModel3dCompare;
     std::function<void(const QString&, const QString&)> onNewFolderCompare;
     std::function<void(const QString&, const QString&)> onComparisonRequested;
 
@@ -1281,6 +1286,10 @@ private:
             openPictureComparePaths(leftPath, rightPath);
             return;
         }
+        if (shouldOpenAsModel3d(leftPath, rightPath)) {
+            openModel3dComparePaths(leftPath, rightPath);
+            return;
+        }
         RemoteProfile leftProfile;
         RemoteProfile rightProfile;
         const bool leftRemote = !leftPath.isEmpty() &&
@@ -1352,37 +1361,58 @@ private:
                (rightPath.isEmpty() || isPictureFilePath(rightPath));
     }
 
-    // Temp copies of remote images must outlive the Picture Compare tab (its
-    // Reload re-reads the file), so they are kept until the application exits.
-    static std::vector<std::shared_ptr<QTemporaryDir>>& pictureTempDirs() {
+    // Same rule for 3D models: both present sides must be models (a.stl vs a.txt
+    // stays a text compare); a lone model on an orphan row counts too.
+    bool shouldOpenAsModel3d(const QString& leftPath, const QString& rightPath) const {
+        if (!onModel3dCompare) return false;
+        if (leftPath.isEmpty() && rightPath.isEmpty()) return false;
+        return (leftPath.isEmpty() || looksLikeModel3dFile(leftPath)) &&
+               (rightPath.isEmpty() || looksLikeModel3dFile(rightPath));
+    }
+
+    // Temp copies of remote files must outlive the viewer tab (its Reload
+    // re-reads the file), so they are kept until the application exits.
+    static std::vector<std::shared_ptr<QTemporaryDir>>& viewerTempDirs() {
         static std::vector<std::shared_ptr<QTemporaryDir>> dirs;
         return dirs;
     }
 
-    // Picture Compare decodes local files, so a remote image is first copied to
-    // a temp file (off the GUI thread); local images are handed over directly.
+    using ViewerCallback = std::function<void(const QString&, const QString&)>;
+
     void openPictureComparePaths(const QString& leftPath, const QString& rightPath) {
+        openViewerComparePaths(leftPath, rightPath, "picture", &CompareSession::onPictureCompare);
+    }
+
+    void openModel3dComparePaths(const QString& leftPath, const QString& rightPath) {
+        openViewerComparePaths(leftPath, rightPath, "3D model", &CompareSession::onModel3dCompare);
+    }
+
+    // The picture and 3D viewers load local files, so a remote file is first
+    // copied to a temp file (off the GUI thread); local files are handed over
+    // directly. `callback` is the session member that opens the viewer tab.
+    void openViewerComparePaths(const QString& leftPath, const QString& rightPath,
+                                const QString& what, ViewerCallback CompareSession::*callback) {
         RemoteProfile leftProfile;
         RemoteProfile rightProfile;
         const bool leftRemote = !leftPath.isEmpty() &&
                                 RemoteProfileStore::findProfileForPath(leftPath, &leftProfile);
         const bool rightRemote = !rightPath.isEmpty() &&
                                  RemoteProfileStore::findProfileForPath(rightPath, &rightProfile);
-        log("Opening picture comparison: " + QDir::toNativeSeparators(leftPath) + " <-> " +
+        log("Opening " + what + " comparison: " + QDir::toNativeSeparators(leftPath) + " <-> " +
             QDir::toNativeSeparators(rightPath));
         if (!leftRemote && !rightRemote) {
-            onPictureCompare(leftPath, rightPath);
+            if (const auto& open = this->*callback) open(leftPath, rightPath);
             return;
         }
 
         auto tempDir = std::make_shared<QTemporaryDir>();
         if (!tempDir->isValid()) {
-            log("Could not create a temporary folder for the remote image");
+            log("Could not create a temporary folder for the remote file");
             return;
         }
         const QString root = tempDir->path();
         QPointer<CompareSession> self(this);
-        auto* task = QRunnable::create([self, tempDir, root, leftPath, rightPath, leftRemote,
+        auto* task = QRunnable::create([self, callback, tempDir, root, leftPath, rightPath, leftRemote,
                                         leftProfile, rightRemote, rightProfile]() {
             QString error;
             auto fetch = [&](const QString& path, bool remote, const RemoteProfile& profile,
@@ -1411,14 +1441,14 @@ private:
                             fetch(rightPath, rightRemote, rightProfile, "right", &localRight);
             QMetaObject::invokeMethod(
                 qApp,
-                [self, tempDir, localLeft, localRight, ok, error]() {
+                [self, callback, tempDir, localLeft, localRight, ok, error]() {
                     if (!self) return;
                     if (!ok) {
                         self->log(error);
                         return;
                     }
-                    pictureTempDirs().push_back(tempDir);
-                    if (self->onPictureCompare) self->onPictureCompare(localLeft, localRight);
+                    viewerTempDirs().push_back(tempDir);
+                    if (const auto& open = self.data()->*callback) open(localLeft, localRight);
                 },
                 Qt::QueuedConnection);
         });

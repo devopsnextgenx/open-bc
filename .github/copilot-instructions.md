@@ -6,7 +6,7 @@
 On Windows, always use the **Git Bash** shell and set the MSYS2 toolchain PATH first, exactly as `win-build.sh` does. Without it `cargo` fails (e.g. `dlltool.exe: program not found`) and builds/tests are not valid.
 
 ```bash
-export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
+export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:/c/msys64/opt/wix:$PATH"
 export OPENSSL_DIR=/c/msys64/ucrt64
 ```
 

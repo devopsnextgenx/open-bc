@@ -71,6 +71,7 @@ set(OPENBC_HEADERS
     crates/openbc-ui-qt/src/diff_line_preview.h
     crates/openbc-ui-qt/src/text_compare_view.h
     crates/openbc-ui-qt/src/folder_compare_view.h
+    crates/openbc-ui-qt/src/file_kinds.h
     crates/openbc-ui-qt/src/picture_compare_view.h
     crates/openbc-ui-qt/src/3d_compare_view.h
     crates/openbc-ui-qt/src/model3d_viewport.h
