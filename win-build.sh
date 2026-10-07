@@ -1,7 +1,8 @@
 #!/bin/bash
 export PATH="/c/msys64/usr/bin:$PATH"
 export PATH="/c/msys64/ucrt64/bin:$PATH"
-export OPENSSL_DIR=/c/msys64/ucrt64
+export PATH="/c/msys64/opt/wix:$PATH"
+export OPENSSL_DIR="/c/msys64/ucrt64"
 
 # Parse command line flags
 CLEAN=false

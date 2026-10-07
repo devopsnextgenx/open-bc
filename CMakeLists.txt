@@ -85,7 +85,7 @@ set(OPENBC_HEADERS
 add_executable(openbc
     crates/openbc-ui-qt/src/qt_app.cpp
     ${OPENBC_HEADERS}
-    openbc.qrc
+    resources/openbc.qrc
 )
 
 target_include_directories(openbc PRIVATE
@@ -110,8 +110,26 @@ target_compile_definitions(openbc PRIVATE OPENBC_BUILD_EXECUTABLE)
 
 # 5. Windows-Specific Linker Flags
 if(WIN32)
-    configure_file(openbc.rc.in "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc" @ONLY)
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/resources/openbc.rc.in" "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc" @ONLY)
     target_sources(openbc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc")
     set_target_properties(openbc PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(openbc PRIVATE ws2_32 userenv advapi32 ntdll)
 endif()
+
+
+# --- Packaging Configuration ---
+set(CPACK_PACKAGE_NAME "OpenBC")
+set(CPACK_PACKAGE_VERSION "1.0.0")
+set(CPACK_PACKAGE_VENDOR "OpenBC")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenBC File & Directory Comparison Tool")
+
+if(WIN32)
+    set(CPACK_GENERATOR "WIX")
+    set(CPACK_WIX_UPGRADE_GUID "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+elseif(UNIX AND NOT APPLE)
+    set(CPACK_GENERATOR "DEB")
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "OpenBC Team")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6widgets6, zlib1g, libssl3")
+endif()
+
+include(CPack)

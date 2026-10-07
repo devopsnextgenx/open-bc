@@ -24,3 +24,11 @@ Thumbs.db
 !.github/
 
 build/
+build_msi/
+staging/
+openbc-installer.msi
+openbc-installer.wixpdb
+openbc.wixobj
+openbc.wxs
+files.wxs
+files.wixobj
