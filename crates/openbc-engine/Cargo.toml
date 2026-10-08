@@ -12,6 +12,7 @@ rayon.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+async-trait = "0.1"
 
 [dev-dependencies]
 image = "0.25"

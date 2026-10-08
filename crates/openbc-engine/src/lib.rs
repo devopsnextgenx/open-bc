@@ -1,5 +1,10 @@
 //! Non-blocking, level-at-a-time folder scanning orchestration.
 
+pub mod common;
+pub mod hex_compare;
+pub mod media_compare;
+pub mod registry_compare;
+pub mod table_compare;
 pub mod text_runner;
 pub mod image_compare;
 pub mod model3d_compare;

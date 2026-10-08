@@ -6,6 +6,11 @@ pub mod text;
 pub mod image_compare;
 /// 3D model comparison domain types (options, verdicts, mesh probe).
 pub mod model3d;
+pub mod hex_compare;
+pub mod meta_compare;
+pub mod registry_compare;
+pub mod table_compare; // also exposes table_compare::csv
+
 
 use std::path::PathBuf;
 use std::time::SystemTime;

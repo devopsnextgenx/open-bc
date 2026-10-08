@@ -45,6 +45,10 @@
 #include "home_view.h"
 #include "3d_compare_view.h"
 #include "picture_compare_view.h"
+#include "table_compare_viewer.h"
+#include "registry_compare_viewer.h"
+#include "hex_compare_viewer.h"
+#include "media_compare_viewer.h"
 #include "folder_compare_view.h"
 #include "text_compare_view.h"
 #include "backend_api.h"
@@ -125,7 +129,7 @@ extern "C" int openbc_run_gui() {
         glWarmup->setAttribute(Qt::WA_TransparentForMouseEvents);
         glWarmup->lower();
     }
-    
+
     auto* sessionMenu = window.menuBar()->addMenu("&Session");
     auto* actionsMenu = window.menuBar()->addMenu("&Actions");
     auto* editMenu = window.menuBar()->addMenu("&Edit");
@@ -219,28 +223,44 @@ extern "C" int openbc_run_gui() {
         // five; a text-compare (TextCompareView) tab has no Tools menu of
         // its own, so that one is simply left empty rather than stale.
         CompareSession* session = currentSession();
-        auto* textView = dynamic_cast<TextCompareView*>(tabs->currentWidget());
-        auto* pictureView = dynamic_cast<PictureCompareView*>(tabs->currentWidget());
-        auto* model3dView = dynamic_cast<Model3dCompareView*>(tabs->currentWidget());
+        QWidget* current = tabs->currentWidget();
+        auto* textView = dynamic_cast<TextCompareView*>(current);
+        auto* pictureView = dynamic_cast<PictureCompareView*>(current);
+        auto* model3dView = dynamic_cast<Model3dCompareView*>(current);
+        auto* tableView = dynamic_cast<TableCompareViewer*>(current);
+        auto* registryView = dynamic_cast<RegistryCompareViewer*>(current);
+        auto* hexView = dynamic_cast<HexCompareViewer*>(current);
+        auto* mediaView = dynamic_cast<MediaCompareViewer*>(current);
         fill(actionsMenu, session   ? session->actionsMenuItems()
                           : textView ? textView->actionsMenuItems()
                           : pictureView ? pictureView->actionsMenuItems()
                           : model3dView ? model3dView->actionsMenuItems()
+                          : tableView ? tableView->actionsMenuItems()
+                          : registryView ? registryView->actionsMenuItems()
+                          : hexView ? hexView->actionsMenuItems()
+                          : mediaView ? mediaView->actionsMenuItems()
                                      : QList<QAction*>());
         fill(editMenu, session   ? session->editMenuItems()
                        : textView ? textView->editMenuItems()
                        : pictureView ? pictureView->editMenuItems()
                        : model3dView ? model3dView->editMenuItems()
+                       : tableView ? tableView->editMenuItems()
+                       : registryView ? registryView->editMenuItems()
                                   : QList<QAction*>());
         fill(searchMenu, session   ? session->searchMenuItems()
                          : textView ? textView->searchMenuItems()
                          : pictureView ? pictureView->searchMenuItems()
                          : model3dView ? model3dView->searchMenuItems()
+                         : tableView ? tableView->searchMenuItems()
+                         : registryView ? registryView->searchMenuItems()
+                         : hexView ? hexView->searchMenuItems()
                                     : QList<QAction*>());
         fill(viewMenu, session   ? session->viewMenuItems()
                        : textView ? textView->viewMenuItems()
                        : pictureView ? pictureView->viewMenuItems()
                        : model3dView ? model3dView->viewMenuItems()
+                       : tableView ? tableView->viewMenuItems()
+                       : registryView ? registryView->viewMenuItems()
                                   : QList<QAction*>());
         viewMenu->addSeparator();
         viewMenu->addAction(darkThemeAction);
@@ -260,6 +280,14 @@ extern "C" int openbc_run_gui() {
             window.setWindowTitle(pictureView->title() + " - Picture Compare - OpenBC");
         } else if (auto* model3dView = dynamic_cast<Model3dCompareView*>(tabs->currentWidget())) {
             window.setWindowTitle(model3dView->title() + " - 3D Model Compare - OpenBC");
+        } else if (auto* tableView = dynamic_cast<TableCompareViewer*>(tabs->currentWidget())) {
+            window.setWindowTitle(tableView->title() + " - Table Compare - OpenBC");
+        } else if (auto* registryView = dynamic_cast<RegistryCompareViewer*>(tabs->currentWidget())) {
+            window.setWindowTitle(registryView->title() + " - Registry Compare - OpenBC");
+        } else if (auto* hexView = dynamic_cast<HexCompareViewer*>(tabs->currentWidget())) {
+            window.setWindowTitle(hexView->title() + " - Hex Compare - OpenBC");
+        } else if (auto* mediaView = dynamic_cast<MediaCompareViewer*>(tabs->currentWidget())) {
+            window.setWindowTitle(mediaView->title() + " - Media Compare - OpenBC");
         } else {
             window.setWindowTitle("OpenBC - Folder Compare");
         }
@@ -270,7 +298,41 @@ extern "C" int openbc_run_gui() {
         addTextView;
     std::function<void(const QString&, const QString&, bool)> addPictureView;
     std::function<void(const QString&, const QString&, bool)> addModel3dView;
+    std::function<void(const QString&, const QString&)> addTableView;
+    std::function<void(const QString&, const QString&)> addRegistryView;
+    std::function<void(const QString&, const QString&)> addHexView;
+    std::function<void(const QString&, const QString&)> addMediaView;
     std::function<void(int)> closeTab;
+
+    // Shared by the table / registry / hex / media viewers: tab + close button, title and
+    // Home/Sessions hooks, and the session-history record (full session kind, e.g.
+    // "table-compare"). Both paths empty (a tile opened with nothing chosen) is not recorded.
+    auto addViewerTab = [&](auto* view, const QString& sessionKind) {
+        const int index = tabs->addTab(view, sessionTypeIcon(sessionKind), view->title());
+        tabs->setTabToolTip(index, view->detailedTitle());
+        auto* close = new QToolButton;
+        close->setObjectName("tabClose");
+        close->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Close));
+        close->setToolTip("Close tab (Ctrl+W)");
+        close->setFocusPolicy(Qt::NoFocus);
+        close->setAutoRaise(true);
+        tabs->tabBar()->setTabButton(index, QTabBar::RightSide, close);
+        QObject::connect(close, &QToolButton::clicked, view, [&, view]() { closeTab(tabs->indexOf(view)); });
+        view->onHomeRequested = [&]() { tabs->setCurrentIndex(homeIndex); };
+        view->onSessionsRequested = view->onHomeRequested;
+        view->onTitleChanged = [&, view]() {
+            const int i = tabs->indexOf(view);
+            if (i < 0) return;
+            tabs->setTabText(i, view->title());
+            tabs->setTabToolTip(i, view->detailedTitle());
+            if (tabs->currentIndex() == i) updateWindowTitle();
+        };
+        if (!view->leftText().isEmpty() || !view->rightText().isEmpty()) {
+            SessionHistory::record(sessionKind, view->leftText(), view->rightText());
+            home->refreshHistory();
+        }
+        tabs->setCurrentIndex(index);
+    };
 
     addSession = [&](const QString& left, const QString& right, bool run) -> CompareSession* {
         auto* session = new CompareSession(&preferences);
@@ -314,6 +376,13 @@ extern "C" int openbc_run_gui() {
         session->onPictureCompare = [&](const QString& leftPath, const QString& rightPath) {
             addPictureView(leftPath, rightPath, true);
         };
+        session->onModel3dCompare = [&](const QString& leftPath, const QString& rightPath) {
+            addModel3dView(leftPath, rightPath, true);
+        };
+        session->onTableCompare = [&](const QString& l, const QString& r) { addTableView(l, r); };
+        session->onRegistryCompare = [&](const QString& l, const QString& r) { addRegistryView(l, r); };
+        session->onMediaCompare = [&](const QString& l, const QString& r) { addMediaView(l, r); };
+        session->onHexCompare = [&](const QString& l, const QString& r) { addHexView(l, r); };
         session->onNewFolderCompare = [&](const QString& leftPath, const QString& rightPath) {
             addSession(leftPath, rightPath, true);
         };
@@ -416,6 +485,19 @@ extern "C" int openbc_run_gui() {
         if (run && !left.isEmpty() && !right.isEmpty()) view->compare();
     };
 
+    addTableView = [&](const QString& left, const QString& right) {
+        addViewerTab(new TableCompareViewer(left, right), "table-compare");
+    };
+    addRegistryView = [&](const QString& left, const QString& right) {
+        addViewerTab(new RegistryCompareViewer(left, right), "registry-compare");
+    };
+    addHexView = [&](const QString& left, const QString& right) {
+        addViewerTab(new HexCompareViewer(left, right), "hex-compare");
+    };
+    addMediaView = [&](const QString& left, const QString& right) {
+        addViewerTab(new MediaCompareViewer(left, right), "media-compare");
+    };
+
     closeTab = [&](int index) {
         if (index < 0 || index >= tabs->count()) {
             return;
@@ -450,6 +532,22 @@ extern "C" int openbc_run_gui() {
         }
         if (auto* m = dynamic_cast<Model3dCompareView*>(tabs->widget(index))) {
             addModel3dView(m->leftText(), m->rightText(), true);
+            return;
+        }
+        if (auto* v = dynamic_cast<TableCompareViewer*>(tabs->widget(index))) {
+            addTableView(v->leftText(), v->rightText());
+            return;
+        }
+        if (auto* v = dynamic_cast<RegistryCompareViewer*>(tabs->widget(index))) {
+            addRegistryView(v->leftText(), v->rightText());
+            return;
+        }
+        if (auto* v = dynamic_cast<HexCompareViewer*>(tabs->widget(index))) {
+            addHexView(v->leftText(), v->rightText());
+            return;
+        }
+        if (auto* v = dynamic_cast<MediaCompareViewer*>(tabs->widget(index))) {
+            addMediaView(v->leftText(), v->rightText());
             return;
         }
         auto* source = dynamic_cast<CompareSession*>(tabs->widget(index));
@@ -503,8 +601,33 @@ extern "C" int openbc_run_gui() {
     };
     // When onNewSession is set HomeView no longer falls back to onNewFolderCompare /
     // onNewTextCompare, so every launchable kind is routed here.
-    home->onNewSession = [&](const QString& kind, const QStringList& paths) {
-        if (kind == "folder-compare") {
+    // The new viewers have no file picker of their own: a tile clicked (or one file dropped)
+    // asks for the missing path(s) here. Only choosing paths happens in the UI.
+    auto askForPair = [&](const QString& title, const QString& filter, QStringList paths) -> QStringList {
+        while (paths.size() < 2) {
+            const QString chosen = QFileDialog::getOpenFileName(
+                &window, title + (paths.isEmpty() ? " - choose left file" : " - choose right file"), QString(), filter);
+            if (chosen.isEmpty()) return {};
+            paths << chosen;
+        }
+        return paths;
+    };
+    home->onNewSession = [&, askForPair](const QString& kind, const QStringList& paths) {
+        if (kind == "table-compare") {
+            const QStringList pair = askForPair("Table Compare", "Tables (*.csv *.tsv *.xlsx *.xlsm *.xlsb *.xls *.ods);;All files (*)", paths);
+            if (pair.size() == 2) addTableView(pair[0], pair[1]);
+        } else if (kind == "registry-compare") {
+            const QStringList pair = askForPair("Registry Compare", "Registry exports (*.reg);;All files (*)", paths);
+            if (pair.size() == 2) addRegistryView(pair[0], pair[1]);
+        } else if (kind == "hex-compare") {
+            const QStringList pair = askForPair("Hex Compare", "All files (*)", paths);
+            if (pair.size() == 2) addHexView(pair[0], pair[1]);
+        } else if (kind == "media-compare") {
+            const QStringList pair = askForPair(
+                "Media Compare",
+                "Media (*.mp3 *.wav *.flac *.ogg *.oga *.opus *.m4a *.aac *.wma *.mp4 *.m4v *.mov *.avi *.mkv *.webm);;All files (*)", paths);
+            if (pair.size() == 2) addMediaView(pair[0], pair[1]);
+        } else if (kind == "folder-compare") {
             addSession(paths.value(0), paths.value(1), paths.size() >= 2);
         } else if (kind == "text-compare") {
             addTextView(QString(), QString(), QString(), QString(), nullptr);
@@ -515,7 +638,15 @@ extern "C" int openbc_run_gui() {
         }
     };
     home->onOpenHistory = [&](const SessionHistoryEntry& entry) {
-        if (entry.kind == "picture") {
+        if (entry.kind == "table" || entry.kind == "table-compare") {
+            addTableView(entry.left, entry.right);
+        } else if (entry.kind == "registry" || entry.kind == "registry-compare") {
+            addRegistryView(entry.left, entry.right);
+        } else if (entry.kind == "hex" || entry.kind == "hex-compare") {
+            addHexView(entry.left, entry.right);
+        } else if (entry.kind == "media" || entry.kind == "media-compare") {
+            addMediaView(entry.left, entry.right);
+        } else if (entry.kind == "picture") {
             addPictureView(entry.left, entry.right, true);
         } else if (entry.kind == "folder") {
             addSession(entry.left, entry.right, true);

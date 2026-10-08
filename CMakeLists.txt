@@ -29,6 +29,9 @@ set(Rust_COMPILER "${RUSTC_EXECUTABLE}" CACHE FILEPATH "Rust compiler used by Co
 # 1. Find Qt6 Installation
 find_package(Qt6 COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets REQUIRED)
 
+# Optional: media playback in Media Compare. Without it the Play buttons stay disabled.
+find_package(Qt6 OPTIONAL_COMPONENTS Multimedia MultimediaWidgets)
+
 # The Rust static lib (via Corrosion) pulls in a dependency that links
 # zlib (e.g. suppaftp's TLS backend, or another crate using libz-sys).
 # Static archives don't carry transitive link deps forward, so the final
@@ -78,6 +81,13 @@ set(OPENBC_HEADERS
     crates/openbc-ui-qt/src/model3d_compare_api.h
     crates/openbc-ui-qt/src/model3d_extensions.h
     crates/openbc-ui-qt/src/model3d_icons.h
+    crates/openbc-ui-qt/src/compare_backend_api.h
+    crates/openbc-ui-qt/src/backend_channel.h
+    crates/openbc-ui-qt/src/diff_grid_common.h
+    crates/openbc-ui-qt/src/table_compare_viewer.h
+    crates/openbc-ui-qt/src/registry_compare_viewer.h
+    crates/openbc-ui-qt/src/hex_compare_viewer.h
+    crates/openbc-ui-qt/src/media_compare_viewer.h
     crates/openbc-ui-qt/src/main_window.h
 )
 
@@ -108,6 +118,11 @@ target_link_libraries(openbc PRIVATE
 )
 
 target_compile_definitions(openbc PRIVATE OPENBC_BUILD_EXECUTABLE)
+
+if(TARGET Qt6::Multimedia AND TARGET Qt6::MultimediaWidgets)
+    target_link_libraries(openbc PRIVATE Qt6::Multimedia Qt6::MultimediaWidgets)
+    target_compile_definitions(openbc PRIVATE OPENBC_HAVE_QT_MULTIMEDIA)
+endif()
 
 # 5. Windows-Specific Linker Flags
 if(WIN32)

@@ -7,7 +7,11 @@ export OPENSSL_DIR=/c/msys64/ucrt64
 echo "B"
 echo "C"
 echo "D"
+
+
 #
+
+
 
 # Build script for Windows using CMake and Ninja
 

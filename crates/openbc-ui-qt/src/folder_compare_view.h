@@ -62,6 +62,7 @@
 #include "folder_model.h"
 #include "path_selector.h"
 #include "picture_extensions.h"
+#include "compare_extensions.h"
 #include "qt_style.h"
 #include "remote_profile_store.h"
 #include "remote_vfs_bridge.h"
@@ -674,6 +675,7 @@ std::shared_ptr<ComparisonRun> makeRun(QTreeWidget* left, QTreeWidget* right, Co
 
 class CompareSession : public QWidget {
 public:
+    using ViewerCallback = std::function<void(const QString&, const QString&)>;
     std::function<void()> onTitleChanged;
     std::function<void(const QString&, const QString&, const QString&, const QString&)>
         onTextCompare;
@@ -685,6 +687,15 @@ public:
     // right path, either may be empty - instead of in the text diff. When this is
     // not installed, 3D files fall back to the text compare as before.
     std::function<void(const QString&, const QString&)> onModel3dCompare;
+    // Spreadsheets / CSV (xlsx, xls, xlsb, ods, csv, tsv), registry exports (.reg) and
+    // audio/video containers (metadata compare) open here - left path, right path,
+    // either may be empty. When a callback is not installed, those files fall back to the
+    // text compare as before. onHexCompare has no extension rule: it is only reached from
+    // the "Compare as Hex" context-menu entry.
+    std::function<void(const QString&, const QString&)> onTableCompare;
+    std::function<void(const QString&, const QString&)> onRegistryCompare;
+    std::function<void(const QString&, const QString&)> onMediaCompare;
+    std::function<void(const QString&, const QString&)> onHexCompare;
     std::function<void(const QString&, const QString&)> onNewFolderCompare;
     std::function<void(const QString&, const QString&)> onComparisonRequested;
 
@@ -1290,6 +1301,18 @@ private:
             openModel3dComparePaths(leftPath, rightPath);
             return;
         }
+        if (shouldOpenAsViewer(onTableCompare, isTableComparePath, leftPath, rightPath)) {
+            openViewerComparePaths(leftPath, rightPath, "table", &CompareSession::onTableCompare);
+            return;
+        }
+        if (shouldOpenAsViewer(onRegistryCompare, isRegistryComparePath, leftPath, rightPath)) {
+            openViewerComparePaths(leftPath, rightPath, "registry", &CompareSession::onRegistryCompare);
+            return;
+        }
+        if (shouldOpenAsViewer(onMediaCompare, isMediaComparePath, leftPath, rightPath)) {
+            openViewerComparePaths(leftPath, rightPath, "media", &CompareSession::onMediaCompare);
+            return;
+        }
         RemoteProfile leftProfile;
         RemoteProfile rightProfile;
         const bool leftRemote = !leftPath.isEmpty() &&
@@ -1370,14 +1393,26 @@ private:
                (rightPath.isEmpty() || looksLikeModel3dFile(rightPath));
     }
 
+    // Same rule as pictures / 3D: every present side must match `accepts`; a lone file on
+    // an orphan row counts too. Mixed pairs (a.xlsx vs a.txt) stay a text compare.
+    bool shouldOpenAsViewer(const ViewerCallback& installed, bool (*accepts)(const QString&),
+                            const QString& leftPath, const QString& rightPath) const {
+        if (!installed) return false;
+        if (leftPath.isEmpty() && rightPath.isEmpty()) return false;
+        return (leftPath.isEmpty() || accepts(leftPath)) && (rightPath.isEmpty() || accepts(rightPath));
+    }
+
+    // Hex compare accepts any pair of files; remote files are downloaded like the other viewers.
+    void openHexComparePaths(const QString& leftPath, const QString& rightPath) {
+        openViewerComparePaths(leftPath, rightPath, "hex", &CompareSession::onHexCompare);
+    }
+
     // Temp copies of remote files must outlive the viewer tab (its Reload
     // re-reads the file), so they are kept until the application exits.
     static std::vector<std::shared_ptr<QTemporaryDir>>& viewerTempDirs() {
         static std::vector<std::shared_ptr<QTemporaryDir>> dirs;
         return dirs;
     }
-
-    using ViewerCallback = std::function<void(const QString&, const QString&)>;
 
     void openPictureComparePaths(const QString& leftPath, const QString& rightPath) {
         openViewerComparePaths(leftPath, rightPath, "picture", &CompareSession::onPictureCompare);
@@ -2026,6 +2061,10 @@ private:
                 const QString rightPath = ctx.side == Side::Right ? ctx.path : chosen;
                 openTextComparePaths(leftPath, rightPath);
             }
+        } else if (action == "Compare as Hex") {
+            const QString leftPath = ctx.side == Side::Left ? ctx.path : ctx.otherPath;
+            const QString rightPath = ctx.side == Side::Right ? ctx.path : ctx.otherPath;
+            openHexComparePaths(leftPath, rightPath);
         } else if (action == "Compare Contents...") {
             if (ctx.isDir) compareFolderNode(ctx);
             else compareNodeFiles(ctx, false);
@@ -2179,6 +2218,7 @@ private:
         if (!ctx.isDir) {
             addNodeAction(&menu, ctx, "Compare To...", {}, "F7");
             addNodeAction(&menu, ctx, "Align With...", {}, "F6");
+            if (onHexCompare) addNodeAction(&menu, ctx, "Compare as Hex");
         }
         menu.addSeparator();
 

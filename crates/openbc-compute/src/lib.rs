@@ -2,6 +2,9 @@
 
 pub mod image;
 pub mod model3d;
+pub mod hex;
+pub mod media;
+pub mod table;
 
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use sha2::{Digest, Sha256};
