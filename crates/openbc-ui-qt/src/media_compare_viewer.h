@@ -49,8 +49,10 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QSlider>
+#include <QShowEvent>
 #include <QSplitter>
 #include <QStyledItemDelegate>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -137,6 +139,15 @@ public:
 
     QList<QAction*> actionsMenuItems() const {
         return {playLeftAction_, playRightAction_, playBothAction_, saveLeftAction_, saveRightAction_, reloadAction_};
+    }
+
+protected:
+    void showEvent(QShowEvent* event) override {
+        QWidget::showEvent(event);
+        if (!splitInit_) {
+            splitInit_ = true;
+            applyDefaultSplit();
+        }
     }
 
 private:
@@ -305,6 +316,9 @@ private:
         if (coverMode_[side] == CoverReplace) pixmap.loadFromData(coverBytes_[side]);
         else if (coverMode_[side] == CoverKeep) pixmap = sideCover(side);
         pane(side)->setCover(pixmap);
+        // The compact audio-only height cap depends on whether a cover is visible; the pane's
+        // layout updates asynchronously, so re-evaluate once it has settled.
+        QTimer::singleShot(0, this, [this]() { updateTopHeight(); });
     }
 
     void setPendingCover(std::uint8_t side, CoverMode mode, const QByteArray& bytes = QByteArray()) {
@@ -621,17 +635,29 @@ private:
     void updateTopHeight() {
         const bool anyVideo = leftPane_->hasVideo() || rightPane_->hasVideo();
         if (!anyVideo) {
+            // Force pending layout work so minimumSizeHint() includes a just-shown cover.
+            for (QWidget* p : {static_cast<QWidget*>(leftPane_), static_cast<QWidget*>(rightPane_)})
+                if (p->layout()) p->layout()->activate();
+            top_->layout()->activate();
             top_->setMaximumHeight(top_->minimumSizeHint().height() + 40);
             return;
         }
         const bool wasCapped = top_->maximumHeight() != QWIDGETSIZE_MAX;
         top_->setMaximumHeight(QWIDGETSIZE_MAX);
         // First video after a compact (audio-only) state: open the video area to a usable size.
-        if (wasCapped) {
+        if (wasCapped) applyDefaultSplit();
+    }
+
+    // Sets the video/table split once the splitter has a real height (deferred to the event loop,
+    // because the video signal can fire before the first layout pass).
+    void applyDefaultSplit() {
+        QTimer::singleShot(0, this, [this]() {
+            if (!split_) return;
             const int total = split_->height();
-            const int topH = qMin(320, qMax(200, total * 3 / 5));
-            split_->setSizes({topH, qMax(120, total - topH)});
-        }
+            if (total < 300) return;  // not laid out yet; showEvent / the next video change retries
+            const int topH = total * 3 / 5;
+            split_->setSizes({topH, total - topH});
+        });
     }
 
     void buildUi() {
@@ -712,11 +738,18 @@ private:
         // ---- the draggable divider ------------------------------------------
         split_ = new QSplitter(Qt::Vertical, this);
         split_->setChildrenCollapsible(false);
-        split_->setHandleWidth(6);
+        split_->setHandleWidth(8);
+        // Widget-level style beats the app-wide "QSplitter::handle:vertical" rule in qt_style.h
+        // (#2d2d2d, 4px), which is nearly invisible on the dark theme.
+        split_->setStyleSheet(
+            "QSplitter::handle:vertical { background:#5a5a5a; margin:3px 0; border-radius:1px; }"
+            "QSplitter::handle:vertical:hover, QSplitter::handle:vertical:pressed { background:#4a9eff; }");
         split_->addWidget(top_);
         split_->addWidget(bottom);
         split_->setStretchFactor(0, 3);  // window growth goes mostly to the video
         split_->setStretchFactor(1, 2);
+        split_->handle(1)->setCursor(Qt::SplitVCursor);
+        split_->handle(1)->setToolTip("Drag to resize the players / metadata table");
         root->addWidget(split_, 1);
 
         // Audio-only files have nothing to enlarge: keep the top half compact and
@@ -830,6 +863,8 @@ private:
     QCheckBox* onlyDifferences_ = nullptr;
     QTreeWidget* tree_ = nullptr;
     QWidget* top_ = nullptr;
+    QSplitter* split_ = nullptr;
+    bool splitInit_ = false;
     BackendChannel channel_;  // last member: destroyed after stopSession()
 };
 

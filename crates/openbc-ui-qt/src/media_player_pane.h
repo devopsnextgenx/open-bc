@@ -55,7 +55,10 @@ public:
         cover_->hide();
 
         video_ = new QVideoWidget(this);
-        video_->setMinimumHeight(200);
+        // QVideoWidget reports the video's native size as its sizeHint, which would inflate the
+        // whole top half and squeeze the splitter/table below. Ignore it; the layout decides.
+        video_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+        video_->setMinimumHeight(120);
         video_->hide();
         player_->setVideoOutput(video_);
 
