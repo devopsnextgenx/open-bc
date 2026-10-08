@@ -124,5 +124,6 @@ const uint8_t* openbc_media_row_text(const OpenBcMediaView*, size_t row, uint8_t
 uint32_t openbc_media_row_flags(const OpenBcMediaView*, size_t row);  // 1 differs 2 informational
 const uint8_t* openbc_media_side_error(const OpenBcMediaView*, uint8_t side, size_t* len);
 uint8_t openbc_media_side_present(const OpenBcMediaView*, uint8_t side);
+const uint8_t* openbc_media_side_cover(const OpenBcMediaView* v, uint8_t side, size_t* len);
 
 }  // extern "C"

@@ -1,0 +1,7 @@
+id,username,email,role,status,login_count
+101,jdoe,jdoe@example.com,Admin,Active,45
+102,asmith,asmith@example.com,User,Active,12
+103,bwilliams,bwilliams@olddomain.com,User,Active,89
+104,cjohnson,cjohnson@example.com,Manager,Inactive,3
+105,dlee,dlee@example.com,User,Active,27
+106,emartinez,emartinez@example.com,User,Active,101

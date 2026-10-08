@@ -102,6 +102,9 @@ extern "C" int openbc_run_gui() {
     if (openbc_initialize_observability() != 0) {
         return 1;
     }
+    #ifdef Q_OS_WIN
+    qputenv("QT_MEDIA_BACKEND", "windows");   // Windows Media Foundation; no bundled codecs
+    #endif
     int argc = 1;
     char application_name[] = "openbc-qt";
     char* argv[] = {application_name, nullptr};

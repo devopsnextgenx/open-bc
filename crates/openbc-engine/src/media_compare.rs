@@ -16,11 +16,24 @@ pub enum MediaCommand {
     Reload,
 }
 
-#[derive(Debug)]
 pub struct MediaView {
     pub rows: Vec<MetaDiffRow>,
     pub errors: [Option<String>; 2],
     pub present: [bool; 2],
+    /// Raw bytes of each side's first embedded picture (cover art), if any.
+    pub covers: [Option<Vec<u8>>; 2],
+}
+
+// Manual Debug so logging a view never dumps image bytes.
+impl std::fmt::Debug for MediaView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MediaView")
+            .field("rows", &self.rows.len())
+            .field("errors", &self.errors)
+            .field("present", &self.present)
+            .field("covers", &self.covers.each_ref().map(|c| c.as_ref().map(Vec::len)))
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -40,6 +53,19 @@ impl MediaCompareHandle {
     }
 }
 
+/// Everything loaded for one side.
+struct Side {
+    rows: Vec<MetaRow>,
+    cover: Option<Vec<u8>>,
+    error: Option<String>,
+}
+
+impl Side {
+    fn empty() -> Self {
+        Self { rows: Vec::new(), cover: None, error: None }
+    }
+}
+
 pub fn spawn_media_compare(rt: &Handle, source: Arc<dyn ByteSource>, left: PathBuf, right: PathBuf) -> (MediaCompareHandle, mpsc::Receiver<MediaEvent>) {
     let (ctx, mut crx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
     let (etx, erx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
@@ -51,15 +77,16 @@ pub fn spawn_media_compare(rt: &Handle, source: Arc<dyn ByteSource>, left: PathB
             // Both sides load concurrently; a failure on one side leaves the other intact.
             let (l, r) = tokio::join!(load_side(&source, &left), load_side(&source, &right));
             let diff_rows = rayon_run({
-                let (a, b) = (l.0.clone(), r.0.clone());
+                let (a, b) = (l.rows.clone(), r.rows.clone());
                 move || diff_meta(&a, &b)
             })
             .await;
             let Ok(rows) = diff_rows else { return };
             let view = MediaView {
                 rows,
-                errors: [l.1, r.1],
+                errors: [l.error, r.error],
                 present: [!left.as_os_str().is_empty(), !right.as_os_str().is_empty()],
+                covers: [l.cover, r.cover],
             };
             if etx.send(MediaEvent::Result(Arc::new(view))).await.is_err() {
                 return;
@@ -74,9 +101,9 @@ pub fn spawn_media_compare(rt: &Handle, source: Arc<dyn ByteSource>, left: PathB
     (MediaCompareHandle { tx: ctx }, erx)
 }
 
-async fn load_side(source: &Arc<dyn ByteSource>, path: &Path) -> (Vec<MetaRow>, Option<String>) {
+async fn load_side(source: &Arc<dyn ByteSource>, path: &Path) -> Side {
     if path.as_os_str().is_empty() {
-        return (Vec::new(), None);
+        return Side::empty();
     }
     let file_row = |key: &str, value: String| MetaRow { group: "File".into(), key: key.into(), value };
     let mut rows = vec![file_row("Name", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()))];
@@ -87,7 +114,7 @@ async fn load_side(source: &Arc<dyn ByteSource>, path: &Path) -> (Vec<MetaRow>, 
                 rows.push(file_row("Modified", format_utc(t)));
             }
         }
-        Err(e) => return (rows, Some(context(path, "stat", e))),
+        Err(e) => return Side { rows, cover: None, error: Some(context(path, "stat", e)) },
     }
     let (src, p) = (source.clone(), path.to_path_buf());
     let parsed = rayon_run(move || match src.open_reader(&p) {
@@ -96,12 +123,12 @@ async fn load_side(source: &Arc<dyn ByteSource>, path: &Path) -> (Vec<MetaRow>, 
     })
     .await;
     match parsed {
-        Ok(Ok(mut meta)) => {
-            rows.append(&mut meta);
-            (rows, None)
+        Ok(Ok(mut info)) => {
+            rows.append(&mut info.rows);
+            Side { rows, cover: info.cover, error: None }
         }
-        Ok(Err(message)) => (rows, Some(message)),
-        Err(e) => (rows, Some(e.to_string())),
+        Ok(Err(message)) => Side { rows, cover: None, error: Some(message) },
+        Err(e) => Side { rows, cover: None, error: Some(e.to_string()) },
     }
 }
 

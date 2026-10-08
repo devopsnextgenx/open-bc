@@ -36,6 +36,8 @@ fn main() {
         .qt_module("OpenGL")
         .qt_module("OpenGLWidgets")
         .qt_module("Qml")
+        .qt_module("Multimedia")
+        .qt_module("MultimediaWidgets")
         .qml_module(cxx_qt_build::QmlModule {
             uri: "OpenBC",
             version_major: 1,

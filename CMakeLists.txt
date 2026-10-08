@@ -27,10 +27,13 @@ endif()
 set(Rust_COMPILER "${RUSTC_EXECUTABLE}" CACHE FILEPATH "Rust compiler used by Corrosion")
 
 # 1. Find Qt6 Installation
-find_package(Qt6 COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets REQUIRED)
-
-# Optional: media playback in Media Compare. Without it the Play buttons stay disabled.
-find_package(Qt6 OPTIONAL_COMPONENTS Multimedia MultimediaWidgets)
+# Multimedia / MultimediaWidgets are OPTIONAL: they power the Play buttons in Media Compare.
+# Without them the app still builds and the Play buttons stay disabled.
+# MSYS2: pacman -S mingw-w64-ucrt-x86_64-qt6-multimedia
+find_package(Qt6 REQUIRED
+    COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets
+    OPTIONAL_COMPONENTS Multimedia MultimediaWidgets
+)
 
 # The Rust static lib (via Corrosion) pulls in a dependency that links
 # zlib (e.g. suppaftp's TLS backend, or another crate using libz-sys).
@@ -87,6 +90,7 @@ set(OPENBC_HEADERS
     crates/openbc-ui-qt/src/table_compare_viewer.h
     crates/openbc-ui-qt/src/registry_compare_viewer.h
     crates/openbc-ui-qt/src/hex_compare_viewer.h
+    crates/openbc-ui-qt/src/media_player_pane.h
     crates/openbc-ui-qt/src/media_compare_viewer.h
     crates/openbc-ui-qt/src/main_window.h
 )
@@ -119,9 +123,13 @@ target_link_libraries(openbc PRIVATE
 
 target_compile_definitions(openbc PRIVATE OPENBC_BUILD_EXECUTABLE)
 
+# Media playback (optional). OPENBC_HAVE_QT_MULTIMEDIA is defined only when both modules were found.
 if(TARGET Qt6::Multimedia AND TARGET Qt6::MultimediaWidgets)
+    message(STATUS "Qt Multimedia found: media playback enabled")
     target_link_libraries(openbc PRIVATE Qt6::Multimedia Qt6::MultimediaWidgets)
     target_compile_definitions(openbc PRIVATE OPENBC_HAVE_QT_MULTIMEDIA)
+else()
+    message(STATUS "Qt Multimedia not found: media playback disabled (metadata compare still works)")
 endif()
 
 # 5. Windows-Specific Linker Flags

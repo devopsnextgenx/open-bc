@@ -106,3 +106,32 @@ pub unsafe extern "C" fn openbc_media_side_error(v: *const ViewHandle, side: u8,
 pub unsafe extern "C" fn openbc_media_side_present(v: *const ViewHandle, side: u8) -> u8 {
     u8::from(handle_ref!(v, 0).present[usize::from(side != 0)])
 }
+
+/// Embedded cover art of one side (raw jpeg/png/... bytes, not NUL-terminated). Returns null with
+/// `*len == 0` when the side has no picture. The pointer stays valid until the view is destroyed.
+///
+/// # Safety
+/// `v` valid or null; `len` writable or null.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_media_side_cover(v: *const ViewHandle, side: u8, len: *mut usize) -> *const u8 {
+    let write_len = |n: usize| {
+        if !len.is_null() {
+            *len = n;
+        }
+    };
+    if v.is_null() {
+        write_len(0);
+        return std::ptr::null();
+    }
+    let view: &MediaView = &**v;
+    match view.covers[usize::from(side != 0)].as_deref() {
+        Some(bytes) if !bytes.is_empty() => {
+            write_len(bytes.len());
+            bytes.as_ptr()
+        }
+        _ => {
+            write_len(0);
+            std::ptr::null()
+        }
+    }
+}

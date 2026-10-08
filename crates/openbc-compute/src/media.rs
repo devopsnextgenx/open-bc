@@ -2,6 +2,9 @@
 //!
 //! Audio containers and tags go through `lofty` (0.22 API); MP4/MOV and AVI headers are
 //! walked here for video track details. Matroska/WebM is recognised but not parsed.
+//!
+//! Embedded cover art (ID3 APIC, MP4 covr, FLAC/Vorbis pictures) is reported as a "Tags"
+//! row and the first picture's bytes are returned in `MediaInfo::cover` for the UI.
 
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 
@@ -13,12 +16,23 @@ use openbc_core::meta_compare::MetaRow;
 pub trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
 
+/// Largest cover image handed to the UI (bigger pictures are listed but not returned).
+const MAX_COVER_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Debug, thiserror::Error)]
 pub enum MediaError {
     #[error("unrecognised media container")]
     Unsupported,
     #[error("read failed: {0}")]
     Io(#[from] io::Error),
+}
+
+/// Result of reading one media file.
+#[derive(Debug, Default)]
+pub struct MediaInfo {
+    pub rows: Vec<MetaRow>,
+    /// Raw bytes of the first embedded picture (jpeg/png/...), if any.
+    pub cover: Option<Vec<u8>>,
 }
 
 fn row(group: &str, key: impl Into<String>, value: impl Into<String>) -> MetaRow {
@@ -40,31 +54,32 @@ fn fourcc(b: &[u8]) -> String {
     b.iter().map(|&c| if (32..127).contains(&c) { c as char } else { '.' }).collect::<String>().trim().to_string()
 }
 
-/// Reads the metadata rows of one media file (groups: Container, Video, Audio, Subtitle, Tags).
-pub fn read_media_metadata(src: &mut dyn ReadSeek) -> Result<Vec<MetaRow>, MediaError> {
+/// Reads the metadata rows (groups: Container, Video, Audio, Subtitle, Tags) and cover art of one media file.
+pub fn read_media_metadata(src: &mut dyn ReadSeek) -> Result<MediaInfo, MediaError> {
     let mut head = [0u8; 12];
     let n = src.read(&mut head)?;
     src.seek(SeekFrom::Start(0))?;
-    let mut rows = Vec::new();
+    let mut info = MediaInfo::default();
     let mut recognised = false;
     if n >= 12 && &head[4..8] == b"ftyp" {
         recognised = true;
-        parse_mp4(src, &mut rows)?;
+        parse_mp4(src, &mut info.rows)?;
     } else if n >= 12 && &head[0..4] == b"RIFF" && &head[8..12] == b"AVI " {
         recognised = true;
-        parse_avi(src, &mut rows)?;
+        parse_avi(src, &mut info.rows)?;
     } else if head[..4] == [0x1A, 0x45, 0xDF, 0xA3] {
         recognised = true;
-        rows.push(row("Container", "Format", "Matroska/WebM (track details not parsed)"));
+        info.rows.push(row("Container", "Format", "Matroska/WebM (track details not parsed)"));
     }
     src.seek(SeekFrom::Start(0))?;
-    recognised |= read_lofty(src, &mut rows);
-    if recognised { Ok(rows) } else { Err(MediaError::Unsupported) }
+    recognised |= read_lofty(src, &mut info);
+    if recognised { Ok(info) } else { Err(MediaError::Unsupported) }
 }
 
-fn read_lofty(src: &mut dyn ReadSeek, rows: &mut Vec<MetaRow>) -> bool {
+fn read_lofty(src: &mut dyn ReadSeek, info: &mut MediaInfo) -> bool {
     let Ok(probe) = Probe::new(BufReader::new(src)).guess_file_type() else { return false };
     let Ok(file) = probe.read() else { return false };
+    let rows = &mut info.rows;
     rows.push(row("Container", "Type", format!("{:?}", file.file_type())));
     let p = file.properties();
     rows.push(row("Audio", "Duration", format_duration(p.duration().as_secs_f64())));
@@ -81,6 +96,14 @@ fn read_lofty(src: &mut dyn ReadSeek, rows: &mut Vec<MetaRow>) -> bool {
             };
             if !text.is_empty() {
                 rows.push(row("Tags", format!("{:?}", item.key()), text));
+            }
+        }
+        for (i, pic) in tag.pictures().iter().enumerate() {
+            let mime = pic.mime_type().map_or("unknown type", |m| m.as_str());
+            let key = if i == 0 { format!("Picture ({:?})", pic.pic_type()) } else { format!("Picture {} ({:?})", i + 1, pic.pic_type()) };
+            rows.push(row("Tags", key, format!("{mime}, {} bytes", pic.data().len())));
+            if info.cover.is_none() && !pic.data().is_empty() && pic.data().len() <= MAX_COVER_BYTES {
+                info.cover = Some(pic.data().to_vec());
             }
         }
     }
@@ -315,9 +338,10 @@ mod tests {
         f.extend(((8 + mvhd_box.len()) as u32).to_be_bytes());
         f.extend(b"moov");
         f.extend(mvhd_box);
-        let rows = read_media_metadata(&mut Cursor::new(f)).unwrap();
-        assert!(rows.iter().any(|r| r.key == "Duration" && r.value == "0:00:05.000"));
-        assert!(rows.iter().any(|r| r.key == "Major brand" && r.value == "isom"));
+        let info = read_media_metadata(&mut Cursor::new(f)).unwrap();
+        assert!(info.rows.iter().any(|r| r.key == "Duration" && r.value == "0:00:05.000"));
+        assert!(info.rows.iter().any(|r| r.key == "Major brand" && r.value == "isom"));
+        assert!(info.cover.is_none());
     }
 
     #[test]

@@ -1,0 +1,18 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Software\TestApp]
+"AppTitle"="My Application"
+"Version"=dword:00000001
+"Enabled"=dword:00000001
+"MaxConnections"=dword:0000000a
+"InstallPath"="C:\\Program Files\\TestApp"
+"Flags"=hex:01,00,00,00,ff,00
+"UnchangedSetting"="Keep Me"
+
+[HKEY_CURRENT_USER\Software\TestApp\Settings]
+"Theme"="Light"
+"AutoSave"=dword:00000001
+"RecentFiles"=hex(7):43,00,3a,00,5c,00,66,00,69,00,6c,00,65,00,31,00,2e,00,74,00,78,00,74,00,00,00,43,00,3a,00,5c,00,66,00,69,00,6c,00,65,00,32,00,2e,00,74,00,78,00,74,00,00,00,00,00
+
+[HKEY_CURRENT_USER\Software\TestApp\LegacyKey]
+"ObsoleteValue"="Old Data"
