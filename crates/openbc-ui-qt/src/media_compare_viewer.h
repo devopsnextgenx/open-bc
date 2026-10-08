@@ -5,42 +5,67 @@
 // bitrate, channels, tags, embedded cover art. The audio/video payload is never
 // decoded for comparison.
 //
-// Presentation only: header parsing and property alignment happen in
-// openbc-compute (media) / openbc-core (meta_compare) behind the
-// openbc_media_* C ABI. Rows whose values differ are highlighted.
+// Presentation only: header parsing, property alignment and tag WRITING happen
+// in the backend behind the openbc_media_* C ABI. Rows whose values differ are
+// highlighted.
+//
+// Opening: the tab can be opened with no files (from the Home page); each side
+// has a PathSelector (combo + Browse). Picking / pressing Enter / choosing an MRU
+// entry starts (or restarts) the session for the paths that are set.
 //
 // Playback is a preview aid only: MediaPlayerPane uses Qt Multimedia with the
 // operating system's decoders, so no codecs are shipped with the app.
+//   - Each side has its own Play / Pause / Stop buttons.
+//   - A shared strip holds a master volume + mute and an A/B CROSSFADE slider.
+//     While both files play, the crossfade moves smoothly from Left-only to
+//     Right-only (equal-power curve) so a switch between the two can be judged
+//     for continuity. "Link seek" mirrors a slider drag to the other side.
 //
-// FIX: every backendString(openbc_*(..., &length), length) call was reading
-// `length` before the call wrote it (MSVC evaluates arguments right to left),
-// which produced empty strings and an empty table. The pointer is now fetched
-// into a local first.
+// Editing: rows the backend flags as editable (bit 2) can be edited by
+// double-clicking the Left/Right cell. Edits (and cover replace/remove) stay
+// pending - shown in gold italics - until "Save Left" / "Save Right". Saving
+// releases that side's player (file lock on Windows), asks the backend to
+// rewrite the file, and the backend answers with a fresh Result (a failed save
+// is reported through that side's error text, "Save failed: ...").
 // ---------------------------------------------------------------------------
 #pragma once
 
 #include <QAction>
+#include <QAudio>
 #include <QBrush>
+#include <QByteArray>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QComboBox>
 #include <QFileInfo>
 #include <QFont>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLineEdit>
+#include <QMap>
+#include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
+#include <QSlider>
+#include <QSplitter>
+#include <QStyledItemDelegate>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <QVariant>
 #include <QWidget>
+#include <cmath>
 #include <functional>
 #include <memory>
+#include <vector>
 
 #include "backend_channel.h"
 #include "compare_backend_api.h"
 #include "media_player_pane.h"
+#include "path_selector.h"
 #include "qt_style.h"
 
 namespace openbc::app {
@@ -49,14 +74,42 @@ namespace icons = openbc::ui::icons;
 
 using MediaViewPtr = std::shared_ptr<OpenBcMediaView>;
 
+namespace media_detail {
+
+// Item data roles (per column unless noted).
+constexpr int kOrigRole = Qt::UserRole;          // original value text of that side
+constexpr int kHadRole = Qt::UserRole + 1;       // original value existed on that side
+constexpr int kShownRole = Qt::UserRole + 2;     // cell currently shows a real value (not the "-" placeholder)
+constexpr int kEditableRole = Qt::UserRole + 3;  // col 0: backend flagged the row editable
+constexpr int kKeyRole = Qt::UserRole + 4;       // col 0: group + 0x1f + key
+constexpr int kBackendDiffRole = Qt::UserRole + 5;
+constexpr int kInfoRole = Qt::UserRole + 6;
+constexpr double kPi = 3.14159265358979323846;
+
+// Starts the inline editor empty when the cell only shows the "-" placeholder.
+class DashAwareDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void setEditorData(QWidget* editor, const QModelIndex& index) const override {
+        QStyledItemDelegate::setEditorData(editor, index);
+        if (!index.data(kShownRole).toBool()) {
+            if (auto* edit = qobject_cast<QLineEdit*>(editor)) edit->clear();
+        }
+    }
+};
+
+}  // namespace media_detail
+
 class MediaCompareViewer : public QWidget {
 public:
-    MediaCompareViewer(const QString& leftPath, const QString& rightPath, QWidget* parent = nullptr)
+    // Both paths may be empty: the tab then opens directly and waits for the user to pick files.
+    MediaCompareViewer(const QString& leftPath = QString(), const QString& rightPath = QString(), QWidget* parent = nullptr)
         : QWidget(parent), leftPath_(leftPath), rightPath_(rightPath),
           channel_(this, &MediaCompareViewer::destroyHandle, [this](const BackendChannel::Event& event) { onEvent(event); }) {
         setObjectName("mediaCompareView");
         buildUi();
-        startSession();
+        if (!leftPath_.isEmpty() || !rightPath_.isEmpty()) startSession();
+        else showEmptyState();
     }
 
     ~MediaCompareViewer() override {
@@ -66,6 +119,7 @@ public:
     }
 
     QString title() const {
+        if (leftPath_.isEmpty() && rightPath_.isEmpty()) return "Media Compare";
         const auto name = [](const QString& p) { return p.isEmpty() ? QString("(missing)") : QFileInfo(p).fileName(); };
         return name(leftPath_) + " <-> " + name(rightPath_);
     }
@@ -73,21 +127,42 @@ public:
     QString leftText() const { return leftPath_; }
     QString rightText() const { return rightPath_; }
 
+    // For the tab host: call before closing the tab; returns false if the user wants to keep editing.
+    bool hasUnsavedChanges() const { return dirty(0) || dirty(1); }
+    bool confirmClose() { return confirmDiscard(); }
+
     std::function<void()> onHomeRequested;
     std::function<void()> onSessionsRequested;
     std::function<void()> onTitleChanged;
 
-    QList<QAction*> actionsMenuItems() const { return {playLeftAction_, playRightAction_, playBothAction_, reloadAction_}; }
+    QList<QAction*> actionsMenuItems() const {
+        return {playLeftAction_, playRightAction_, playBothAction_, saveLeftAction_, saveRightAction_, reloadAction_};
+    }
 
 private:
+    using Edits = QMap<QString, QVariant>;  // group\x1fkey -> new value; a null QVariant removes the tag
+    enum CoverMode : std::uint8_t { CoverKeep = 0, CoverReplace = 1, CoverRemove = 2 };
+
+    struct Cell {
+        bool shown = false;
+        QString text;
+        bool pending = false;
+    };
+
+    static QString editKey(const QString& group, const QString& key) { return group + QChar(0x1f) + key; }
+
     static void destroyHandle(int kind, void* handle) {
         if (kind == OPENBC_EV_RESULT) openbc_media_view_destroy(static_cast<OpenBcMediaView*>(handle));
     }
 
+    // ---- session ----------------------------------------------------------
+
     void startSession() {
         stopSession();
         view_.reset();
-        previewed_ = false;
+        previewed_[0] = previewed_[1] = false;
+        clearPending(0);
+        clearPending(1);
         leftPane_->reset();
         rightPane_->reset();
         const QByteArray left = leftPath_.toUtf8(), right = rightPath_.toUtf8();
@@ -102,12 +177,74 @@ private:
         session_ = nullptr;
     }
 
+    void showEmptyState() {
+        stopSession();
+        view_.reset();
+        tree_->clear();
+        plain_.clear();
+        errors_->hide();
+        sideEditable_[0] = sideEditable_[1] = false;
+        for (std::uint8_t s = 0; s < 2; ++s) pane(s)->setCoverEditable(false);
+        summary_->setText("Choose a file for the left and/or right side above");
+        updateSaveActions();
+        if (onTitleChanged) onTitleChanged();
+    }
+
     void onEvent(const BackendChannel::Event& event) {
-        if (event.kind == OPENBC_EV_STATUS) summary_->setText(event.message);
-        else if (event.kind == OPENBC_EV_RESULT) {
+        if (event.kind == OPENBC_EV_STATUS) {
+            summary_->setText(event.message);
+        } else if (event.kind == OPENBC_EV_RESULT) {
             view_ = std::static_pointer_cast<OpenBcMediaView>(event.handle);
+            if (savingSide_ >= 0) {
+                // A save re-read that side: drop its pending edits unless the backend says the save failed.
+                const auto side = static_cast<std::uint8_t>(savingSide_);
+                savingSide_ = -1;
+                if (!sideError(side).startsWith("Save failed")) clearPending(side);
+            } else {
+                clearPending(0);  // fresh session / reload
+                clearPending(1);
+            }
             rebuild();
         }
+    }
+
+    // ---- path selection ---------------------------------------------------
+
+    static QString cleanInput(QString p) {
+        p = p.trimmed();
+        if (p.size() >= 2 && p.startsWith('"') && p.endsWith('"')) p = p.mid(1, p.size() - 2);
+        return p;
+    }
+
+    void commitPath(std::uint8_t side, const QString& raw) {
+        QString& current = side == 0 ? leftPath_ : rightPath_;
+        PathSelector* selector = side == 0 ? leftSelector_ : rightSelector_;
+        const QString path = cleanInput(raw);
+        if (path == current) return;
+        if (!path.isEmpty() && !QFileInfo(path).isFile()) {
+            summary_->setText("Not a file: " + path);
+            selector->setText(current);
+            return;
+        }
+        if (!confirmDiscard()) {
+            selector->setText(current);
+            return;
+        }
+        current = path;
+        selector->setText(path);
+        if (!path.isEmpty()) selector->remember(path);
+        pane(side)->setPath(path);
+        playLeftAction_->setEnabled(!leftPath_.isEmpty());
+        playRightAction_->setEnabled(!rightPath_.isEmpty());
+        playBothAction_->setEnabled(!leftPath_.isEmpty() && !rightPath_.isEmpty());
+        reloadAction_->setEnabled(!leftPath_.isEmpty() || !rightPath_.isEmpty());
+        if (leftPath_.isEmpty() && rightPath_.isEmpty()) showEmptyState();
+        else startSession();
+    }
+
+    bool confirmDiscard() {
+        if (!hasUnsavedChanges()) return true;
+        return QMessageBox::question(this, "Unsaved metadata", "Discard the unsaved metadata edits?") == QMessageBox::Yes;
     }
 
     // ---- backend string helpers (pointer is fetched BEFORE the length is read) ----
@@ -124,12 +261,14 @@ private:
     }
 
     QString sideError(std::uint8_t side) const {
+        if (!view_) return {};
         std::size_t length = 0;
         const auto* p = openbc_media_side_error(view_.get(), side, &length);
         return backendString(p, length);
     }
 
     QPixmap sideCover(std::uint8_t side) const {
+        if (!view_) return {};
         std::size_t length = 0;
         const auto* p = openbc_media_side_cover(view_.get(), side, &length);
         QPixmap pixmap;
@@ -137,7 +276,138 @@ private:
         return pixmap;
     }
 
+    MediaPlayerPane* pane(std::uint8_t side) const { return side == 0 ? leftPane_ : rightPane_; }
+
+    // ---- pending edits ------------------------------------------------------
+
+    bool dirty(std::uint8_t side) const { return !edits_[side].isEmpty() || coverMode_[side] != CoverKeep; }
+
+    void clearPending(std::uint8_t side) {
+        edits_[side].clear();
+        coverMode_[side] = CoverKeep;
+        coverBytes_[side].clear();
+    }
+
+    Cell cellFor(const QString& key, std::uint8_t side, bool had, const QString& orig) const {
+        const auto it = edits_[side].constFind(key);
+        if (it != edits_[side].constEnd()) return it->isNull() ? Cell{false, {}, true} : Cell{true, it->toString(), true};
+        return Cell{had, had ? orig : QString(), false};
+    }
+
+    static bool rowDiffers(const Cell& l, const Cell& r, bool backendDiffers, bool informational) {
+        if (informational) return false;
+        if (!l.pending && !r.pending) return backendDiffers;
+        return l.shown != r.shown || l.text != r.text;
+    }
+
+    void showCover(std::uint8_t side) {
+        QPixmap pixmap;
+        if (coverMode_[side] == CoverReplace) pixmap.loadFromData(coverBytes_[side]);
+        else if (coverMode_[side] == CoverKeep) pixmap = sideCover(side);
+        pane(side)->setCover(pixmap);
+    }
+
+    void setPendingCover(std::uint8_t side, CoverMode mode, const QByteArray& bytes = QByteArray()) {
+        coverMode_[side] = mode;
+        coverBytes_[side] = bytes;
+        showCover(side);
+        updateSaveActions();
+    }
+
+    void updateSaveActions() {
+        saveLeftAction_->setEnabled(session_ && dirty(0));
+        saveRightAction_->setEnabled(session_ && dirty(1));
+        const int pending = edits_[0].size() + edits_[1].size() + (coverMode_[0] != CoverKeep) + (coverMode_[1] != CoverKeep);
+        pendingLabel_->setText(pending ? QString("%1 unsaved change(s)").arg(pending) : QString());
+    }
+
+    // Writes a cell + row styling from the (pending-aware) cells.
+    void applyItem(QTreeWidgetItem* item, const Cell& l, const Cell& r, bool differs) {
+        using namespace media_detail;
+        const QString dash = QStringLiteral("-");
+        const QBrush differBrush(QColor(0xe5, 0x53, 0x4b, 56));
+        const QBrush pendingBrush(QColor(0xf2, 0xc0, 0x4a));
+        const Cell* cells[2] = {&l, &r};
+        item->setText(1, l.shown ? l.text : dash);
+        item->setText(2, r.shown ? r.text : dash);
+        item->setToolTip(1, item->text(1));
+        item->setToolTip(2, item->text(2));
+        for (int c = 0; c < 2; ++c) {
+            item->setData(c + 1, kShownRole, cells[c]->shown);
+            QFont f = tree_->font();
+            f.setItalic(cells[c]->pending);
+            f.setBold(differs);
+            item->setFont(c + 1, f);
+            item->setForeground(c + 1, cells[c]->pending ? pendingBrush : QBrush());
+        }
+        QFont key = tree_->font();
+        key.setBold(differs);
+        item->setFont(0, key);
+        for (int c = 0; c < 3; ++c) item->setBackground(c, differs ? differBrush : QBrush());
+    }
+
+    void onItemChanged(QTreeWidgetItem* item, int col) {
+        using namespace media_detail;
+        if (populating_ || (col != 1 && col != 2)) return;
+        const auto side = static_cast<std::uint8_t>(col - 1);
+        const QString k = item->data(0, kKeyRole).toString();
+        if (k.isEmpty()) return;
+        const bool had = item->data(col, kHadRole).toBool();
+        const QString orig = item->data(col, kOrigRole).toString();
+        const QString now = item->text(col);
+        const bool blank = now.isEmpty() || now == "-";
+        if (!had && blank) edits_[side].remove(k);
+        else if (had && now == orig) edits_[side].remove(k);
+        else if (blank) edits_[side].insert(k, QVariant());  // remove the tag
+        else edits_[side].insert(k, now);
+
+        populating_ = true;
+        const Cell l = cellFor(k, 0, item->data(1, kHadRole).toBool(), item->data(1, kOrigRole).toString());
+        const Cell r = cellFor(k, 1, item->data(2, kHadRole).toBool(), item->data(2, kOrigRole).toString());
+        applyItem(item, l, r, rowDiffers(l, r, item->data(0, kBackendDiffRole).toBool(), item->data(0, kInfoRole).toBool()));
+        populating_ = false;
+        updateSaveActions();
+    }
+
+    // ---- saving ---------------------------------------------------------------
+
+    void saveSide(std::uint8_t side) {
+        if (!session_ || !dirty(side)) return;
+        std::vector<QByteArray> groups, keys, values;
+        std::vector<const char*> groupPtrs, keyPtrs, valuePtrs;
+        for (auto it = edits_[side].cbegin(); it != edits_[side].cend(); ++it) {
+            const QStringList parts = it.key().split(QChar(0x1f));
+            groups.push_back(parts.value(0).toUtf8());
+            keys.push_back(parts.value(1).toUtf8());
+            values.push_back(it->isNull() ? QByteArray() : it->toString().toUtf8());
+        }
+        std::size_t i = 0;
+        for (auto it = edits_[side].cbegin(); it != edits_[side].cend(); ++it, ++i) {
+            groupPtrs.push_back(groups[i].constData());
+            keyPtrs.push_back(keys[i].constData());
+            valuePtrs.push_back(it->isNull() ? nullptr : values[i].constData());
+        }
+        const QByteArray& cover = coverBytes_[side];
+
+        pane(side)->release();  // the player must not hold the file open while it is rewritten
+        previewed_[side] = false;
+        savingSide_ = side;
+        summary_->setText("Saving " + QFileInfo(side == 0 ? leftPath_ : rightPath_).fileName() + "...");
+        const std::uint8_t accepted = openbc_media_save(
+            session_, side, groupPtrs.size(), groupPtrs.data(), keyPtrs.data(), valuePtrs.data(),
+            static_cast<std::uint8_t>(coverMode_[side]), reinterpret_cast<const std::uint8_t*>(cover.constData()),
+            static_cast<std::size_t>(cover.size()));
+        if (!accepted) {
+            savingSide_ = -1;
+            summary_->setText("Could not start saving (session busy or closed)");
+        }
+    }
+
+    // ---- table ------------------------------------------------------------------
+
     void rebuild() {
+        using namespace media_detail;
+        populating_ = true;
         tree_->clear();
         plain_.clear();
         const OpenBcMediaView* v = view_.get();
@@ -149,25 +419,26 @@ private:
         errors_->setText(problems.join("\n"));
         errors_->setVisible(!problems.isEmpty());
 
-        leftPane_->setCover(sideCover(0));
-        rightPane_->setCover(sideCover(1));
+        const std::size_t rows = openbc_media_view_rows(v);
+        // A side is editable when the backend flagged any row editable and the file is present.
+        sideEditable_[0] = sideEditable_[1] = false;
+        bool anyEditable = false;
+        for (std::size_t i = 0; i < rows; ++i) anyEditable |= (openbc_media_row_flags(v, i) & 4) != 0;
+        for (std::uint8_t s = 0; s < 2; ++s) {
+            sideEditable_[s] = anyEditable && openbc_media_side_present(v, s) != 0;
+            pane(s)->setCoverEditable(sideEditable_[s]);
+            showCover(s);
+        }
 
-        const QString dash = QStringLiteral("-");
-        const QBrush differBrush(QColor(0xe5, 0x53, 0x4b, 56));
         const bool onlyDifferences = onlyDifferences_->isChecked();
         int compared = 0, differing = 0;
         bool hasVideo[2] = {false, false};
         QStringList lines{"Property\tLeft\tRight"};
         QTreeWidgetItem* top = nullptr;
         QString currentGroup;
-        const std::size_t rows = openbc_media_view_rows(v);
         for (std::size_t i = 0; i < rows; ++i) {
             const std::uint32_t flags = openbc_media_row_flags(v, i);
-            const bool differs = flags & 1, informational = flags & 2;
-            if (!informational) {
-                ++compared;
-                differing += differs;
-            }
+            const bool backendDiffers = flags & 1, informational = flags & 2, editable = flags & 4;
             const QString group = text(i, 0), key = text(i, 1);
             const bool hasLeft = hasText(i, 2);
             const bool hasRight = hasText(i, 3);
@@ -175,8 +446,15 @@ private:
                 hasVideo[0] |= hasLeft;
                 hasVideo[1] |= hasRight;
             }
+            const QString origL = hasLeft ? text(i, 2) : QString(), origR = hasRight ? text(i, 3) : QString();
+            const QString k = editKey(group, key);
+            const Cell l = cellFor(k, 0, hasLeft, origL), r = cellFor(k, 1, hasRight, origR);
+            const bool differs = rowDiffers(l, r, backendDiffers, informational);
+            if (!informational) {
+                ++compared;
+                differing += differs;
+            }
             if (onlyDifferences && !(differs && !informational)) continue;
-            const QString l = hasLeft ? text(i, 2) : dash, r = hasRight ? text(i, 3) : dash;
             if (!top || group != currentGroup) {
                 top = new QTreeWidgetItem(tree_, {group});
                 QFont bold = top->font(0);
@@ -185,30 +463,55 @@ private:
                 top->setFirstColumnSpanned(true);
                 currentGroup = group;
             }
-            auto* item = new QTreeWidgetItem(top, {key, l, r});
-            item->setToolTip(1, l);
-            item->setToolTip(2, r);
-            if (differs && !informational) {
-                QFont bold = item->font(0);
-                bold.setBold(true);
-                item->setFont(0, bold);
-                for (int c = 0; c < 3; ++c) item->setBackground(c, differBrush);
-            }
-            lines << key + '\t' + l + '\t' + r;
+            auto* item = new QTreeWidgetItem(top, {key, QString(), QString()});
+            item->setData(0, kKeyRole, k);
+            item->setData(0, kEditableRole, editable);
+            item->setData(0, kBackendDiffRole, backendDiffers);
+            item->setData(0, kInfoRole, informational);
+            item->setData(1, kOrigRole, origL);
+            item->setData(1, kHadRole, hasLeft);
+            item->setData(2, kOrigRole, origR);
+            item->setData(2, kHadRole, hasRight);
+            if (editable) item->setFlags(item->flags() | Qt::ItemIsEditable);
+            applyItem(item, l, r, differs);
+            lines << key + '\t' + item->text(1) + '\t' + item->text(2);
         }
         tree_->expandAll();  // after children exist (setExpanded on an empty item does not stick)
+        populating_ = false;
 
         plain_ = lines.join('\n');
         summary_->setText(rows == 0 ? QString("No metadata") : compared == 0 ? QString("Metadata") : QString("%1 of %2 properties differ").arg(differing).arg(compared));
+        if (anyEditable) summary_->setText(summary_->text() + "  -  double-click a Left/Right value to edit");
 
-        // Show the first video frame as a thumbnail (once per load, not on every filter toggle).
-        if (!previewed_) {
-            previewed_ = true;
-            if (hasVideo[0]) leftPane_->preview();
-            if (hasVideo[1]) rightPane_->preview();
+        // Show the first video frame as a thumbnail (once per side per load, not on every filter toggle).
+        for (std::uint8_t s = 0; s < 2; ++s) {
+            if (previewed_[s]) continue;
+            previewed_[s] = true;
+            if (hasVideo[s]) pane(s)->preview();
         }
+        updateSaveActions();
         if (onTitleChanged) onTitleChanged();
     }
+
+    // ---- volume / crossfade -------------------------------------------------------
+
+    void applyVolumes() {
+        if (!master_ || !crossfade_) return;
+        const double master = muteButton_->isChecked()
+                                  ? 0.0
+                                  : QAudio::convertVolume(master_->value() / 100.0, QAudio::LogarithmicVolumeScale, QAudio::LinearVolumeScale);
+        // Equal-power crossfade: 0 = Left only, 1000 = Right only, centre = both at -3 dB.
+        const double t = crossfade_->value() / 1000.0;
+        const double gl = std::cos(t * media_detail::kPi / 2.0), gr = std::sin(t * media_detail::kPi / 2.0);
+        // The crossfade only shapes the sound while BOTH sides play; a lone side stays at full master volume.
+        const bool both = leftPane_->playing() && rightPane_->playing();
+        leftPane_->setVolume(master * (both ? gl : 1.0));
+        rightPane_->setVolume(master * (both ? gr : 1.0));
+        masterLabel_->setText(QString("%1%").arg(master_->value()));
+        crossfadeLabel_->setText(QString("L %1%  R %2%%3").arg(qRound(gl * 100)).arg(qRound(gr * 100)).arg(both ? "" : "  (when both play)"));
+    }
+
+    // ---- UI ---------------------------------------------------------------------------
 
     QToolBar* makeToolbar() {
         using icons::Glyph;
@@ -221,18 +524,114 @@ private:
         homeAction_ = bar->addAction(icons::glyph(Glyph::Home), "Home");
         sessionsAction_ = bar->addAction(icons::glyph(Glyph::Sessions), "Sessions");
         bar->addSeparator();
-        playLeftAction_ = bar->addAction("Play Left");
-        playRightAction_ = bar->addAction("Play Right");
-        playBothAction_ = bar->addAction("Play Both");
+        playLeftAction_ = bar->addAction(icons::glyph(Glyph::Play), "Play Left");
+        playRightAction_ = bar->addAction(icons::glyph(Glyph::Play), "Play Right");
+        playBothAction_ = bar->addAction(icons::glyph(Glyph::Play), "Play Both");
         playLeftAction_->setEnabled(!leftPath_.isEmpty());
         playRightAction_->setEnabled(!rightPath_.isEmpty());
         playBothAction_->setEnabled(!leftPath_.isEmpty() && !rightPath_.isEmpty());
         playLeftAction_->setToolTip("Play / pause the left file (uses the system's media decoders)");
         playRightAction_->setToolTip("Play / pause the right file (uses the system's media decoders)");
-        playBothAction_->setToolTip("Restart and play both files together");
+        playBothAction_->setToolTip("Restart and play both files together (use the crossfade slider to switch between them)");
+        bar->addSeparator();
+        saveLeftAction_ = bar->addAction(icons::glyph(Glyph::Save), "Save Left");
+        saveRightAction_ = bar->addAction(icons::glyph(Glyph::Save), "Save Right");
+        saveLeftAction_->setToolTip("Write the edited tags / cover of the left file");
+        saveRightAction_->setToolTip("Write the edited tags / cover of the right file");
+        saveLeftAction_->setEnabled(false);
+        saveRightAction_->setEnabled(false);
         bar->addSeparator();
         reloadAction_ = bar->addAction(icons::glyph(Glyph::Refresh), "Reload");
+        reloadAction_->setEnabled(!leftPath_.isEmpty() || !rightPath_.isEmpty());
         return bar;
+    }
+
+    PathSelector* makeSelector(const QString& side, const QString& initial, std::uint8_t sideIndex) {
+        // Remote browsing is off: playback and the backend read local files only.
+        auto* selector = new PathSelector(PathSelector::Mode::File, side, this, false,
+                                          "Media files (*.mp3 *.wav *.flac *.ogg *.oga *.opus *.m4a *.aac *.wma *.mp4 *.m4v *.mov *.avi *.mkv *.webm);;All files (*.*)",
+                                          false);
+        if (!initial.isEmpty()) {
+            selector->remember(initial);
+            selector->setText(initial);
+        }
+        selector->onBrowsed = [this, sideIndex](QString p) { commitPath(sideIndex, p); };
+        QObject::connect(selector->combo()->lineEdit(), &QLineEdit::returnPressed, this,
+                         [this, selector, sideIndex]() { commitPath(sideIndex, selector->text()); });
+        QObject::connect(selector->combo(), QOverload<int>::of(&QComboBox::activated), this,
+                         [this, selector, sideIndex](int) { commitPath(sideIndex, selector->text()); });
+        return selector;
+    }
+
+    QHBoxLayout* makeMixerStrip() {
+        using icons::Glyph;
+        auto* mix = new QHBoxLayout;
+        mix->setContentsMargins(6, 2, 6, 2);
+
+        muteButton_ = new QToolButton(this);
+        muteButton_->setCheckable(true);
+        muteButton_->setIcon(icons::glyph(Glyph::VolumeOn));
+        muteButton_->setToolTip("Mute both");
+        master_ = new QSlider(Qt::Horizontal, this);
+        master_->setRange(0, 100);
+        master_->setValue(100);
+        master_->setMaximumWidth(180);
+        master_->setToolTip("Master volume (applies to both sides)");
+        masterLabel_ = new QLabel("100%", this);
+        masterLabel_->setMinimumWidth(36);
+
+        auto* leftLabel = new QLabel("Left", this);
+        auto* rightLabel = new QLabel("Right", this);
+        crossfade_ = new QSlider(Qt::Horizontal, this);
+        crossfade_->setRange(0, 1000);
+        crossfade_->setValue(500);
+        crossfade_->setTickPosition(QSlider::TicksBelow);
+        crossfade_->setTickInterval(250);
+        crossfade_->setToolTip("A/B crossfade while both files play: drag left for Left only, right for Right only");
+        crossfadeLabel_ = new QLabel(this);
+        centerButton_ = new QToolButton(this);
+        centerButton_->setText("=");
+        centerButton_->setToolTip("Centre the crossfade (both at equal level)");
+        linkSeek_ = new QCheckBox("Link seek", this);
+        linkSeek_->setChecked(true);
+        linkSeek_->setToolTip("Dragging one position slider moves the other side to the same time");
+
+        mix->addWidget(muteButton_);
+        mix->addWidget(master_);
+        mix->addWidget(masterLabel_);
+        mix->addSpacing(16);
+        mix->addWidget(leftLabel);
+        mix->addWidget(crossfade_, 1);
+        mix->addWidget(rightLabel);
+        mix->addWidget(centerButton_);
+        mix->addWidget(crossfadeLabel_);
+        mix->addSpacing(8);
+        mix->addWidget(linkSeek_);
+
+        QObject::connect(master_, &QSlider::valueChanged, this, [this](int) { applyVolumes(); });
+        QObject::connect(crossfade_, &QSlider::valueChanged, this, [this](int) { applyVolumes(); });
+        QObject::connect(centerButton_, &QToolButton::clicked, this, [this]() { crossfade_->setValue(500); });
+        QObject::connect(muteButton_, &QToolButton::toggled, this, [this](bool muted) {
+            muteButton_->setIcon(icons::glyph(muted ? icons::Glyph::VolumeMuted : icons::Glyph::VolumeOn));
+            applyVolumes();
+        });
+        return mix;
+    }
+
+    void updateTopHeight() {
+        const bool anyVideo = leftPane_->hasVideo() || rightPane_->hasVideo();
+        if (!anyVideo) {
+            top_->setMaximumHeight(top_->minimumSizeHint().height() + 40);
+            return;
+        }
+        const bool wasCapped = top_->maximumHeight() != QWIDGETSIZE_MAX;
+        top_->setMaximumHeight(QWIDGETSIZE_MAX);
+        // First video after a compact (audio-only) state: open the video area to a usable size.
+        if (wasCapped) {
+            const int total = split_->height();
+            const int topH = qMin(320, qMax(200, total * 3 / 5));
+            split_->setSizes({topH, qMax(120, total - topH)});
+        }
     }
 
     void buildUi() {
@@ -243,15 +642,18 @@ private:
 
         auto* paths = new QHBoxLayout;
         paths->setContentsMargins(6, 2, 6, 2);
-        for (const QString& p : {leftPath_, rightPath_}) {
-            auto* label = new QLabel(p.isEmpty() ? QString("(missing)") : p, this);
-            label->setToolTip(p);
-            label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-            paths->addWidget(label, 1);
-        }
+        leftSelector_ = makeSelector("Left", leftPath_, 0);
+        rightSelector_ = makeSelector("Right", rightPath_, 1);
+        paths->addWidget(leftSelector_, 1);
+        paths->addWidget(rightSelector_, 1);
         root->addLayout(paths);
 
-        // Preview players: one per side, directly under the path labels.
+        // ---- top half: preview players + mixer strip -----------------------
+        top_ = new QWidget(this);
+        auto* topLayout = new QVBoxLayout(top_);
+        topLayout->setContentsMargins(0, 0, 0, 0);
+        topLayout->setSpacing(0);
+
         auto* players = new QHBoxLayout;
         players->setContentsMargins(0, 0, 0, 0);
         leftPane_ = new MediaPlayerPane(leftPath_, this);
@@ -260,25 +662,35 @@ private:
         rightPane_->setVisible(!rightPath_.isEmpty());
         players->addWidget(leftPane_, 1);
         players->addWidget(rightPane_, 1);
-        root->addLayout(players);
+        topLayout->addLayout(players, 1);
+        topLayout->addLayout(makeMixerStrip());
+
+        // ---- bottom half: errors + header + metadata table ------------------
+        auto* bottom = new QWidget(this);
+        auto* bottomLayout = new QVBoxLayout(bottom);
+        bottomLayout->setContentsMargins(0, 0, 0, 0);
+        bottomLayout->setSpacing(0);
 
         errors_ = new QLabel(this);
         errors_->setStyleSheet("color:#e5534b;");
         errors_->setWordWrap(true);
         errors_->setContentsMargins(6, 0, 6, 0);
         errors_->hide();
-        root->addWidget(errors_);
+        bottomLayout->addWidget(errors_);
 
         auto* header = new QHBoxLayout;
         header->setContentsMargins(6, 2, 6, 2);
         summary_ = new QLabel("Metadata", this);
+        pendingLabel_ = new QLabel(this);
+        pendingLabel_->setStyleSheet("color:#f2c04a;");
         onlyDifferences_ = new QCheckBox("Differences only", this);
         auto* copy = new QPushButton("Copy", this);
         copy->setToolTip("Copy all rows to the clipboard (tab separated)");
         header->addWidget(summary_, 1);
+        header->addWidget(pendingLabel_);
         header->addWidget(onlyDifferences_);
         header->addWidget(copy);
-        root->addLayout(header);
+        bottomLayout->addLayout(header);
 
         tree_ = new QTreeWidget(this);
         tree_->setColumnCount(3);
@@ -287,25 +699,69 @@ private:
         tree_->setAlternatingRowColors(true);
         tree_->setSelectionMode(QAbstractItemView::ExtendedSelection);
         tree_->setTextElideMode(Qt::ElideMiddle);
+        tree_->setEditTriggers(QAbstractItemView::NoEditTriggers);  // editing starts from itemDoubleClicked only
+        tree_->setItemDelegateForColumn(1, new media_detail::DashAwareDelegate(tree_));
+        tree_->setItemDelegateForColumn(2, new media_detail::DashAwareDelegate(tree_));
         tree_->header()->setStretchLastSection(false);
         tree_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
         tree_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
         tree_->header()->setSectionResizeMode(2, QHeaderView::Stretch);
-        root->addWidget(tree_, 1);
+        tree_->setMinimumHeight(120);
+        bottomLayout->addWidget(tree_, 1);
+
+        // ---- the draggable divider ------------------------------------------
+        split_ = new QSplitter(Qt::Vertical, this);
+        split_->setChildrenCollapsible(false);
+        split_->setHandleWidth(6);
+        split_->addWidget(top_);
+        split_->addWidget(bottom);
+        split_->setStretchFactor(0, 3);  // window growth goes mostly to the video
+        split_->setStretchFactor(1, 2);
+        root->addWidget(split_, 1);
+
+        // Audio-only files have nothing to enlarge: keep the top half compact and
+        // give all spare height to the table. Re-evaluated when a video appears.
+        leftPane_->onVideoChanged = [this]() { updateTopHeight(); };
+        rightPane_->onVideoChanged = [this]() { updateTopHeight(); };
+        updateTopHeight();
 
         QObject::connect(onlyDifferences_, &QCheckBox::toggled, this, [this](bool) { if (view_) rebuild(); });
         QObject::connect(copy, &QPushButton::clicked, this, [this]() { QGuiApplication::clipboard()->setText(plain_); });
         QObject::connect(homeAction_, &QAction::triggered, this, [this]() { if (onHomeRequested) onHomeRequested(); });
         QObject::connect(sessionsAction_, &QAction::triggered, this, [this]() { if (onSessionsRequested) onSessionsRequested(); });
         QObject::connect(reloadAction_, &QAction::triggered, this, [this]() {
-            if (!session_) return;
-            previewed_ = false;
+            if (!session_ || !confirmDiscard()) return;
+            previewed_[0] = previewed_[1] = false;
+            clearPending(0);
+            clearPending(1);
             leftPane_->reset();
             rightPane_->reset();
             openbc_media_reload(session_);
         });
 
+        // Editing.
+        QObject::connect(tree_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int col) {
+            if (col != 1 && col != 2) return;
+            if (!item->data(0, media_detail::kEditableRole).toBool() || !sideEditable_[col - 1]) return;
+            tree_->editItem(item, col);
+        });
+        QObject::connect(tree_, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int col) { onItemChanged(item, col); });
+        QObject::connect(saveLeftAction_, &QAction::triggered, this, [this]() { saveSide(0); });
+        QObject::connect(saveRightAction_, &QAction::triggered, this, [this]() { saveSide(1); });
+        leftPane_->onCoverReplaced = [this](const QByteArray& bytes) { setPendingCover(0, CoverReplace, bytes); };
+        rightPane_->onCoverReplaced = [this](const QByteArray& bytes) { setPendingCover(1, CoverReplace, bytes); };
+        leftPane_->onCoverRemoved = [this]() { setPendingCover(0, CoverRemove); };
+        rightPane_->onCoverRemoved = [this]() { setPendingCover(1, CoverRemove); };
+
+        // Playback: volume gains depend on which sides are playing; seeks can be mirrored.
+        leftPane_->onStateChanged = [this]() { applyVolumes(); };
+        rightPane_->onStateChanged = [this]() { applyVolumes(); };
+        leftPane_->onSeeked = [this](qint64 ms) { if (linkSeek_->isChecked()) rightPane_->seek(ms); };
+        rightPane_->onSeeked = [this](qint64 ms) { if (linkSeek_->isChecked()) leftPane_->seek(ms); };
+        applyVolumes();
+
         // Play Left / Right: toggle that side and pause the other so two files never overlap by accident.
+        // (The per-pane Play buttons are independent, which is how a deliberate A/B crossfade is started.)
         QObject::connect(playLeftAction_, &QAction::triggered, this, [this]() {
             if (leftPane_->playing()) {
                 leftPane_->pause();
@@ -341,20 +797,39 @@ private:
     OpenBcMediaSession* session_ = nullptr;
     MediaViewPtr view_;
     QString plain_;
-    bool previewed_ = false;
+    bool previewed_[2] = {false, false};
+    bool populating_ = false;
+    bool sideEditable_[2] = {false, false};
+    int savingSide_ = -1;
+    Edits edits_[2];
+    CoverMode coverMode_[2] = {CoverKeep, CoverKeep};
+    QByteArray coverBytes_[2];
 
     QAction* homeAction_ = nullptr;
     QAction* sessionsAction_ = nullptr;
     QAction* playLeftAction_ = nullptr;
     QAction* playRightAction_ = nullptr;
     QAction* playBothAction_ = nullptr;
+    QAction* saveLeftAction_ = nullptr;
+    QAction* saveRightAction_ = nullptr;
     QAction* reloadAction_ = nullptr;
+    PathSelector* leftSelector_ = nullptr;
+    PathSelector* rightSelector_ = nullptr;
     MediaPlayerPane* leftPane_ = nullptr;
     MediaPlayerPane* rightPane_ = nullptr;
+    QToolButton* muteButton_ = nullptr;
+    QToolButton* centerButton_ = nullptr;
+    QSlider* master_ = nullptr;
+    QSlider* crossfade_ = nullptr;
+    QLabel* masterLabel_ = nullptr;
+    QLabel* crossfadeLabel_ = nullptr;
+    QCheckBox* linkSeek_ = nullptr;
     QLabel* summary_ = nullptr;
+    QLabel* pendingLabel_ = nullptr;
     QLabel* errors_ = nullptr;
     QCheckBox* onlyDifferences_ = nullptr;
     QTreeWidget* tree_ = nullptr;
+    QWidget* top_ = nullptr;
     BackendChannel channel_;  // last member: destroyed after stopSession()
 };
 

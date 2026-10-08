@@ -631,6 +631,12 @@ enum class Glyph {
     Find,
     MinimapPixel,
     Save,
+    Play,
+    Pause,
+    Stop,
+    VolumeOn,
+    VolumeMuted,
+    Cover,
 };
 
 inline QIcon glyph(Glyph which) {
@@ -886,6 +892,57 @@ inline QIcon glyph(Glyph which) {
             p.drawRect(QRectF(4.4, 2.6, 6.0, 3.6));
             p.setBrush(body.darker(160));
             p.drawRect(QRectF(4.6, 8.2, 6.8, 4.6));
+        });
+    case Glyph::Play:
+        return make([](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(color::newer());
+            p.drawPolygon(QPolygonF({QPointF(4.2, 2.4), QPointF(13.4, 8.0), QPointF(4.2, 13.6)}));
+        });
+    case Glyph::Pause:
+        return make([ink](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(ink);
+            p.drawRoundedRect(QRectF(3.6, 2.6, 3.2, 10.8), 0.8, 0.8);
+            p.drawRoundedRect(QRectF(9.2, 2.6, 3.2, 10.8), 0.8, 0.8);
+        });
+    case Glyph::Stop:
+        return make([ink](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(ink);
+            p.drawRoundedRect(QRectF(3.4, 3.4, 9.2, 9.2), 1.2, 1.2);
+        });
+    case Glyph::VolumeOn:
+    case Glyph::VolumeMuted: {
+        const bool muted = which == Glyph::VolumeMuted;
+        return make([ink, muted](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(ink);
+            p.drawPolygon(QPolygonF({QPointF(1.6, 6.0), QPointF(4.4, 6.0), QPointF(8.0, 2.8),
+                                     QPointF(8.0, 13.2), QPointF(4.4, 10.0), QPointF(1.6, 10.0)}));
+            p.setBrush(Qt::NoBrush);
+            if (muted) {
+                p.setPen(QPen(color::different(), 1.7, Qt::SolidLine, Qt::RoundCap));
+                p.drawLine(QPointF(10.4, 5.6), QPointF(14.6, 10.4));
+                p.drawLine(QPointF(14.6, 5.6), QPointF(10.4, 10.4));
+            } else {
+                p.setPen(QPen(ink, 1.5, Qt::SolidLine, Qt::RoundCap));
+                p.drawArc(QRectF(7.0, 5.0, 5.0, 6.0), -60 * 16, 120 * 16);
+                p.drawArc(QRectF(6.0, 2.8, 8.4, 10.4), -60 * 16, 120 * 16);
+            }
+        });
+    }
+    case Glyph::Cover:
+        return make([ink, gold](QPainter& p, QIcon::Mode, QIcon::State) {
+            p.setPen(QPen(ink, 1.3));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(QRectF(1.8, 2.8, 12.4, 10.4), 1.4, 1.4);
+            p.setPen(Qt::NoPen);
+            p.setBrush(color::newer());
+            p.drawPolygon(QPolygonF({QPointF(3.4, 12.0), QPointF(6.8, 7.2), QPointF(9.0, 10.0),
+                                     QPointF(10.4, 8.6), QPointF(12.8, 12.0)}));
+            p.setBrush(gold);
+            p.drawEllipse(QPointF(10.6, 5.6), 1.2, 1.2);
         });
     }
     }

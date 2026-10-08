@@ -11,9 +11,48 @@ use tokio::sync::mpsc;
 
 use crate::common::*;
 
+mod write;
+
+pub use write::is_editable;
+
+/// One tag change; `value: None` removes the tag. `group`/`key` are the row's display names.
+#[derive(Debug, Clone)]
+pub struct TagEdit {
+    pub group: String,
+    pub key: String,
+    pub value: Option<String>,
+}
+
+#[derive(Clone)]
+pub enum CoverEdit {
+    Keep,
+    Replace(Vec<u8>),
+    Remove,
+}
+
+// Manual Debug so logging a command never dumps image bytes.
+impl std::fmt::Debug for CoverEdit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Keep => f.write_str("Keep"),
+            Self::Replace(b) => write!(f, "Replace({} bytes)", b.len()),
+            Self::Remove => f.write_str("Remove"),
+        }
+    }
+}
+
+/// Edits for one side (0 left, 1 right); the file is rewritten, then both sides are re-read.
+#[derive(Debug, Clone)]
+pub struct MediaSave {
+    pub side: usize,
+    pub edits: Vec<TagEdit>,
+    pub cover: CoverEdit,
+}
+
 #[derive(Debug)]
 pub enum MediaCommand {
     Reload,
+    Save(MediaSave),
 }
 
 pub struct MediaView {
@@ -70,6 +109,8 @@ pub fn spawn_media_compare(rt: &Handle, source: Arc<dyn ByteSource>, left: PathB
     let (ctx, mut crx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
     let (etx, erx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
     rt.spawn(async move {
+        // "Save failed: ..." per side, shown by the UI in that side's error line after the re-read.
+        let mut save_errors: [Option<String>; 2] = [None, None];
         loop {
             if etx.send(MediaEvent::Status("Reading media headers...".into())).await.is_err() {
                 return;
@@ -84,21 +125,37 @@ pub fn spawn_media_compare(rt: &Handle, source: Arc<dyn ByteSource>, left: PathB
             let Ok(rows) = diff_rows else { return };
             let view = MediaView {
                 rows,
-                errors: [l.error, r.error],
+                errors: [save_errors[0].take().or(l.error), save_errors[1].take().or(r.error)],
                 present: [!left.as_os_str().is_empty(), !right.as_os_str().is_empty()],
                 covers: [l.cover, r.cover],
             };
             if etx.send(MediaEvent::Result(Arc::new(view))).await.is_err() {
                 return;
             }
-            // One reload at a time; extra queued reloads collapse into one.
-            if crx.recv().await.is_none() {
-                return;
+            // One reload at a time; extra queued reloads collapse into one, saves run in order.
+            let Some(first) = crx.recv().await else { return };
+            apply_command(first, &left, &right, &mut save_errors).await;
+            while let Ok(next) = crx.try_recv() {
+                apply_command(next, &left, &right, &mut save_errors).await;
             }
-            while crx.try_recv().is_ok() {}
         }
     });
     (MediaCompareHandle { tx: ctx }, erx)
+}
+
+async fn apply_command(command: MediaCommand, left: &Path, right: &Path, save_errors: &mut [Option<String>; 2]) {
+    let MediaCommand::Save(save) = command else { return };
+    let side = usize::from(save.side != 0);
+    let path = if side == 0 { left } else { right }.to_path_buf();
+    let result = if path.as_os_str().is_empty() {
+        Err("no file selected".to_string())
+    } else {
+        match rayon_run(move || write::apply(&path, &save)).await {
+            Ok(result) => result,
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    save_errors[side] = result.err().map(|e| format!("Save failed: {e}"));
 }
 
 async fn load_side(source: &Arc<dyn ByteSource>, path: &Path) -> Side {

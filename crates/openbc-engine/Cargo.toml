@@ -13,6 +13,7 @@ serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 async-trait = "0.1"
+lofty = "0.22"
 
 [dev-dependencies]
 image = "0.25"
