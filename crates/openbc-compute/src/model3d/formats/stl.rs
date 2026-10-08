@@ -1,4 +1,4 @@
-use super::{finish, malformed};
+use super::{check_cancel, finish, malformed, poll_cancel};
 use openbc_core::model3d::*;
 use rayon::prelude::*;
 
@@ -34,7 +34,7 @@ fn binary(bytes: &[u8], ctx: &LoadContext<'_>) -> Result<Mesh, LoadError> {
     let mut positions = vec![[0f32; 3]; n * 3];
     const REC: usize = 4096;
     body.par_chunks(50 * REC).zip(positions.par_chunks_mut(3 * REC)).try_for_each(|(src, dst)| {
-        if ctx.cancel.is_cancelled() { return Err(LoadError::Cancelled); }
+        check_cancel(ctx)?;
         for (rec, out) in src.chunks_exact(50).zip(dst.chunks_exact_mut(3)) {
             for v in 0..3 {
                 let o = 12 + v * 12;
@@ -58,7 +58,7 @@ fn ascii(bytes: &[u8], ctx: &LoadContext<'_>) -> Result<Mesh, LoadError> {
                 *c = it.next().ok_or_else(|| malformed("truncated vertex"))?.parse().map_err(|_| malformed("bad number in vertex"))?;
             }
             positions.push(v);
-            if positions.len() % (1 << 16) == 0 && ctx.cancel.is_cancelled() { return Err(LoadError::Cancelled); }
+            poll_cancel(ctx, positions.len())?;
         }
     }
     if positions.len() % 3 != 0 { return Err(malformed("vertex count is not a multiple of 3")); }

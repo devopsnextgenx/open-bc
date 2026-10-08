@@ -3,10 +3,15 @@
 /// Cap on stored runs so a pathological pair of files cannot exhaust memory.
 pub const MAX_RUNS: usize = 1_000_000;
 
+/// Block size used to skip equal regions quickly before scanning byte by byte.
+const BLOCK: usize = 64;
+
 /// A maximal range of differing bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ByteDiffRun {
+    /// File offset of the first differing byte.
     pub offset: u64,
+    /// Number of consecutive differing bytes.
     pub len: u64,
 }
 
@@ -23,7 +28,6 @@ pub fn push_run(out: &mut Vec<ByteDiffRun>, offset: u64, len: u64) {
 
 /// Compares the common prefix of two slices; `base` is the file offset of index 0.
 pub fn diff_slices(left: &[u8], right: &[u8], base: u64, out: &mut Vec<ByteDiffRun>) {
-    const BLOCK: usize = 64;
     let n = left.len().min(right.len());
     let mut i = 0;
     while i < n {
@@ -33,15 +37,15 @@ pub fn diff_slices(left: &[u8], right: &[u8], base: u64, out: &mut Vec<ByteDiffR
             continue;
         }
         while i < end {
-            if left[i] != right[i] {
-                let start = i;
-                while i < n && left[i] != right[i] {
-                    i += 1;
-                }
-                push_run(out, base + start as u64, (i - start) as u64);
-            } else {
+            if left[i] == right[i] {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < n && left[i] != right[i] {
                 i += 1;
             }
+            push_run(out, base + start as u64, (i - start) as u64);
         }
     }
 }
@@ -64,5 +68,16 @@ mod tests {
         diff_slices(&a, &b, 100, &mut runs);
         assert_eq!(runs, vec![ByteDiffRun { offset: 101, len: 2 }, ByteDiffRun { offset: 105, len: 1 }]);
         assert_eq!(tail_run(6, 10), Some(ByteDiffRun { offset: 6, len: 4 }));
+    }
+
+    #[test]
+    fn merges_runs_across_block_boundaries() {
+        let a = vec![0u8; 200];
+        let mut b = a.clone();
+        b[62..66].fill(1); // straddles the 64-byte block edge
+        let mut runs = Vec::new();
+        diff_slices(&a, &b, 0, &mut runs);
+        assert_eq!(runs, vec![ByteDiffRun { offset: 62, len: 4 }]);
+        assert_eq!(tail_run(5, 5), None);
     }
 }

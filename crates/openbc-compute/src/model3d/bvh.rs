@@ -4,6 +4,7 @@
 //! `count == 0` is internal: its left child is `index + 1`, its right child is `a`.
 //! A node with `count > 0` is a leaf covering `tris[a .. a + count]`. Triangles are stored
 //! reordered (`tris`), `tri_ids` maps back to the mesh's triangle index.
+use super::geom::centroid;
 use openbc_core::model3d::mesh::*;
 use rayon::prelude::*;
 
@@ -13,6 +14,12 @@ const PAR_THRESHOLD: usize = 8192;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Node { pub min: V3, pub a: u32, pub max: V3, pub count: u32 }
+
+impl Node {
+    /// Triangle range `tris[a .. a + count]` covered by a leaf.
+    #[inline]
+    pub fn leaf_range(&self) -> std::ops::Range<usize> { self.a as usize..(self.a + self.count) as usize }
+}
 
 pub struct Bvh {
     pub nodes: Vec<Node>,
@@ -40,7 +47,7 @@ impl Bvh {
             let t = mesh.triangle(i);
             let (mut mn, mut mx) = (t[0], t[0]);
             for v in &t[1..] { for k in 0..3 { mn[k] = mn[k].min(v[k]); mx[k] = mx[k].max(v[k]); } }
-            Item { min: mn, max: mx, c: [(t[0][0] + t[1][0] + t[2][0]) / 3.0, (t[0][1] + t[1][1] + t[2][1]) / 3.0, (t[0][2] + t[1][2] + t[2][2]) / 3.0] }
+            Item { min: mn, max: mx, c: centroid(t[0], t[1], t[2]) }
         }).collect();
         let mut ids: Vec<u32> = (0..n as u32).collect();
         let nodes = if n == 0 { Vec::new() } else { build_range(&mut ids, &items) };
@@ -63,7 +70,7 @@ impl Bvh {
             let nd = &self.nodes[ni];
             if box_d2(p, nd) >= best { continue; }
             if nd.count > 0 {
-                for k in nd.a as usize..(nd.a + nd.count) as usize {
+                for k in nd.leaf_range() {
                     let (q, d2) = closest_on_tri(p, &self.tris[k]);
                     if d2 < best { best = d2; best_k = k; best_q = q; }
                 }
@@ -96,10 +103,10 @@ impl Bvh {
             let nd = &self.nodes[ni];
             if !ray_box(o, inv, nd, best_t) { continue; }
             if nd.count > 0 {
-                for k in nd.a as usize..(nd.a + nd.count) as usize {
+                for k in nd.leaf_range() {
                     if let Some(t) = ray_tri(o, d, &self.tris[k]) { if t < best_t { best_t = t; best_k = k; } }
                 }
-            } else { stack[sp] = nd.a; stack[sp + 1] = (ni + 1) as u32; sp += 2; }
+            } else { push_children(&mut stack, &mut sp, ni, nd); }
         }
         (best_k != usize::MAX).then(|| (best_t, self.tri_ids[best_k]))
     }
@@ -117,7 +124,7 @@ impl Bvh {
             let nd = &self.nodes[ni];
             if y < nd.min[1] || y > nd.max[1] || z < nd.min[2] || z > nd.max[2] { continue; }
             if nd.count > 0 {
-                for k in nd.a as usize..(nd.a + nd.count) as usize {
+                for k in nd.leaf_range() {
                     let t = &self.tris[k];
                     let (ay, az) = (t[0][1], t[0][2]);
                     let (e1y, e1z, e2y, e2z) = (t[1][1] - ay, t[1][2] - az, t[2][1] - ay, t[2][2] - az);
@@ -130,7 +137,7 @@ impl Bvh {
                         out.push(t[0][0] + u * (t[1][0] - t[0][0]) + v * (t[2][0] - t[0][0]));
                     }
                 }
-            } else { stack[sp] = nd.a; stack[sp + 1] = (ni + 1) as u32; sp += 2; }
+            } else { push_children(&mut stack, &mut sp, ni, nd); }
         }
         out.sort_unstable_by(|a, b| a.total_cmp(b));
     }
@@ -173,6 +180,14 @@ fn build_range(ids: &mut [u32], items: &[Item]) -> Vec<Node> {
     out.extend(ln.into_iter().map(|mut n| { if n.count == 0 { n.a += 1; } n }));
     out.extend(rn.into_iter().map(|mut n| { if n.count == 0 { n.a += (1 + ll) as u32; } else { n.a += mid as u32; } n }));
     out
+}
+
+/// Pushes both children of an internal node (right first, so the left one is visited next).
+#[inline]
+fn push_children(stack: &mut [u32; 64], sp: &mut usize, ni: usize, nd: &Node) {
+    stack[*sp] = nd.a;
+    stack[*sp + 1] = (ni + 1) as u32;
+    *sp += 2;
 }
 
 #[inline]

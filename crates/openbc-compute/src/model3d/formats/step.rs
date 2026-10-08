@@ -1,7 +1,7 @@
 //! STEP via truck (cargo feature `fmt-step`, on by default). Tessellates every shell; the
 //! file's length unit is detected and converted to mm. Assembly placements are not applied
 //! (truck-stepio reads shells as-is).
-use super::{finish, malformed};
+use super::{check_cancel, finish, malformed};
 use openbc_core::model3d::*;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use truck_meshalgo::prelude::*;
@@ -50,7 +50,7 @@ impl MeshLoader for StepLoader {
             let mut mesh = Mesh::default();
             let (mut failed, mut first_err) = (0usize, None::<String>);
             for shell in table.shell.values() {
-                if ctx.cancel.is_cancelled() { return Err(LoadError::Cancelled); }
+                check_cancel(ctx)?;
                 let one = catch_unwind(AssertUnwindSafe(|| -> Result<(Vec<V3>, Vec<u32>), String> {
                     let cshell = table.to_compressed_shell(shell).map_err(|e| format!("shell: {e:?}"))?;
                     let mut poly = cshell.robust_triangulation(tol).to_polygon();

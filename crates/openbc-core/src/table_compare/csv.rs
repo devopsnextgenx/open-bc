@@ -1,25 +1,6 @@
 //! CSV/TSV text decoding, parsing and writing (RFC 4180 flavour). Pure, no I/O.
 
-/// Decodes bytes to text: honours UTF-8 / UTF-16 BOMs, otherwise lossy UTF-8.
-///
-/// ```
-/// assert_eq!(openbc_core::table_compare::csv::decode_text(b"a,b"), "a,b");
-/// ```
-pub fn decode_text(bytes: &[u8]) -> String {
-    let utf16 = |b: &[u8], big_endian: bool| {
-        let units: Vec<u16> = b
-            .chunks_exact(2)
-            .map(|c| if big_endian { u16::from_be_bytes([c[0], c[1]]) } else { u16::from_le_bytes([c[0], c[1]]) })
-            .collect();
-        String::from_utf16_lossy(&units)
-    };
-    match bytes {
-        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
-        [0xFF, 0xFE, rest @ ..] => utf16(rest, false),
-        [0xFE, 0xFF, rest @ ..] => utf16(rest, true),
-        _ => String::from_utf8_lossy(bytes).into_owned(),
-    }
-}
+pub use crate::encoding::decode_text;
 
 /// Picks the delimiter (`,` `;` tab `|`) that occurs most in the first non-empty line,
 /// ignoring quoted text. Falls back to `,`.

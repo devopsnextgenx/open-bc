@@ -1,20 +1,25 @@
 //! Backend selection for the deviation query (the dominant cost): GPU when eligible and
 //! available, otherwise Rayon. No wgpu type leaks out of this module.
 use super::bvh::Bvh;
-use super::ComputeError;
+use super::error::{check, ComputeError};
+use crate::gpu_policy;
 use openbc_core::model3d::{Backend, CancelToken, V3};
 use rayon::prelude::*;
 use std::sync::Arc;
 
 /// Architecture rule: files below 1 MiB are never sent to a GPU, default threshold 4 MiB.
-pub const GPU_FLOOR_BYTES: u64 = 1 << 20;
-pub const GPU_DEFAULT_BYTES: u64 = 4 << 20;
+pub const GPU_FLOOR_BYTES: u64 = gpu_policy::GPU_FLOOR_BYTES;
+pub const GPU_DEFAULT_BYTES: u64 = gpu_policy::GPU_DEFAULT_MIN_BYTES;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum GpuError {
+    #[error("GPU unavailable: {0}")]
     Unavailable(String),
+    #[error("input too large for the GPU: {0}")]
     TooLarge(String),
+    #[error("GPU device error: {0}")]
     Device(String),
+    #[error("cancelled")]
     Cancelled,
 }
 
@@ -29,7 +34,7 @@ pub trait DeviationExecutor: Send + Sync {
 pub struct GpuPolicy { pub min_file_bytes: u64 }
 impl Default for GpuPolicy { fn default() -> Self { Self { min_file_bytes: GPU_DEFAULT_BYTES } } }
 impl GpuPolicy {
-    pub fn eligible(&self, largest_file_bytes: u64) -> bool { largest_file_bytes >= self.min_file_bytes.max(GPU_FLOOR_BYTES) }
+    pub fn eligible(&self, largest_file_bytes: u64) -> bool { gpu_policy::gpu_eligible(largest_file_bytes, self.min_file_bytes) }
 }
 
 #[derive(Clone)]
@@ -66,8 +71,27 @@ impl Backends {
 
 pub fn cpu_signed_distances(bvh: &Bvh, queries: &[V3], cancel: &CancelToken) -> Result<Vec<f32>, ComputeError> {
     let parts: Vec<Vec<f32>> = queries.par_chunks(2048).map(|c| {
-        if cancel.is_cancelled() { return Err(ComputeError::Cancelled); }
+        check(cancel)?;
         Ok(c.iter().map(|&p| bvh.closest(p).map(|h| h.signed).unwrap_or(f32::INFINITY)).collect::<Vec<f32>>())
     }).collect::<Result<_, _>>()?;
     Ok(parts.into_iter().flatten().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn policy_matches_the_shared_thresholds() {
+        let p = GpuPolicy::default();
+        assert!(!p.eligible(GPU_DEFAULT_BYTES - 1));
+        assert!(p.eligible(GPU_DEFAULT_BYTES));
+        let low = GpuPolicy { min_file_bytes: 0 };
+        assert!(!low.eligible(GPU_FLOOR_BYTES - 1) && low.eligible(GPU_FLOOR_BYTES));
+    }
+
+    #[test]
+    fn cpu_only_never_reports_a_gpu() {
+        assert!(Backends::cpu_only().gpu_name().is_none());
+    }
 }

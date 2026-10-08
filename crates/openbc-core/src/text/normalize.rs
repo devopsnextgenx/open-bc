@@ -21,29 +21,49 @@ pub struct LogNormalizer;
 
 impl LogNormalizer {
     /// Normalize one line according to `options` while preserving its meaning.
+    ///
+    /// Compiles the `ignore_samples` patterns on every call; when normalizing many
+    /// lines with the same options, use the crate-internal `PreparedNormalizer` instead.
     #[must_use]
     pub fn normalize(line: &str, options: &CompareOptions) -> String {
+        PreparedNormalizer::new(options).apply(line)
+    }
+}
+
+/// [`CompareOptions`] with the per-sample regexes compiled once, for normalizing many lines.
+pub(crate) struct PreparedNormalizer<'a> {
+    options: &'a CompareOptions,
+    samples: Vec<Regex>,
+}
+
+impl<'a> PreparedNormalizer<'a> {
+    /// Compiles the sample patterns; samples that yield no valid pattern are skipped.
+    pub(crate) fn new(options: &'a CompareOptions) -> Self {
+        let samples = options.ignore_samples.iter().filter_map(|s| sample_pattern(s)).collect();
+        Self { options, samples }
+    }
+
+    /// Normalize one line (timestamps, container ids, samples, then whitespace).
+    pub(crate) fn apply(&self, line: &str) -> String {
         let mut result = line.to_owned();
-        if options.ignore_timestamps {
+        if self.options.ignore_timestamps {
             result = TIMESTAMP_REGEX.replace_all(&result, "<TS>").into_owned();
         }
-        if options.ignore_container_ids {
-            result = CONTAINER_ID_REGEX
-                .replace_all(&result, "<CONTAINER>")
-                .into_owned();
+        if self.options.ignore_container_ids {
+            result = CONTAINER_ID_REGEX.replace_all(&result, "<CONTAINER>").into_owned();
         }
-        for sample in &options.ignore_samples {
-            if let Some(pattern) = sample_pattern(sample) {
-                result = pattern.replace_all(&result, "<SAMPLE>").into_owned();
-            }
+        for pattern in &self.samples {
+            result = pattern.replace_all(&result, "<SAMPLE>").into_owned();
         }
-        if options.ignore_whitespace {
+        if self.options.ignore_whitespace {
             result = result.split_whitespace().collect::<Vec<_>>().join(" ");
         }
         result
     }
 }
 
+/// Turns a sample value into a regex matching the same *shape*: digit runs become `\d+`,
+/// every other character matches literally.
 fn sample_pattern(sample: &str) -> Option<Regex> {
     if sample.is_empty() {
         return None;
@@ -66,7 +86,7 @@ fn sample_pattern(sample: &str) -> Option<Regex> {
 
 #[cfg(test)]
 mod tests {
-    use super::LogNormalizer;
+    use super::{LogNormalizer, PreparedNormalizer};
     use crate::text::models::CompareOptions;
 
     #[test]
@@ -84,5 +104,21 @@ mod tests {
             LogNormalizer::normalize("value=00:29:35,964", &options),
             "value=00:29:<SAMPLE>"
         );
+    }
+
+    #[test]
+    fn prepared_normalizer_matches_one_shot_and_is_reusable() {
+        let options = CompareOptions {
+            ignore_timestamps: true,
+            ignore_container_ids: true,
+            ignore_whitespace: true,
+            ignore_samples: vec![String::new(), "7,5".to_owned()],
+            ..CompareOptions::default()
+        };
+        let prepared = PreparedNormalizer::new(&options);
+        for line in ["2026-09-21T10:00:00Z  pod-abc12 took 12,34", "plain   text"] {
+            assert_eq!(prepared.apply(line), LogNormalizer::normalize(line, &options));
+        }
+        assert_eq!(prepared.apply("2026-09-21T10:00:00Z pod-abc12 took 12,34"), "<TS> <CONTAINER> took <SAMPLE>");
     }
 }

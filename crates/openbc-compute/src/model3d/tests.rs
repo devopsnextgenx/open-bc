@@ -1,6 +1,9 @@
-//! Unit tests (not run in the authoring environment - no Rust toolchain was available there).
-use super::*;
-use bvh::Bvh;
+//! Unit tests for the model3d pipeline (loaders -> session -> compare).
+use super::bvh::Bvh;
+use super::{align, builtin_registry, bvh, Backends, RawModel, Session};
+use openbc_core::model3d::mesh::*;
+use openbc_core::model3d::*;
+use std::sync::Arc;
 
 pub(crate) fn cube(min: V3, size: f32) -> Mesh {
     let p = |x: f32, y: f32, z: f32| [min[0] + x * size, min[1] + y * size, min[2] + z * size];

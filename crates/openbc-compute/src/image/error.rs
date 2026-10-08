@@ -1,25 +1,26 @@
-use std::fmt;
+use std::fmt::Display;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ImageComputeError {
     /// Decoder rejected the bytes (unsupported format, truncated, over limits).
+    #[error("cannot decode image: {0}")]
     Decode(String),
     /// Buffer size would overflow `usize` or exceed configured limits.
+    #[error("image too large: {width}x{height}")]
     TooLarge { width: u32, height: u32 },
+    #[error("cancelled")]
     Cancelled,
     /// The worker pool dropped the job before producing a result.
+    #[error("compute worker dropped the job")]
     WorkerDropped,
 }
 
-impl fmt::Display for ImageComputeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Decode(m) => write!(f, "cannot decode image: {m}"),
-            Self::TooLarge { width, height } => write!(f, "image too large: {width}x{height}"),
-            Self::Cancelled => f.write_str("cancelled"),
-            Self::WorkerDropped => f.write_str("compute worker dropped the job"),
-        }
+impl ImageComputeError {
+    pub(crate) fn decode(cause: impl Display) -> Self {
+        Self::Decode(cause.to_string())
+    }
+
+    pub(crate) fn too_large(width: u32, height: u32) -> Self {
+        Self::TooLarge { width, height }
     }
 }
-
-impl std::error::Error for ImageComputeError {}

@@ -13,10 +13,9 @@ pub fn compare_cpu(
 ) -> Result<(RgbaImage, DiffStats), ImageComputeError> {
     let (cw, ch) = pair.canvas();
     if cw == 0 || ch == 0 {
-        return Err(ImageComputeError::TooLarge { width: cw, height: ch }); // par_chunks_mut(0) would panic
+        return Err(ImageComputeError::too_large(cw, ch)); // par_chunks_mut(0) would panic
     }
-    let mut overlay =
-        RgbaImage::new(cw, ch).ok_or(ImageComputeError::TooLarge { width: cw, height: ch })?;
+    let mut overlay = RgbaImage::new(cw, ch).ok_or_else(|| ImageComputeError::too_large(cw, ch))?;
     let renderer = options.renderer();
     let tolerance = options.tolerance;
 
@@ -25,13 +24,18 @@ pub fn compare_cpu(
         .par_chunks_mut(cw as usize * 4)
         .enumerate()
         .map(|(y, row)| -> Result<DiffStats, ImageComputeError> {
-            if cancel.is_cancelled() {
-                return Err(ImageComputeError::Cancelled);
-            }
+            cancel.check()?;
             Ok(render_row(pair, &renderer, tolerance, y as u32, row))
         })
         .try_reduce(DiffStats::default, |a, b| Ok(a.merge(b)))?;
     Ok((overlay, stats))
+}
+
+/// RGBA pixel `x` of a tightly packed row.
+#[inline]
+fn pixel_at(row: &[u8], x: usize) -> [u8; 4] {
+    let i = x * 4;
+    [row[i], row[i + 1], row[i + 2], row[i + 3]]
 }
 
 fn render_row(pair: &AlignedPair, renderer: &PixelRenderer, tolerance: u8, y: u32, out: &mut [u8]) -> DiffStats {
@@ -44,14 +48,9 @@ fn render_row(pair: &AlignedPair, renderer: &PixelRenderer, tolerance: u8, y: u3
     let rw = right.width() as i64;
 
     for (x, dst) in out.chunks_exact_mut(4).enumerate() {
-        let l = [left_row[x * 4], left_row[x * 4 + 1], left_row[x * 4 + 2], left_row[x * 4 + 3]];
+        let l = pixel_at(left_row, x);
         let rx = x as i64 - ox as i64;
-        let r = right_row.and_then(|rr| {
-            (rx >= 0 && rx < rw).then(|| {
-                let i = rx as usize * 4;
-                [rr[i], rr[i + 1], rr[i + 2], rr[i + 3]]
-            })
-        });
+        let r = right_row.and_then(|rr| (rx >= 0 && rx < rw).then(|| pixel_at(rr, rx as usize)));
         let (delta, color) = renderer.render(l, r);
         if let Some(d) = delta {
             stats.record(d, tolerance);

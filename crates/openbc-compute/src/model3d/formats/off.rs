@@ -1,4 +1,4 @@
-use super::{finish, malformed};
+use super::{fan_triangulate, finish, malformed, parse_v3, poll_cancel};
 use openbc_core::model3d::*;
 
 pub struct OffLoader;
@@ -20,19 +20,16 @@ impl MeshLoader for OffLoader {
         let mut mesh = Mesh::default();
         for _ in 0..nv {
             let l = lines.next().ok_or_else(|| malformed("truncated vertices"))?;
-            let mut it = l.split_ascii_whitespace();
-            let mut v = [0f32; 3];
-            for k in &mut v { *k = it.next().and_then(|t| t.parse().ok()).ok_or_else(|| malformed("bad vertex"))?; }
-            mesh.positions.push(v);
+            mesh.positions.push(parse_v3(&mut l.split_ascii_whitespace()).ok_or_else(|| malformed("bad vertex"))?);
         }
         for n in 0..nf {
-            if n % 65536 == 0 && ctx.cancel.is_cancelled() { return Err(LoadError::Cancelled); }
+            poll_cancel(ctx, n)?;
             let l = lines.next().ok_or_else(|| malformed("truncated faces"))?;
             let mut it = l.split_ascii_whitespace();
             let k: usize = it.next().and_then(|t| t.parse().ok()).ok_or_else(|| malformed("bad face"))?;
             let f: Vec<u32> = it.take(k).map(|t| t.parse().map_err(|_| malformed("bad face index"))).collect::<Result<_, _>>()?;
             if f.len() != k { return Err(malformed("short face")); }
-            for j in 1..k.saturating_sub(1) { mesh.indices.extend_from_slice(&[f[0], f[j], f[j + 1]]); }
+            fan_triangulate(&f, &mut mesh.indices);
         }
         finish(mesh, ctx)
     }

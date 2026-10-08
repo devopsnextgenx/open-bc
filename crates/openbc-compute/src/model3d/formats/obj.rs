@@ -1,4 +1,4 @@
-use super::{finish, malformed};
+use super::{fan_triangulate, finish, malformed, parse_v3, poll_cancel};
 use openbc_core::model3d::*;
 use rayon::prelude::*;
 
@@ -54,13 +54,10 @@ fn parse_chunk(c: &[u8], base: usize, total: usize, ctx: &LoadContext<'_>) -> Re
     let (mut pos, mut idx): (Vec<V3>, Vec<u32>) = (Vec::new(), Vec::new());
     let mut face: Vec<u32> = Vec::with_capacity(8);
     for (n, line) in lines(c).enumerate() {
-        if n % 65536 == 0 && ctx.cancel.is_cancelled() { return Err(LoadError::Cancelled); }
+        poll_cancel(ctx, n)?;
         if is_tag(line, b'v') {
             let Ok(s) = std::str::from_utf8(&line[2..]) else { continue };
-            let mut it = s.split_ascii_whitespace();
-            let mut v = [0f32; 3];
-            for k in &mut v { *k = it.next().and_then(|t| t.parse().ok()).ok_or_else(|| malformed("bad vertex line"))?; }
-            pos.push(v);
+            pos.push(parse_v3(&mut s.split_ascii_whitespace()).ok_or_else(|| malformed("bad vertex line"))?);
         } else if is_tag(line, b'f') {
             let Ok(s) = std::str::from_utf8(&line[2..]) else { continue };
             face.clear();
@@ -71,7 +68,7 @@ fn parse_chunk(c: &[u8], base: usize, total: usize, ctx: &LoadContext<'_>) -> Re
                 if g < 0 || g as usize >= total { return Err(malformed("face index out of range")); }
                 face.push(g as u32);
             }
-            for k in 1..face.len().saturating_sub(1) { idx.extend_from_slice(&[face[0], face[k], face[k + 1]]); }
+            fan_triangulate(&face, &mut idx);
         }
     }
     Ok((pos, idx))

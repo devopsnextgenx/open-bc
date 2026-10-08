@@ -1,4 +1,4 @@
-use super::{finish, malformed};
+use super::{check_cancel, fan_triangulate, finish, malformed, poll_cancel};
 use openbc_core::model3d::*;
 use rayon::prelude::*;
 
@@ -73,7 +73,7 @@ impl Src for BinSrc<'_> {
 
 fn read_all<S: Src>(src: &mut S, elems: &[Element], mesh: &mut Mesh, ctx: &LoadContext<'_>) -> Result<(), LoadError> {
     for e in elems {
-        if ctx.cancel.is_cancelled() { return Err(LoadError::Cancelled); }
+        check_cancel(ctx)?;
         match e.name.as_str() {
             "vertex" => {
                 if src.bulk_vertices(e, &mut mesh.positions) { continue; }
@@ -91,7 +91,7 @@ fn read_all<S: Src>(src: &mut S, elems: &[Element], mesh: &mut Mesh, ctx: &LoadC
                 let is_face = e.name == "face";
                 let mut face: Vec<u32> = Vec::new();
                 for n in 0..e.count {
-                    if n % 65536 == 0 && ctx.cancel.is_cancelled() { return Err(LoadError::Cancelled); }
+                    poll_cancel(ctx, n)?;
                     face.clear();
                     for p in &e.props {
                         match p.kind {
@@ -106,7 +106,7 @@ fn read_all<S: Src>(src: &mut S, elems: &[Element], mesh: &mut Mesh, ctx: &LoadC
                             }
                         }
                     }
-                    for j in 1..face.len().saturating_sub(1) { mesh.indices.extend_from_slice(&[face[0], face[j], face[j + 1]]); }
+                    fan_triangulate(&face, &mut mesh.indices);
                 }
             }
         }

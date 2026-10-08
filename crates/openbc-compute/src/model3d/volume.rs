@@ -7,7 +7,7 @@
 //! by requiring the cell centre to be farther than the tolerance from the other surface.
 //! Volumes are therefore accurate to about one cell size; `cell_size_mm` is reported.
 use super::bvh::Bvh;
-use super::ComputeError;
+use super::error::{check, ComputeError};
 use openbc_core::model3d::mesh::*;
 use openbc_core::model3d::*;
 use rayon::prelude::*;
@@ -48,10 +48,8 @@ fn fill(hits: &[f32], ox: f32, h: f32, nx: usize, words: &mut [u64]) {
     }
 }
 
-pub fn occupancy(a: &Bvh, b: &Bvh, max_cells: u64, cancel: &CancelToken) -> Result<Occupancy, ComputeError> {
-    let bb = a.bounds.union(&b.bounds);
-    if bb.is_empty() { return Err(ComputeError::Message("empty models".into())); }
-    let ext = bb.size();
+/// Cell size `h` and cell counts for a grid over `ext` that stays within `max_cells`.
+fn choose_grid(ext: V3, max_cells: u64) -> (f32, [usize; 3]) {
     let max_ext = ext[0].max(ext[1]).max(ext[2]).max(1e-6);
     let prod = (ext[0].max(1e-6) * ext[1].max(1e-6) * ext[2].max(1e-6)) as f64;
     let mut h = ((prod / max_cells as f64).cbrt() as f32).max(max_ext / 2048.0);
@@ -62,6 +60,13 @@ pub fn occupancy(a: &Bvh, b: &Bvh, max_cells: u64, cancel: &CancelToken) -> Resu
         h *= 1.1;
         n = dims(h);
     }
+    (h, n)
+}
+
+pub fn occupancy(a: &Bvh, b: &Bvh, max_cells: u64, cancel: &CancelToken) -> Result<Occupancy, ComputeError> {
+    let bb = a.bounds.union(&b.bounds);
+    if bb.is_empty() { return Err(ComputeError::Message("empty models".into())); }
+    let (h, n) = choose_grid(bb.size(), max_cells);
     let origin = sub(bb.min, [h, h, h]);
     let (nx, ny, nz) = (n[0], n[1], n[2]);
     let wpr = (nx + 63) / 64;
@@ -84,7 +89,7 @@ pub fn occupancy(a: &Bvh, b: &Bvh, max_cells: u64, cancel: &CancelToken) -> Resu
             for w in 0..wpr { rm[w] = wa[w] & !wb[w]; ad[w] = wb[w] & !wa[w]; }
         },
     );
-    if cancel.is_cancelled() { return Err(ComputeError::Cancelled); }
+    check(cancel)?;
     Ok(Occupancy { origin, h, n, wpr, removed, added })
 }
 
@@ -107,7 +112,8 @@ fn filter(raw: &[u64], occ: &Occupancy, other: &Bvh, tol: f32, cancel: &CancelTo
             }
         }
     });
-    if cancel.is_cancelled() { Err(ComputeError::Cancelled) } else { Ok(out) }
+    check(cancel)?;
+    Ok(out)
 }
 
 fn get(bits: &[u64], occ: &Occupancy, x: i64, y: i64, z: i64) -> bool {
@@ -172,6 +178,29 @@ pub fn changes(occ: &Occupancy, a: &Bvh, b: &Bvh, tol: f32, max_quads: usize, ca
     let count = |v: &[u64]| v.par_iter().map(|w| w.count_ones() as u64).sum::<u64>();
     let (removed_mm3, added_mm3) = (count(&removed) as f64 * cell, count(&added) as f64 * cell);
     let ((rm, t1), (ad, t2)) = rayon::join(|| surface(&removed, occ, max_quads / 2), || surface(&added, occ, max_quads / 2));
-    if cancel.is_cancelled() { return Err(ComputeError::Cancelled); }
+    check(cancel)?;
     Ok(ChangesOutput { removed_mm3, added_mm3, cell_size_mm: occ.h, truncated: t1 || t2, removed: rm, added: ad })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_respects_the_cell_budget() {
+        let (h, n) = choose_grid([100.0, 50.0, 25.0], 1 << 16);
+        assert!(h > 0.0);
+        assert!((n[0] as u64) * (n[1] as u64) * (n[2] as u64) <= 1 << 16);
+    }
+
+    #[test]
+    fn set_range_marks_exactly_the_requested_bits() {
+        let mut w = [0u64; 2];
+        set_range(&mut w, 60, 70);
+        assert_eq!(w[0], 0xF000_0000_0000_0000);
+        assert_eq!(w[1], 0b11_1111);
+        let mut e = [0u64; 1];
+        set_range(&mut e, 5, 5);
+        assert_eq!(e[0], 0);
+    }
 }

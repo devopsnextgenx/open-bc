@@ -1,7 +1,8 @@
 //! Alignment of B onto A: quick modes, manual offset, ICP refinement and per-part alignment.
 //! All of it produces rigid transforms in A's frame; deviation fields are recomputed after.
 use super::bvh::Bvh;
-use super::ComputeError;
+use super::error::{check, ComputeError};
+use super::geom::{to_f64, tri_area};
 use openbc_core::model3d::mesh::*;
 use openbc_core::model3d::*;
 use rayon::prelude::*;
@@ -49,7 +50,7 @@ pub fn base_translation(mode: AlignmentMode, a: &MeshStats, b: &MeshStats) -> (V
 pub fn apply_alignment(b: &Mesh, a_stats: &MeshStats, b_stats: &MeshStats, st: &AlignState) -> (Mesh, V3) {
     let (shift, display) = base_translation(st.mode, a_stats, b_stats);
     let t = add(shift, st.offset);
-    let total = Rigid::translation([t[0] as f64, t[1] as f64, t[2] as f64]).then(&st.refine);
+    let total = Rigid::translation(to_f64(t)).then(&st.refine);
     let mut m = b.clone();
     match &st.parts {
         None => m.positions.par_iter_mut().for_each(|p| *p = total.apply(*p)),
@@ -73,7 +74,7 @@ pub fn icp(points: &[V3], target: &Bvh, iterations: usize, cancel: &CancelToken)
     let mut cur: Vec<V3> = points.to_vec();
     let mut total = Rigid::IDENTITY;
     for _ in 0..iterations {
-        if cancel.is_cancelled() { return Err(ComputeError::Cancelled); }
+        check(cancel)?;
         let pairs: Vec<(V3, V3, f32)> = cur.par_iter().map(|&p| match target.closest(p) {
             Some(h) => (p, h.point, h.signed.abs()),
             None => (p, p, f32::INFINITY),
@@ -159,7 +160,7 @@ fn part_infos(mesh: &Mesh, comps: &Components) -> Vec<PartInfo> {
         let t = mesh.triangle(i);
         let p = &mut v[c as usize];
         for x in t { p.bbox.extend(x); }
-        p.area += 0.5 * len(cross(sub(t[1], t[0]), sub(t[2], t[0]))) as f64;
+        p.area += tri_area(t[0], t[1], t[2]) as f64;
     }
     v
 }
@@ -190,41 +191,78 @@ fn submesh(mesh: &Mesh, tris: &[u32]) -> Mesh {
     out
 }
 
-/// Matches every disconnected part of B to the most similar part of A (area + sorted bbox
-/// extents) and fits it individually (centre translation, then trimmed ICP), so re-arranged
-/// plates compare as if nothing moved. Parts without a good match keep the global alignment.
-pub fn align_parts(a: &Mesh, ca: &Components, b_world: &Mesh, cb: &Components, cancel: &CancelToken) -> Result<PartAlign, ComputeError> {
-    const MAX_PARTS: usize = 2000;
-    let (ia, ib) = (part_infos(a, ca), part_infos(b_world, cb));
-    let top = |v: &[PartInfo]| { let mut ids: Vec<usize> = (0..v.len()).collect(); ids.sort_by(|&x, &y| v[y].area.total_cmp(&v[x].area)); ids.truncate(MAX_PARTS); ids };
-    let (ta, tb) = (top(&ia), top(&ib));
-    let mut cand: Vec<(f64, usize, usize)> = Vec::new();
+/// Cap on parts considered per model (largest by area first).
+const MAX_PARTS: usize = 2000;
+/// Largest summed log-ratio between two part signatures for them to be a match candidate.
+const MAX_MATCH_COST: f64 = 0.6;
+/// Sampling / iteration budget of the per-part ICP fit.
+const PART_ICP_POINTS: usize = 4000;
+const PART_ICP_ITERATIONS: usize = 15;
+
+/// Indices of the `MAX_PARTS` largest parts, biggest first.
+fn largest_parts(infos: &[PartInfo]) -> Vec<usize> {
+    let mut ids: Vec<usize> = (0..infos.len()).collect();
+    ids.sort_by(|&x, &y| infos[y].area.total_cmp(&infos[x].area));
+    ids.truncate(MAX_PARTS);
+    ids
+}
+
+/// Greedy one-to-one matching of B's parts to A's by signature distance: `(a_part, b_part)`.
+fn match_parts(ia: &[PartInfo], ib: &[PartInfo]) -> Vec<(usize, usize)> {
+    let (ta, tb) = (largest_parts(ia), largest_parts(ib));
+    let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
     for &j in &tb {
         let sb = signature(&ib[j]);
         for &i in &ta {
             let sa = signature(&ia[i]);
             let cost: f64 = (0..4).map(|k| (sa[k] / sb[k]).ln().abs()).sum();
-            if cost < 0.6 { cand.push((cost, i, j)); }
+            if cost < MAX_MATCH_COST {
+                candidates.push((cost, i, j));
+            }
         }
     }
-    cand.sort_by(|x, y| x.0.total_cmp(&y.0));
+    candidates.sort_by(|x, y| x.0.total_cmp(&y.0));
     let (mut used_a, mut used_b) = (vec![false; ia.len()], vec![false; ib.len()]);
     let mut pairs = Vec::new();
-    for (_, i, j) in cand { if !used_a[i] && !used_b[j] { used_a[i] = true; used_b[j] = true; pairs.push((i, j)); } }
+    for (_, i, j) in candidates {
+        if !used_a[i] && !used_b[j] {
+            used_a[i] = true;
+            used_b[j] = true;
+            pairs.push((i, j));
+        }
+    }
+    pairs
+}
 
-    let (ta_tris, tb_tris) = (tris_by_comp(ca), tris_by_comp(cb));
-    let fitted: Vec<(usize, Rigid)> = pairs.par_iter().map(|&(i, j)| -> Result<(usize, Rigid), ComputeError> {
-        let a_part = submesh(a, &ta_tris[i]);
-        let b_part = submesh(b_world, &tb_tris[j]);
-        let bvh = Bvh::build(&a_part);
-        let (ca_, cb_) = (ia[i].bbox.center(), ib[j].bbox.center());
-        let t0 = Rigid::translation([(ca_[0] - cb_[0]) as f64, (ca_[1] - cb_[1]) as f64, (ca_[2] - cb_[2]) as f64]);
-        let pts: Vec<V3> = sample_stride(&b_part.positions, 4000).into_iter().map(|p| t0.apply(p)).collect();
-        let delta = icp(&pts, &bvh, 15, cancel)?;
-        Ok((j, t0.then(&delta)))
-    }).collect::<Result<_, _>>()?;
+/// Fits one B part onto its matched A part: centre translation, then trimmed ICP.
+fn fit_part(a_part: &Mesh, b_part: &Mesh, a_center: V3, b_center: V3, cancel: &CancelToken) -> Result<Rigid, ComputeError> {
+    let bvh = Bvh::build(a_part);
+    let t0 = Rigid::translation(to_f64(sub(a_center, b_center)));
+    let points: Vec<V3> = sample_stride(&b_part.positions, PART_ICP_POINTS).into_iter().map(|p| t0.apply(p)).collect();
+    let delta = icp(&points, &bvh, PART_ICP_ITERATIONS, cancel)?;
+    Ok(t0.then(&delta))
+}
+
+/// Matches every disconnected part of B to the most similar part of A (area + sorted bbox
+/// extents) and fits it individually (centre translation, then trimmed ICP), so re-arranged
+/// plates compare as if nothing moved. Parts without a good match keep the global alignment.
+pub fn align_parts(a: &Mesh, ca: &Components, b_world: &Mesh, cb: &Components, cancel: &CancelToken) -> Result<PartAlign, ComputeError> {
+    let (ia, ib) = (part_infos(a, ca), part_infos(b_world, cb));
+    let pairs = match_parts(&ia, &ib);
+
+    let (a_tris, b_tris) = (tris_by_comp(ca), tris_by_comp(cb));
+    let fitted: Vec<(usize, Rigid)> = pairs
+        .par_iter()
+        .map(|&(i, j)| -> Result<(usize, Rigid), ComputeError> {
+            let (a_part, b_part) = (submesh(a, &a_tris[i]), submesh(b_world, &b_tris[j]));
+            let rigid = fit_part(&a_part, &b_part, ia[i].bbox.center(), ib[j].bbox.center(), cancel)?;
+            Ok((j, rigid))
+        })
+        .collect::<Result<_, _>>()?;
 
     let mut extra = vec![Rigid::IDENTITY; cb.count];
-    for (j, r) in &fitted { extra[*j] = *r; }
+    for (j, r) in &fitted {
+        extra[*j] = *r;
+    }
     Ok(PartAlign { vertex_part: b_world.vertex_components(cb), extra, matched: fitted.len() })
 }
