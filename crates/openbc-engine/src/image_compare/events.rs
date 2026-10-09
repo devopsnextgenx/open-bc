@@ -3,11 +3,8 @@ use std::sync::Arc;
 use openbc_core::image_compare::{ImageCompareOutput, RgbaImage};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Side {
-    Left,
-    Right,
-}
+/// Same type as [`crate::common::Side`], re-exported here for existing import paths.
+pub use crate::common::Side;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageFileInfo {

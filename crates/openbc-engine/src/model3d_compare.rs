@@ -18,9 +18,11 @@ use openbc_core::model3d::*;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock, RwLock};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 
-pub const EVENT_CAPACITY: usize = 4;
+use crate::common::{rayon_spawn, send_event, unix_ms, COMMAND_CHANNEL_CAPACITY, EVENT_CHANNEL_CAPACITY};
+
+pub const EVENT_CAPACITY: usize = EVENT_CHANNEL_CAPACITY;
 
 /// Process-wide compute environment (format registry + CPU/GPU backends). Opaque to the UI:
 /// it never has to name a compute type.
@@ -55,15 +57,24 @@ pub trait ModelByteSource: Send + Sync {
 }
 
 /// Local file system source with a per-file size cap (rejected per path, other side unaffected).
-pub struct LocalFs { pub max_file_bytes: u64 }
+pub struct LocalFs {
+    pub max_file_bytes: u64,
+}
+
 impl ModelByteSource for LocalFs {
     fn read<'a>(&'a self, path: &'a str) -> ByteFuture<'a> {
         Box::pin(async move {
-            let meta = tokio::fs::metadata(path).await.map_err(|e| format!("Cannot read file: {e}"))?;
-            if meta.len() > self.max_file_bytes { return Err(format!("File is {} bytes, limit is {}", meta.len(), self.max_file_bytes)); }
-            let bytes = tokio::fs::read(path).await.map_err(|e| format!("Cannot read file: {e}"))?;
-            let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64);
-            Ok(RawModel { info: FileInfo { path: path.to_string(), format: String::new(), size_bytes: meta.len(), modified_unix_ms: modified }, bytes })
+            let cannot_read = |e: std::io::Error| format!("Cannot read file: {e}");
+            let meta = tokio::fs::metadata(path).await.map_err(cannot_read)?;
+            if meta.len() > self.max_file_bytes {
+                return Err(format!("File is {} bytes, limit is {}", meta.len(), self.max_file_bytes));
+            }
+            let bytes = tokio::fs::read(path).await.map_err(cannot_read)?;
+            let modified_unix_ms = meta.modified().ok().and_then(unix_ms);
+            Ok(RawModel {
+                info: FileInfo { path: path.to_string(), format: String::new(), size_bytes: meta.len(), modified_unix_ms },
+                bytes,
+            })
         })
     }
 }
@@ -79,7 +90,13 @@ pub enum Model3dEvent {
     Failed(String),
 }
 
-enum Command { Open(String, String), Reload, Swap, Align(AlignCommand), Shutdown }
+enum Command {
+    Open(String, String),
+    Reload,
+    Swap,
+    Align(AlignCommand),
+    Shutdown,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct ProbeHit {
@@ -104,12 +121,18 @@ pub struct Model3dCompareConfig {
 }
 
 pub fn spawn(rt: &tokio::runtime::Handle, cfg: Model3dCompareConfig, events: mpsc::Sender<Model3dEvent>, initial: Model3dCompareOptions) -> Model3dCompareHandle {
-    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
     let opts = Arc::new(watch::channel(initial.sanitized()).0);
     let probe = Arc::new(RwLock::new(None));
     let actor = Actor {
-        session: Some(Session::new(cfg.env.registry, cfg.env.backends)), source: cfg.source, paths: (String::new(), String::new()),
-        opts_tx: opts.clone(), opts_rx: opts.subscribe(), cmd_rx, events, probe: probe.clone(),
+        session: Some(Session::new(cfg.env.registry, cfg.env.backends)),
+        source: cfg.source,
+        paths: [String::new(), String::new()],
+        opts_tx: opts.clone(),
+        opts_rx: opts.subscribe(),
+        cmd_rx,
+        events,
+        probe: probe.clone(),
     };
     let task = rt.spawn(actor.run());
     Model3dCompareHandle { cmd: cmd_tx, opts, probe, task: Some(task) }
@@ -117,11 +140,21 @@ pub fn spawn(rt: &tokio::runtime::Handle, cfg: Model3dCompareConfig, events: mps
 
 impl Model3dCompareHandle {
     /// Non-blocking, latest wins.
-    pub fn set_options(&self, o: Model3dCompareOptions) { self.opts.send_replace(o.sanitized()); }
-    pub fn open(&self, left: String, right: String) { let _ = self.cmd.try_send(Command::Open(left, right)); }
-    pub fn reload(&self) { let _ = self.cmd.try_send(Command::Reload); }
-    pub fn swap(&self) { let _ = self.cmd.try_send(Command::Swap); }
-    pub fn align(&self, c: AlignCommand) { let _ = self.cmd.try_send(Command::Align(c)); }
+    pub fn set_options(&self, o: Model3dCompareOptions) {
+        self.opts.send_replace(o.sanitized());
+    }
+    pub fn open(&self, left: String, right: String) {
+        let _ = self.cmd.try_send(Command::Open(left, right));
+    }
+    pub fn reload(&self) {
+        let _ = self.cmd.try_send(Command::Reload);
+    }
+    pub fn swap(&self) {
+        let _ = self.cmd.try_send(Command::Swap);
+    }
+    pub fn align(&self, c: AlignCommand) {
+        let _ = self.cmd.try_send(Command::Align(c));
+    }
 
     /// Synchronous click / hover probe against the newest finished compare. `dir` must be
     /// normalised; `origin`/`dir` are in display space. Never touches the pipeline.
@@ -137,14 +170,16 @@ impl Model3dCompareHandle {
 
     pub async fn shutdown(&mut self) {
         let _ = self.cmd.send(Command::Shutdown).await;
-        if let Some(t) = self.task.take() { let _ = t.await; }
+        if let Some(t) = self.task.take() {
+            let _ = t.await;
+        }
     }
 }
 
 struct Actor {
     session: Option<Session>,
     source: Arc<dyn ModelByteSource>,
-    paths: (String, String),
+    paths: [String; 2],
     opts_tx: Arc<watch::Sender<Model3dCompareOptions>>,
     opts_rx: watch::Receiver<Model3dCompareOptions>,
     cmd_rx: mpsc::Receiver<Command>,
@@ -153,7 +188,9 @@ struct Actor {
 }
 
 impl Actor {
-    async fn send(&self, e: Model3dEvent) -> bool { self.events.send(e).await.is_ok() }
+    async fn send(&self, e: Model3dEvent) -> bool {
+        send_event(&self.events, e).await
+    }
 
     async fn run(mut self) {
         loop {
@@ -161,50 +198,72 @@ impl Actor {
                 biased;
                 cmd = self.cmd_rx.recv() => {
                     let Some(cmd) = cmd else { break };
-                    match cmd {
-                        Command::Shutdown => break,
-                        Command::Open(l, r) => { self.paths = (l, r); if !self.load().await { break; } if !self.compare(None).await { break; } }
-                        Command::Reload => { if !self.load().await { break; } if !self.compare(None).await { break; } }
-                        Command::Swap => {
-                            std::mem::swap(&mut self.paths.0, &mut self.paths.1);
-                            if let Some(s) = self.session.as_mut() { s.swap(); }
-                            // Local (un-aligned) meshes change sides, so resend both payloads.
-                            let (left, right) = self.session.as_ref().map(|s| s.payloads()).unwrap_or((None, None));
-                            if !self.send(Model3dEvent::Loaded { left, right }).await { break; }
-                            self.opts_tx.send_modify(|o| for v in &mut o.offset { *v = -*v; });
-                            if !self.compare(None).await { break; }
+                    let ok = match cmd {
+                        Command::Shutdown => false,
+                        Command::Open(left, right) => {
+                            self.paths = [left, right];
+                            self.reload_and_compare().await
                         }
-                        Command::Align(c) => { if !self.compare(Some(c)).await { break; } }
-                    }
+                        Command::Reload => self.reload_and_compare().await,
+                        Command::Swap => self.swap().await,
+                        Command::Align(c) => self.compare(Some(c)).await,
+                    };
+                    if !ok { break; }
                 }
                 changed = self.opts_rx.changed() => {
-                    if changed.is_err() { break; }
-                    if !self.compare(None).await { break; }
+                    if changed.is_err() || !self.compare(None).await { break; }
                 }
             }
         }
     }
 
+    async fn reload_and_compare(&mut self) -> bool {
+        self.load().await && self.compare(None).await
+    }
+
+    async fn swap(&mut self) -> bool {
+        self.paths.swap(0, 1);
+        if let Some(s) = self.session.as_mut() {
+            s.swap();
+        }
+        // Local (un-aligned) meshes change sides, so resend both payloads.
+        let (left, right) = self.session.as_ref().map(|s| s.payloads()).unwrap_or((None, None));
+        if !self.send(Model3dEvent::Loaded { left, right }).await {
+            return false;
+        }
+        self.opts_tx.send_modify(|o| {
+            for v in &mut o.offset {
+                *v = -*v;
+            }
+        });
+        self.compare(None).await
+    }
+
     /// Returns false when the UI side is gone.
     async fn load(&mut self) -> bool {
-        if self.paths.0.trim().is_empty() || self.paths.1.trim().is_empty() { return true; }
-        if !self.send(Model3dEvent::Loading).await { return false; }
-        let (l, r) = tokio::join!(self.source.read(&self.paths.0), self.source.read(&self.paths.1));
+        if self.paths.iter().any(|p| p.trim().is_empty()) {
+            return true;
+        }
+        if !self.send(Model3dEvent::Loading).await {
+            return false;
+        }
+        let (l, r) = tokio::join!(self.source.read(&self.paths[0]), self.source.read(&self.paths[1]));
         let mut session = self.session.take().expect("session present");
-        let (tx, rx) = oneshot::channel();
-        rayon::spawn(move || {
+        let worker = rayon_spawn(move || {
             let outcome = session.load_pair(l, r, &CancelToken::new());
-            let _ = tx.send((session, outcome));
+            (session, outcome)
         });
-        let Ok((session, outcome)) = rx.await else { return false };
+        let Ok((session, outcome)) = worker.await else { return false };
         self.session = Some(session);
         let mut payload = [None, None];
         for (i, res) in [outcome.left, outcome.right].into_iter().enumerate() {
             match res {
                 Ok(s) => payload[i] = Some(s.payload()),
                 Err(message) => {
-                    let path = if i == 0 { self.paths.0.clone() } else { self.paths.1.clone() };
-                    if !self.send(Model3dEvent::PathError { side: i as u8, path, message }).await { return false; }
+                    let path = self.paths[i].clone();
+                    if !self.send(Model3dEvent::PathError { side: i as u8, path, message }).await {
+                        return false;
+                    }
                 }
             }
         }
@@ -214,20 +273,20 @@ impl Actor {
 
     /// Runs passes until one finishes un-superseded.
     async fn compare(&mut self, cmd: Option<AlignCommand>) -> bool {
-        if !self.session.as_ref().map(|s| s.is_ready()).unwrap_or(false) { return true; }
+        if !self.session.as_ref().is_some_and(|s| s.is_ready()) {
+            return true;
+        }
         loop {
             let opts = *self.opts_rx.borrow_and_update();
             let cancel = CancelToken::new();
             let mut session = self.session.take().expect("session present");
-            let (tx, rx) = oneshot::channel();
-            let c2 = cancel.clone();
-            rayon::spawn(move || {
-                let r = session.compare(&opts, cmd, &c2);
-                let _ = tx.send((session, r));
+            let worker_cancel = cancel.clone();
+            let mut worker = rayon_spawn(move || {
+                let r = session.compare(&opts, cmd, &worker_cancel);
+                (session, r)
             });
-            tokio::pin!(rx);
             tokio::select! {
-                res = &mut rx => {
+                res = &mut worker => {
                     let Ok((session, r)) = res else { return false };
                     *self.probe.write().unwrap() = session.probe_data();
                     self.session = Some(session);
@@ -235,7 +294,10 @@ impl Actor {
                         Ok(out) => {
                             let notice = out.notice.clone();
                             let ok = self.send(Model3dEvent::Result(Box::new(out))).await;
-                            if let (true, Some(n)) = (ok, notice) { self.send(Model3dEvent::Notice(n)).await } else { ok }
+                            match (ok, notice) {
+                                (true, Some(n)) => self.send(Model3dEvent::Notice(n)).await,
+                                _ => ok,
+                            }
                         }
                         Err(ComputeError::Cancelled) => true,
                         Err(e) => self.send(Model3dEvent::Failed(e.to_string())).await,
@@ -244,7 +306,7 @@ impl Actor {
                 _ = self.opts_rx.changed() => {
                     // Newer options: cancel, wait for the worker to hand the session back, restart.
                     cancel.cancel();
-                    let Ok((session, _)) = (&mut rx).await else { return false };
+                    let Ok((session, _)) = (&mut worker).await else { return false };
                     self.session = Some(session);
                 }
             }

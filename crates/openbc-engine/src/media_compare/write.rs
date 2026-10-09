@@ -1,7 +1,7 @@
-//! Rewrite tags / cover of one local media file (uses `lofty`; add `lofty = "0.22"` to
-//! openbc-engine/Cargo.toml). Written for lofty ~0.22 - adjust imports if your version differs.
-//! The match arms in `set_field` / `is_editable` must use the same row keys that
-//! `read_media_metadata` emits (e.g. "Title", "Artist", ...); rename them to match.
+//! Rewrite tags / cover of one local media file (uses `lofty`, written for ~0.22).
+//!
+//! The row keys here must match the ones `read_media_metadata` emits; [`Field`] is the single
+//! place that maps a row key to a tag field, used both for editing and for `is_editable`.
 
 use std::io::Cursor;
 use std::path::Path;
@@ -22,8 +22,8 @@ pub fn apply(path: &Path, save: &MediaSave) -> Result<(), String> {
     }
     let tag = file.primary_tag_mut().ok_or("no writable tag for this container")?;
 
-    for e in &save.edits {
-        set_field(tag, e)?;
+    for edit in &save.edits {
+        set_field(tag, edit)?;
     }
     match &save.cover {
         CoverEdit::Keep => {}
@@ -40,34 +40,74 @@ pub fn apply(path: &Path, save: &MediaSave) -> Result<(), String> {
     file.save_to_path(path, WriteOptions::default()).map_err(|e| e.to_string())
 }
 
-fn set_field(tag: &mut Tag, e: &TagEdit) -> Result<(), String> {
-    // `e.key` is the display name the backend put in the row; extend this map with your row keys.
-    let v = e.value.clone();
-    match (e.key.as_str(), v) {
-        ("Title", Some(v)) => tag.set_title(v),
-        ("Title", None) => tag.remove_title(),
-        ("Artist", Some(v)) => tag.set_artist(v),
-        ("Artist", None) => tag.remove_artist(),
-        ("Album", Some(v)) => tag.set_album(v),
-        ("Album", None) => tag.remove_album(),
-        ("Genre", Some(v)) => tag.set_genre(v),
-        ("Genre", None) => tag.remove_genre(),
-        ("Comment", Some(v)) => tag.set_comment(v),
-        ("Comment", None) => tag.remove_comment(),
-        ("Track", Some(v)) => tag.set_track(v.trim().parse().map_err(|_| format!("Track must be a number: {v}"))?),
-        ("Track", None) => tag.remove_track(),
-        ("Year", Some(v)) => { tag.insert_text(ItemKey::Year, v); }
-        ("Year", None) => tag.remove_key(&ItemKey::Year),
-        ("Album Artist", Some(v)) => { tag.insert_text(ItemKey::AlbumArtist, v); }
-        ("Album Artist", None) => tag.remove_key(&ItemKey::AlbumArtist),
-        ("Composer", Some(v)) => { tag.insert_text(ItemKey::Composer, v); }
-        ("Composer", None) => tag.remove_key(&ItemKey::Composer),
-        (other, _) => return Err(format!("tag '{other}' is not editable")),
-    }
-    Ok(())
+/// The tag fields the UI may edit, keyed by the display name of their metadata row.
+#[derive(Clone, Copy)]
+enum Field {
+    Title,
+    Artist,
+    Album,
+    AlbumArtist,
+    Composer,
+    Genre,
+    Comment,
+    Track,
+    Year,
 }
+
+impl Field {
+    fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "Title" => Self::Title,
+            "Artist" => Self::Artist,
+            "Album" => Self::Album,
+            "Album Artist" => Self::AlbumArtist,
+            "Composer" => Self::Composer,
+            "Genre" => Self::Genre,
+            "Comment" => Self::Comment,
+            "Track" => Self::Track,
+            "Year" => Self::Year,
+            _ => return None,
+        })
+    }
+
+    /// Sets the field, or removes it for `None`.
+    fn write(self, tag: &mut Tag, value: Option<String>) -> Result<(), String> {
+        match (self, value) {
+            (Self::Title, Some(v)) => tag.set_title(v),
+            (Self::Title, None) => tag.remove_title(),
+            (Self::Artist, Some(v)) => tag.set_artist(v),
+            (Self::Artist, None) => tag.remove_artist(),
+            (Self::Album, Some(v)) => tag.set_album(v),
+            (Self::Album, None) => tag.remove_album(),
+            (Self::Genre, Some(v)) => tag.set_genre(v),
+            (Self::Genre, None) => tag.remove_genre(),
+            (Self::Comment, Some(v)) => tag.set_comment(v),
+            (Self::Comment, None) => tag.remove_comment(),
+            (Self::Track, Some(v)) => tag.set_track(v.trim().parse().map_err(|_| format!("Track must be a number: {v}"))?),
+            (Self::Track, None) => tag.remove_track(),
+            (Self::Year, Some(v)) => {
+                tag.insert_text(ItemKey::Year, v);
+            }
+            (Self::Year, None) => tag.remove_key(&ItemKey::Year),
+            (Self::AlbumArtist, Some(v)) => {
+                tag.insert_text(ItemKey::AlbumArtist, v);
+            }
+            (Self::AlbumArtist, None) => tag.remove_key(&ItemKey::AlbumArtist),
+            (Self::Composer, Some(v)) => {
+                tag.insert_text(ItemKey::Composer, v);
+            }
+            (Self::Composer, None) => tag.remove_key(&ItemKey::Composer),
+        }
+        Ok(())
+    }
+}
+
+fn set_field(tag: &mut Tag, edit: &TagEdit) -> Result<(), String> {
+    let field = Field::from_key(&edit.key).ok_or_else(|| format!("tag '{}' is not editable", edit.key))?;
+    field.write(tag, edit.value.clone())
+}
+
 /// True for rows the UI may edit (bit 2 of the row flags in the C ABI).
 pub fn is_editable(group: &str, key: &str) -> bool {
-    group != "File"
-        && matches!(key, "Title" | "Artist" | "Album" | "Album Artist" | "Composer" | "Genre" | "Comment" | "Track" | "Year")
+    group != "File" && Field::from_key(key).is_some()
 }

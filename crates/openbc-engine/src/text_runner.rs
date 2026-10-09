@@ -83,16 +83,8 @@ impl AsyncTextCompareTask {
         let right_read = read_small_file(right_vfs.as_ref(), &right_path);
         let (left_bytes, right_bytes) = tokio::try_join!(left_read, right_read)?;
         let sizes = (left_bytes.len(), right_bytes.len());
-        let left =
-            String::from_utf8(left_bytes).map_err(|source| TextCompareError::InvalidUtf8 {
-                side: "left",
-                source,
-            })?;
-        let right =
-            String::from_utf8(right_bytes).map_err(|source| TextCompareError::InvalidUtf8 {
-                side: "right",
-                source,
-            })?;
+        let left = decode_utf8("left", left_bytes)?;
+        let right = decode_utf8("right", right_bytes)?;
 
         let cpu_pool = Arc::clone(&self.cpu_pool);
         let diffs = tokio::task::spawn_blocking(move || {
@@ -100,15 +92,13 @@ impl AsyncTextCompareTask {
         })
         .await?;
 
-        openbc_observability::record(
-            "openbc-engine",
+        record_op!(
             "async_text_compare",
-            started.elapsed(),
-            Some(sizes),
-            None,
-            None,
-            None,
-            Some("VFS + Rayon".to_owned()),
+            started,
+            io: Some(sizes),
+            bytes: None,
+            depth: None,
+            note: "VFS + Rayon",
         );
 
         for chunk in diffs.chunks(self.chunk_size) {
@@ -118,4 +108,8 @@ impl AsyncTextCompareTask {
         }
         Ok(())
     }
+}
+
+fn decode_utf8(side: &'static str, bytes: Vec<u8>) -> Result<String, TextCompareError> {
+    String::from_utf8(bytes).map_err(|source| TextCompareError::InvalidUtf8 { side, source })
 }

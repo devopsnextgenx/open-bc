@@ -36,6 +36,22 @@ pub struct HexSummary {
     pub errors: [Option<String>; 2],
 }
 
+impl HexSummary {
+    /// Counts a differing run and keeps it in the (capped, merged) run list.
+    fn record(&mut self, offset: u64, len: u64) {
+        self.diff_bytes += len;
+        if self.runs.len() >= MAX_RUNS {
+            self.truncated = true;
+        } else {
+            push_run(&mut self.runs, offset, len);
+        }
+    }
+
+    fn has_errors(&self) -> bool {
+        self.errors.iter().any(Option::is_some)
+    }
+}
+
 #[derive(Debug)]
 pub struct HexWindow {
     pub id: u64,
@@ -52,22 +68,13 @@ pub enum HexEvent {
     Error(String),
 }
 
-#[derive(Clone)]
-pub struct HexCompareHandle {
-    tx: mpsc::Sender<HexCommand>,
-}
-
-impl HexCompareHandle {
-    pub fn send(&self, command: HexCommand) -> bool {
-        self.tx.try_send(command).is_ok()
-    }
-}
+/// Non-blocking command sender; `send` returns `false` when the actor is busy or gone.
+pub type HexCompareHandle = CommandHandle<HexCommand>;
 
 pub fn spawn_hex_compare(rt: &Handle, source: Arc<dyn ByteSource>, left: PathBuf, right: PathBuf) -> (HexCompareHandle, mpsc::Receiver<HexEvent>) {
-    let (ctx, crx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
-    let (etx, erx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-    rt.spawn(run(source, [left, right], crx, etx));
-    (HexCompareHandle { tx: ctx }, erx)
+    let (handle, commands, events, event_rx) = channels();
+    rt.spawn(run(source, [left, right], commands, events));
+    (handle, event_rx)
 }
 
 async fn run(source: Arc<dyn ByteSource>, paths: [PathBuf; 2], mut crx: mpsc::Receiver<HexCommand>, etx: mpsc::Sender<HexEvent>) {
@@ -78,7 +85,7 @@ async fn run(source: Arc<dyn ByteSource>, paths: [PathBuf; 2], mut crx: mpsc::Re
             joined = async { scanning.as_mut().expect("guarded by precondition").await }, if scanning.is_some() => {
                 scanning = None;
                 let done = joined.unwrap_or_else(|_| HexSummary { errors: [Some("scan stopped unexpectedly".into()), None], ..Default::default() });
-                if etx.send(HexEvent::Summary(Arc::new(done))).await.is_err() { return; }
+                if !send_event(&etx, HexEvent::Summary(Arc::new(done))).await { return; }
             }
             command = crx.recv() => match command {
                 None => break,
@@ -91,12 +98,12 @@ async fn run(source: Arc<dyn ByteSource>, paths: [PathBuf; 2], mut crx: mpsc::Re
                     let read = |i: usize| {
                         let (source, path) = (source.clone(), paths[i].clone());
                         async move {
-                            if path.as_os_str().is_empty() { return Vec::new(); }
+                            if is_unset(&path) { return Vec::new(); }
                             source.read_range(&path, offset, len).await.unwrap_or_default()
                         }
                     };
                     let (left, right) = tokio::join!(read(0), read(1));
-                    if etx.send(HexEvent::Window(Arc::new(HexWindow { id, offset, left, right }))).await.is_err() { return; }
+                    if !send_event(&etx, HexEvent::Window(Arc::new(HexWindow { id, offset, left, right }))).await { return; }
                 }
             },
         }
@@ -110,7 +117,7 @@ async fn scan(source: Arc<dyn ByteSource>, paths: [PathBuf; 2], etx: mpsc::Sende
     let mut summary = HexSummary::default();
     let mut lens = [0u64; 2];
     for i in 0..2 {
-        if paths[i].as_os_str().is_empty() {
+        if is_unset(&paths[i]) {
             continue;
         }
         match source.stat(&paths[i]).await {
@@ -119,7 +126,7 @@ async fn scan(source: Arc<dyn ByteSource>, paths: [PathBuf; 2], etx: mpsc::Sende
         }
     }
     (summary.left_len, summary.right_len) = (lens[0], lens[1]);
-    let common = if summary.errors.iter().any(Option::is_some) { 0 } else { lens[0].min(lens[1]) };
+    let common = if summary.has_errors() { 0 } else { lens[0].min(lens[1]) };
     let mut offset = 0u64;
     while offset < common {
         let want = SCAN_CHUNK.min((common - offset) as usize);
@@ -137,24 +144,14 @@ async fn scan(source: Arc<dyn ByteSource>, paths: [PathBuf; 2], etx: mpsc::Sende
             Err(_) => break,
         };
         for run in runs {
-            summary.diff_bytes += run.len;
-            if summary.runs.len() >= MAX_RUNS {
-                summary.truncated = true;
-            } else {
-                push_run(&mut summary.runs, run.offset, run.len);
-            }
+            summary.record(run.offset, run.len);
         }
         offset += want as u64;
         // Progress is advisory: drop it rather than stall the scan on a slow UI.
         let _ = etx.try_send(HexEvent::Progress { done: offset, total: common });
     }
-    if let Some(tail) = tail_run(lens[0], lens[1]).filter(|_| summary.errors.iter().all(Option::is_none)) {
-        summary.diff_bytes += tail.len;
-        if summary.runs.len() < MAX_RUNS {
-            push_run(&mut summary.runs, tail.offset, tail.len);
-        } else {
-            summary.truncated = true;
-        }
+    if let Some(tail) = tail_run(lens[0], lens[1]).filter(|_| !summary.has_errors()) {
+        summary.record(tail.offset, tail.len);
     }
     summary
 }

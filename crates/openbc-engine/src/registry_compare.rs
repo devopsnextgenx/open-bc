@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use openbc_core::registry_compare::{apply_reg_copy, diff_reg, group_reg_rows, parse_reg, write_reg, RegCompareOptions, RegDiffRow, RegFile};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
@@ -43,16 +44,8 @@ pub enum RegistryEvent {
     Error(String),
 }
 
-#[derive(Clone)]
-pub struct RegistryCompareHandle {
-    tx: mpsc::Sender<RegistryCommand>,
-}
-
-impl RegistryCompareHandle {
-    pub fn send(&self, command: RegistryCommand) -> bool {
-        self.tx.try_send(command).is_ok()
-    }
-}
+/// Non-blocking command sender; `send` returns `false` when the actor is busy or gone.
+pub type RegistryCompareHandle = CommandHandle<RegistryCommand>;
 
 pub fn spawn_registry_compare(
     rt: &Handle,
@@ -60,12 +53,8 @@ pub fn spawn_registry_compare(
     left: PathBuf,
     right: PathBuf,
 ) -> (RegistryCompareHandle, mpsc::Receiver<RegistryEvent>) {
-    let (ctx, crx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
-    let (etx, erx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
     let side = |path| RegSide { path, file: None, error: None, dirty: false };
-    let actor = Actor { source, sides: [side(left), side(right)], options: RegCompareOptions::default(), last_rows: Vec::new(), etx };
-    rt.spawn(actor.run(crx));
-    (RegistryCompareHandle { tx: ctx }, erx)
+    spawn_batched(rt, |etx| Actor { source, sides: [side(left), side(right)], options: RegCompareOptions::default(), last_rows: Vec::new(), etx })
 }
 
 struct RegSide {
@@ -83,72 +72,30 @@ struct Actor {
     etx: mpsc::Sender<RegistryEvent>,
 }
 
-impl Actor {
-    async fn emit(&self, event: RegistryEvent) -> bool {
-        self.etx.send(event).await.is_ok()
+#[async_trait]
+impl BatchedActor for Actor {
+    type Command = RegistryCommand;
+
+    async fn init(&mut self) -> bool {
+        self.reload().await
     }
 
-    async fn run(mut self, mut crx: mpsc::Receiver<RegistryCommand>) {
-        if !self.reload().await || !self.emit_result().await {
-            return;
-        }
-        while let Some(first) = crx.recv().await {
-            let mut batch = vec![first];
-            while let Ok(next) = crx.try_recv() {
-                batch.push(next);
+    async fn apply(&mut self, command: RegistryCommand) -> bool {
+        match command {
+            RegistryCommand::SetOptions(options) => {
+                self.options = options;
+                true
             }
-            for command in batch {
-                let ok = match command {
-                    RegistryCommand::SetOptions(o) => {
-                        self.options = o;
-                        true
-                    }
-                    RegistryCommand::Reload => self.reload().await,
-                    RegistryCommand::Copy { start, end, to_right } => {
-                        self.copy(start, end, to_right);
-                        true
-                    }
-                    RegistryCommand::Save { side, path } => self.save(side, path).await,
-                };
-                if !ok {
-                    return;
-                }
+            RegistryCommand::Reload => self.reload().await,
+            RegistryCommand::Copy { start, end, to_right } => {
+                self.copy(start, end, to_right);
+                true
             }
-            if !self.emit_result().await {
-                return;
-            }
+            RegistryCommand::Save { side, path } => self.save(side, path).await,
         }
     }
 
-    async fn reload(&mut self) -> bool {
-        for idx in 0..2 {
-            let path = self.sides[idx].path.clone();
-            if !self.emit(RegistryEvent::Status(format!("Loading {}...", path.display()))).await {
-                return false;
-            }
-            let loaded: Result<Option<RegFile>, String> = if path.as_os_str().is_empty() {
-                Ok(None)
-            } else {
-                match self.source.read_all(&path, MAX_REG_BYTES).await {
-                    Err(e) => Err(context(&path, "read", e)),
-                    Ok(bytes) => match rayon_run(move || parse_reg(&bytes)).await {
-                        Ok(Ok(file)) => Ok(Some(file)),
-                        Ok(Err(e)) => Err(context(&path, "parse", e)),
-                        Err(e) => Err(context(&path, "parse", e)),
-                    },
-                }
-            };
-            let side = &mut self.sides[idx];
-            side.dirty = false;
-            match loaded {
-                Ok(file) => (side.file, side.error) = (file, None),
-                Err(e) => (side.file, side.error) = (None, Some(e)),
-            }
-        }
-        true
-    }
-
-    async fn emit_result(&mut self) -> bool {
+    async fn publish(&mut self) -> bool {
         let (l, r) = (self.sides[0].file.clone().unwrap_or_default(), self.sides[1].file.clone().unwrap_or_default());
         let options = self.options.clone();
         let rows = match rayon_run(move || diff_reg(&l, &r, &options)).await {
@@ -159,6 +106,33 @@ impl Actor {
         let info = |s: &RegSide| RegSideInfo { error: s.error.clone(), loaded: s.file.is_some(), dirty: s.dirty };
         let view = RegistryView { groups: group_reg_rows(&rows), rows, sides: [info(&self.sides[0]), info(&self.sides[1])] };
         self.emit(RegistryEvent::Result(Arc::new(view))).await
+    }
+}
+
+impl Actor {
+    async fn emit(&self, event: RegistryEvent) -> bool {
+        send_event(&self.etx, event).await
+    }
+
+    async fn load_side(&self, idx: usize) -> Result<Option<RegFile>, String> {
+        let parse = |bytes: Vec<u8>| parse_reg(&bytes);
+        load_parsed(self.source.as_ref(), &self.sides[idx].path, MAX_REG_BYTES, "parse", parse).await
+    }
+
+    async fn reload(&mut self) -> bool {
+        for idx in 0..2 {
+            if !self.emit(RegistryEvent::Status(format!("Loading {}...", self.sides[idx].path.display()))).await {
+                return false;
+            }
+            let loaded = self.load_side(idx).await;
+            let side = &mut self.sides[idx];
+            side.dirty = false;
+            match loaded {
+                Ok(file) => (side.file, side.error) = (file, None),
+                Err(e) => (side.file, side.error) = (None, Some(e)),
+            }
+        }
+        true
     }
 
     fn copy(&mut self, start: usize, end: usize, to_right: bool) {
@@ -183,14 +157,14 @@ impl Actor {
             Ok(b) => b,
             Err(e) => return self.emit(RegistryEvent::Error(e.to_string())).await,
         };
-        match self.source.write_all(&target, &bytes).await {
+        match write_bytes(self.source.as_ref(), &target, &bytes).await {
             Ok(()) => {
                 if in_place {
                     self.sides[side.index()].dirty = false;
                 }
                 self.emit(RegistryEvent::Saved { side, path: target.display().to_string() }).await
             }
-            Err(e) => self.emit(RegistryEvent::Error(context(&target, "save", e))).await,
+            Err(message) => self.emit(RegistryEvent::Error(message)).await,
         }
     }
 }

@@ -1,42 +1,49 @@
-//! Shared plumbing for the per-tab compare actors (table, registry, hex, media).
-//!
-//! Every actor follows the image-compare shape: one actor per tab, commands in over a
-//! small bounded channel, `*Event`s out over a bounded `tokio::sync::mpsc` channel (so a
-//! slow UI back-pressures the actor), and all CPU-bound work on Rayon.
+//! Where compare inputs come from.
 
 use std::io::{self, SeekFrom};
 use std::path::Path;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 pub use openbc_compute::media::ReadSeek;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio::sync::oneshot;
-
-/// Events buffered between an actor and the UI bridge.
-pub const EVENT_CHANNEL_CAPACITY: usize = 4;
-/// Commands buffered between the UI bridge and an actor (UI uses `try_send`).
-pub const COMMAND_CHANNEL_CAPACITY: usize = 16;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Side {
-    Left,
-    Right,
-}
-
-impl Side {
-    pub fn index(self) -> usize {
-        self as usize
-    }
-    pub fn label(self) -> &'static str {
-        if self == Side::Left { "Left" } else { "Right" }
-    }
-}
 
 #[derive(Clone, Copy, Debug)]
 pub struct FileStat {
     pub size: u64,
     pub modified: Option<SystemTime>,
+}
+
+impl FileStat {
+    pub fn modified_unix_ms(&self) -> Option<i64> {
+        self.modified.and_then(unix_ms)
+    }
+}
+
+/// Milliseconds since the Unix epoch (`None` for times before it).
+pub fn unix_ms(time: SystemTime) -> Option<i64> {
+    time.duration_since(UNIX_EPOCH).ok().map(|d| d.as_millis() as i64)
+}
+
+/// A whole local file plus the metadata it was read with.
+pub struct LocalRead {
+    pub bytes: Vec<u8>,
+    pub stat: FileStat,
+}
+
+/// Reads a whole local regular file, refusing anything above `max_bytes` before reading it.
+/// `stat.size` is the number of bytes actually read.
+pub async fn read_local_limited(path: &Path, max_bytes: u64) -> io::Result<LocalRead> {
+    let meta = tokio::fs::metadata(path).await?;
+    if !meta.is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a file"));
+    }
+    if meta.len() > max_bytes {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("file is {} bytes, limit is {max_bytes}", meta.len())));
+    }
+    let bytes = tokio::fs::read(path).await?;
+    let stat = FileStat { size: bytes.len() as u64, modified: meta.modified().ok() };
+    Ok(LocalRead { bytes, stat })
 }
 
 /// Where compare inputs come from. Local today; `AsyncVfs` adapters (remote files are
@@ -64,11 +71,7 @@ impl ByteSource for LocalByteSource {
     }
 
     async fn read_all(&self, path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
-        let size = tokio::fs::metadata(path).await?.len();
-        if size > max_bytes {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("file is {size} bytes, limit is {max_bytes}")));
-        }
-        tokio::fs::read(path).await
+        Ok(read_local_limited(path, max_bytes).await?.bytes)
     }
 
     async fn read_range(&self, path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>> {
@@ -86,28 +89,4 @@ impl ByteSource for LocalByteSource {
     fn open_reader(&self, path: &Path) -> io::Result<Box<dyn ReadSeek + Send>> {
         Ok(Box::new(std::io::BufReader::new(std::fs::File::open(path)?)))
     }
-}
-
-/// A Rayon task panicked or the pool shut down.
-#[derive(Debug, thiserror::Error)]
-#[error("background worker stopped unexpectedly")]
-pub struct TaskLost;
-
-/// Runs CPU-bound `f` on the Rayon pool without blocking a Tokio worker.
-pub async fn rayon_run<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, TaskLost> {
-    let (tx, rx) = oneshot::channel();
-    rayon::spawn(move || {
-        let _ = tx.send(f());
-    });
-    rx.await.map_err(|_| TaskLost)
-}
-
-/// Lower-case extension without the dot.
-pub fn extension_of(path: &Path) -> String {
-    path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
-}
-
-/// `path: message` error text (preserves path and operation context).
-pub fn context(path: &Path, operation: &str, err: impl std::fmt::Display) -> String {
-    format!("{}: {operation}: {err}", path.display())
 }

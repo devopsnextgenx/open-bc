@@ -1,7 +1,9 @@
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
-use std::time::UNIX_EPOCH;
+use std::path::Path;
+
+use crate::common::read_local_limited;
 
 pub type SourceFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -37,23 +39,12 @@ pub struct LocalFsSource;
 impl ImageByteSource for LocalFsSource {
     fn read<'a>(&'a self, path: &'a str, max_bytes: u64) -> SourceFuture<'a, io::Result<SourceRead>> {
         Box::pin(async move {
-            let meta = tokio::fs::metadata(path).await?;
-            if !meta.is_file() {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a file"));
-            }
-            if meta.len() > max_bytes {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("file is {} bytes, limit is {max_bytes}", meta.len()),
-                ));
-            }
-            let modified_unix_ms = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as i64);
-            let bytes = tokio::fs::read(path).await?;
-            Ok(SourceRead { size_bytes: bytes.len() as u64, modified_unix_ms, bytes })
+            let read = read_local_limited(Path::new(path), max_bytes).await?;
+            Ok(SourceRead {
+                size_bytes: read.stat.size,
+                modified_unix_ms: read.stat.modified_unix_ms(),
+                bytes: read.bytes,
+            })
         })
     }
 }

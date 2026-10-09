@@ -10,6 +10,8 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
+use crate::common::COMMAND_CHANNEL_CAPACITY;
+
 use super::events::{ImageCompareEvent, ImageFileInfo, Side};
 use super::source::{ImageByteSource, SourceRead};
 
@@ -37,7 +39,7 @@ pub struct ImageCompareConfig {
 
 impl Default for ImageCompareConfig {
     fn default() -> Self {
-        Self { max_file_bytes: 512 << 20, command_queue: 16 }
+        Self { max_file_bytes: 512 << 20, command_queue: COMMAND_CHANNEL_CAPACITY }
     }
 }
 
@@ -308,13 +310,11 @@ impl Actor {
             }
             Stage::Loaded { seq, outcome: LoadOutcome::Failed { left, right } } => {
                 self.clear_probe();
-                if let Some(message) = left {
-                    let path = self.paths.0.clone();
-                    self.emit(ImageCompareEvent::PathError { seq, side: Side::Left, path, message }).await?;
-                }
-                if let Some(message) = right {
-                    let path = self.paths.1.clone();
-                    self.emit(ImageCompareEvent::PathError { seq, side: Side::Right, path, message }).await?;
+                let failures = [(Side::Left, self.paths.0.clone(), left), (Side::Right, self.paths.1.clone(), right)];
+                for (side, path, message) in failures {
+                    if let Some(message) = message {
+                        self.emit(ImageCompareEvent::PathError { seq, side, path, message }).await?;
+                    }
                 }
                 Ok(())
             }
@@ -343,7 +343,7 @@ impl Actor {
     }
 }
 
-fn side(path: String, size_bytes: u64, modified_unix_ms: Option<i64>, d: &DecodedImage) -> LoadedSide {
+fn loaded_side(path: String, size_bytes: u64, modified_unix_ms: Option<i64>, d: &DecodedImage) -> LoadedSide {
     LoadedSide {
         info: ImageFileInfo {
             path,
@@ -367,12 +367,7 @@ async fn load_pair(
 ) -> LoadOutcome {
     let (l, r) = match (left, right) {
         (Ok(l), Ok(r)) => (l, r),
-        (l, r) => {
-            return LoadOutcome::Failed {
-                left: l.err().map(|e| e.to_string()),
-                right: r.err().map(|e| e.to_string()),
-            }
-        }
+        (l, r) => return failure(l, r),
     };
     let SourceRead { bytes: left_bytes, size_bytes: left_size, modified_unix_ms: left_mtime } = l;
     let SourceRead { bytes: right_bytes, size_bytes: right_size, modified_unix_ms: right_mtime } = r;
@@ -386,13 +381,18 @@ async fn load_pair(
     };
     match (dl, dr) {
         (Ok(l), Ok(r)) => LoadOutcome::Ready(LoadedPair {
-            left: side(left_path, left_size, left_mtime, &l),
-            right: side(right_path, right_size, right_mtime, &r),
+            left: loaded_side(left_path, left_size, left_mtime, &l),
+            right: loaded_side(right_path, right_size, right_mtime, &r),
             binary_identical: bytes_identical,
         }),
-        (l, r) => LoadOutcome::Failed {
-            left: l.err().map(|e| e.to_string()),
-            right: r.err().map(|e| e.to_string()),
-        },
+        (l, r) => failure(l, r),
+    }
+}
+
+/// Reports whichever sides of a load/decode pair failed.
+fn failure<A, B>(left: Result<A, impl std::fmt::Display>, right: Result<B, impl std::fmt::Display>) -> LoadOutcome {
+    LoadOutcome::Failed {
+        left: left.err().map(|e| e.to_string()),
+        right: right.err().map(|e| e.to_string()),
     }
 }

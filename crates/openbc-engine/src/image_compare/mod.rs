@@ -1,5 +1,4 @@
-//! Background image compare pipeline. Add to the crate root with
-//! `pub mod image_compare;`.
+//! Background image compare pipeline.
 //!
 //! Flow (see ARCHITECTURE.md): bytes arrive through an [`ImageByteSource`]
 //! (Tokio I/O), decode/resize/compare run on Rayon via `openbc-compute`, and

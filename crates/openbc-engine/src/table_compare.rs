@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use openbc_compute::table::{decode_workbook, diff_tables_parallel};
 use openbc_core::table_compare::csv::write_csv;
 use openbc_core::table_compare::{apply_copy, group_changed, DiffGroup, SourceFormat, Table, TableCompareOptions, TableDiffRow, Workbook};
@@ -64,17 +65,8 @@ pub enum TableEvent {
     Error(String),
 }
 
-#[derive(Clone)]
-pub struct TableCompareHandle {
-    tx: mpsc::Sender<TableCommand>,
-}
-
-impl TableCompareHandle {
-    /// Non-blocking; `false` when the actor is busy (queue full) or gone.
-    pub fn send(&self, command: TableCommand) -> bool {
-        self.tx.try_send(command).is_ok()
-    }
-}
+/// Non-blocking command sender; `send` returns `false` when the actor is busy or gone.
+pub type TableCompareHandle = CommandHandle<TableCommand>;
 
 /// Starts one table-compare actor. Empty paths mean "no file on that side".
 pub fn spawn_table_compare(
@@ -84,18 +76,14 @@ pub fn spawn_table_compare(
     left: PathBuf,
     right: PathBuf,
 ) -> (TableCompareHandle, mpsc::Receiver<TableEvent>) {
-    let (ctx, crx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
-    let (etx, erx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-    let actor = Actor {
+    spawn_batched(rt, |etx| Actor {
         config,
         source,
         sides: [SideState::new(left), SideState::new(right)],
         options: TableCompareOptions::default(),
         last_diff: Vec::new(),
         etx,
-    };
-    rt.spawn(actor.run(crx));
-    (TableCompareHandle { tx: ctx }, erx)
+    })
 }
 
 struct SideState {
@@ -156,71 +144,72 @@ struct Actor {
     etx: mpsc::Sender<TableEvent>,
 }
 
-impl Actor {
-    async fn emit(&self, event: TableEvent) -> bool {
-        self.etx.send(event).await.is_ok()
+#[async_trait]
+impl BatchedActor for Actor {
+    type Command = TableCommand;
+
+    async fn init(&mut self) -> bool {
+        self.reload().await
     }
 
-    async fn run(mut self, mut crx: mpsc::Receiver<TableCommand>) {
-        if !self.reload().await || !self.emit_result().await {
-            return;
+    async fn apply(&mut self, command: TableCommand) -> bool {
+        match command {
+            TableCommand::SetOptions(options) => {
+                self.options = options;
+                true
+            }
+            TableCommand::SelectSheets { left, right } => {
+                self.select_sheets(left, right);
+                true
+            }
+            TableCommand::Reload => self.reload().await,
+            TableCommand::Copy { start, end, to_right } => {
+                self.copy(start, end, to_right);
+                true
+            }
+            TableCommand::Save { side, path } => self.save(side, path).await,
         }
-        while let Some(first) = crx.recv().await {
-            // Coalesce: everything queued while we were busy is handled before one re-diff.
-            let mut batch = vec![first];
-            while let Ok(next) = crx.try_recv() {
-                batch.push(next);
-            }
-            let mut rediff = false;
-            for command in batch {
-                let ok = match command {
-                    TableCommand::SetOptions(o) => {
-                        self.options = o;
-                        rediff = true;
-                        true
-                    }
-                    TableCommand::SelectSheets { left, right } => {
-                        for (side, pick) in self.sides.iter_mut().zip([left, right]) {
-                            let count = side.workbook.as_ref().map_or(0, |w| w.sheets.len());
-                            if let Some(i) = pick.filter(|&i| i < count) {
-                                side.selected = Some(i);
-                            }
-                        }
-                        rediff = true;
-                        true
-                    }
-                    TableCommand::Reload => {
-                        rediff = true;
-                        self.reload().await
-                    }
-                    TableCommand::Copy { start, end, to_right } => {
-                        rediff = true;
-                        self.copy(start, end, to_right).await
-                    }
-                    TableCommand::Save { side, path } => {
-                        rediff = true; // refresh the dirty flags
-                        self.save(side, path).await
-                    }
-                };
-                if !ok {
-                    return;
-                }
-            }
-            if rediff && !self.emit_result().await {
-                return;
+    }
+
+    async fn publish(&mut self) -> bool {
+        let (left, right) = (self.sides[0].table(), self.sides[1].table());
+        let (l, r, o) = (left.clone(), right.clone(), self.options.clone());
+        let diff = match rayon_run(move || diff_tables_parallel(&l, &r, &o)).await {
+            Ok(d) => d,
+            Err(e) => return self.emit(TableEvent::Error(e.to_string())).await,
+        };
+        self.last_diff = diff.clone();
+        let view = TableView {
+            columns: left.columns().max(right.columns()),
+            groups: group_changed(&diff),
+            diff,
+            sides: [self.sides[0].info(), self.sides[1].info()],
+            left,
+            right,
+        };
+        self.emit(TableEvent::Result(Arc::new(view))).await
+    }
+}
+
+impl Actor {
+    async fn emit(&self, event: TableEvent) -> bool {
+        send_event(&self.etx, event).await
+    }
+
+    fn select_sheets(&mut self, left: Option<usize>, right: Option<usize>) {
+        for (side, pick) in self.sides.iter_mut().zip([left, right]) {
+            let count = side.workbook.as_ref().map_or(0, |w| w.sheets.len());
+            if let Some(i) = pick.filter(|&i| i < count) {
+                side.selected = Some(i);
             }
         }
     }
 
     async fn load_side(&self, idx: usize) -> Result<Option<Workbook>, String> {
-        let path = self.sides[idx].path.clone();
-        if path.as_os_str().is_empty() {
-            return Ok(None);
-        }
-        let bytes = self.source.read_all(&path, self.config.max_file_bytes).await.map_err(|e| context(&path, "read", e))?;
-        let (ext, max_cells) = (extension_of(&path), self.config.max_cells);
-        let decoded = rayon_run(move || decode_workbook(bytes, &ext, max_cells)).await.map_err(|e| context(&path, "decode", e))?;
-        decoded.map(Some).map_err(|e| context(&path, "decode", e))
+        let path = &self.sides[idx].path;
+        let (ext, max_cells) = (extension_of(path), self.config.max_cells);
+        let parse = move |bytes: Vec<u8>| decode_workbook(bytes, &ext, max_cells);
+        load_parsed(self.source.as_ref(), path, self.config.max_file_bytes, "decode", parse).await
     }
 
     async fn reload(&mut self) -> bool {
@@ -247,26 +236,7 @@ impl Actor {
         true
     }
 
-    async fn emit_result(&mut self) -> bool {
-        let (left, right) = (self.sides[0].table(), self.sides[1].table());
-        let (l, r, o) = (left.clone(), right.clone(), self.options.clone());
-        let diff = match rayon_run(move || diff_tables_parallel(&l, &r, &o)).await {
-            Ok(d) => d,
-            Err(e) => return self.emit(TableEvent::Error(e.to_string())).await,
-        };
-        self.last_diff = diff.clone();
-        let view = TableView {
-            columns: left.columns().max(right.columns()),
-            groups: group_changed(&diff),
-            diff,
-            sides: [self.sides[0].info(), self.sides[1].info()],
-            left,
-            right,
-        };
-        self.emit(TableEvent::Result(Arc::new(view))).await
-    }
-
-    async fn copy(&mut self, start: usize, end: usize, to_right: bool) -> bool {
+    fn copy(&mut self, start: usize, end: usize, to_right: bool) {
         let dst = usize::from(to_right);
         if self.sides[dst].workbook.is_none() {
             // Copying onto a missing file creates an in-memory CSV that Save writes out.
@@ -284,7 +254,6 @@ impl Actor {
         self.sides[0].put_table(l);
         self.sides[1].put_table(r);
         self.sides[dst].dirty = true;
-        true
     }
 
     async fn save(&mut self, side: Side, path: Option<PathBuf>) -> bool {
@@ -307,14 +276,14 @@ impl Actor {
             Ok(b) => b,
             Err(e) => return self.emit(TableEvent::Error(e.to_string())).await,
         };
-        match self.source.write_all(&target, &bytes).await {
+        match write_bytes(self.source.as_ref(), &target, &bytes).await {
             Ok(()) => {
                 if in_place {
                     self.sides[side.index()].dirty = false;
                 }
                 self.emit(TableEvent::Saved { side, path: target.display().to_string() }).await
             }
-            Err(e) => self.emit(TableEvent::Error(context(&target, "save", e))).await,
+            Err(message) => self.emit(TableEvent::Error(message)).await,
         }
     }
 }
