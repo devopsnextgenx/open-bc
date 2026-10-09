@@ -1,11 +1,10 @@
-mod ffi_common;
-mod image_compare_ffi;
-mod model3d_compare_ffi;
-mod vfs_bridge;
-pub mod hex_compare_ffi;
-pub mod media_compare_ffi;
-pub mod registry_compare_ffi;
-pub mod table_compare_ffi;
+mod ffi;
+
+// Public paths kept stable for existing consumers (`openbc_ui_qt::hex_compare_ffi::...`).
+pub use ffi::hex_compare as hex_compare_ffi;
+pub use ffi::media_compare as media_compare_ffi;
+pub use ffi::registry_compare as registry_compare_ffi;
+pub use ffi::table_compare as table_compare_ffi;
 
 use openbc_core::text::highlight_to_html as render_highlight_to_html;
 use openbc_core::text::{

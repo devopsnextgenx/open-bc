@@ -66,46 +66,33 @@ corrosion_import_crate(
 )
 
 
-set(OPENBC_HEADERS
-    crates/openbc-ui-qt/src/qt_style.h
-    crates/openbc-ui-qt/src/folder_model.h
-    crates/openbc-ui-qt/src/diff_algorithms.h
-    crates/openbc-ui-qt/src/syntax_highlighter.h
-    crates/openbc-ui-qt/src/find_replace_bar.h
-    crates/openbc-ui-qt/src/line_number_editor.h
-    crates/openbc-ui-qt/src/minimap.h
-    crates/openbc-ui-qt/src/diff_line_preview.h
-    crates/openbc-ui-qt/src/text_compare_view.h
-    crates/openbc-ui-qt/src/folder_compare_view.h
-    crates/openbc-ui-qt/src/file_kinds.h
-    crates/openbc-ui-qt/src/picture_compare_view.h
-    crates/openbc-ui-qt/src/3d_compare_view.h
-    crates/openbc-ui-qt/src/model3d_viewport.h
-    crates/openbc-ui-qt/src/model3d_compare_api.h
-    crates/openbc-ui-qt/src/model3d_extensions.h
-    crates/openbc-ui-qt/src/model3d_icons.h
-    crates/openbc-ui-qt/src/compare_backend_api.h
-    crates/openbc-ui-qt/src/backend_channel.h
-    crates/openbc-ui-qt/src/diff_grid_common.h
-    crates/openbc-ui-qt/src/table_compare_viewer.h
-    crates/openbc-ui-qt/src/registry_compare_viewer.h
-    crates/openbc-ui-qt/src/hex_compare_viewer.h
-    crates/openbc-ui-qt/src/media_player_pane.h
-    crates/openbc-ui-qt/src/media_compare_viewer.h
-    crates/openbc-ui-qt/src/main_window.h
-)
-
+# All C++ lives under cpp/ (include root). Headers are globbed so moc (AUTOMOC) sees every
+# class and new files need no CMake edit; CONFIGURE_DEPENDS re-runs the glob on build.
+set(OPENBC_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/crates/openbc-ui-qt/cpp")
+file(GLOB_RECURSE OPENBC_HEADERS CONFIGURE_DEPENDS "${OPENBC_CPP_DIR}/*.h")
+file(GLOB_RECURSE OPENBC_SOURCES CONFIGURE_DEPENDS "${OPENBC_CPP_DIR}/*.cpp")
+# cpp/tools/* are standalone executables with their own main(); built separately below.
+list(FILTER OPENBC_SOURCES EXCLUDE REGEX "/cpp/tools/")
 
 # 3. Create C++ Qt Application Entrypoint
 add_executable(openbc
-    crates/openbc-ui-qt/src/qt_app.cpp
+    ${OPENBC_SOURCES}
     ${OPENBC_HEADERS}
     resources/openbc.qrc
 )
 
-target_include_directories(openbc PRIVATE
-    crates/openbc-ui-qt/src
+target_include_directories(openbc PRIVATE ${OPENBC_CPP_DIR})
+
+# Qt-free helper: lists missing .dll/.so for openbc and works even when openbc itself cannot start.
+add_executable(openbc-depcheck
+    ${OPENBC_CPP_DIR}/tools/depcheck/depcheck_main.cpp
+    ${OPENBC_CPP_DIR}/app/dependency_check.cpp
 )
+target_include_directories(openbc-depcheck PRIVATE ${OPENBC_CPP_DIR})
+target_compile_definitions(openbc-depcheck PRIVATE OPENBC_DEPCHECK_STANDALONE)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(openbc-depcheck PRIVATE ${CMAKE_DL_LIBS})
+endif()
 
 # 4. Link Rust static library & Qt6 modules
 target_link_libraries(openbc PRIVATE
@@ -138,6 +125,30 @@ if(WIN32)
     target_sources(openbc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc")
     set_target_properties(openbc PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(openbc PRIVATE ws2_32 userenv advapi32 ntdll)
+    # Console build of the checker so output shows in cmd.exe
+    set_target_properties(openbc-depcheck PROPERTIES WIN32_EXECUTABLE FALSE)
+
+    # Make the build output runnable on its own: after every build of openbc, run windeployqt so
+    # platforms/qwindows.dll and the Qt DLLs (and any Qt plugins openbc imports, e.g. multimedia/)
+    # sit next to openbc.exe. Without this, the exe only starts from a shell that has the MSYS2
+    # folders on PATH. MinGW/UCRT runtime DLLs (libstdc++, libgcc, ...) are NOT copied here; use
+    # PATH or the openbc-depcheck copy loop in scripts/build.sh for those.
+    find_program(WINDEPLOYQT_EXECUTABLE
+        NAMES windeployqt6 windeployqt-qt6 windeployqt
+        HINTS "${Qt6_DIR}/../../../bin"
+    )
+    if(WINDEPLOYQT_EXECUTABLE)
+        message(STATUS "windeployqt found: ${WINDEPLOYQT_EXECUTABLE}")
+        add_custom_command(TARGET openbc POST_BUILD
+            COMMAND "${WINDEPLOYQT_EXECUTABLE}"
+                    --no-compiler-runtime --no-translations
+                    "$<TARGET_FILE:openbc>"
+            COMMENT "Deploying Qt runtime next to openbc.exe"
+            VERBATIM
+        )
+    else()
+        message(WARNING "windeployqt not found: build/win/openbc.exe will need the Qt bin folder on PATH")
+    endif()
 endif()
 
 
@@ -153,7 +164,8 @@ if(WIN32)
 elseif(UNIX AND NOT APPLE)
     set(CPACK_GENERATOR "DEB")
     set(CPACK_DEBIAN_PACKAGE_MAINTAINER "OpenBC Team")
-    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6widgets6, zlib1g, libssl3")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6widgets6, libqt6opengl6, zlib1g, liblzma5, libssl3")
 endif()
 
+install(TARGETS openbc openbc-depcheck RUNTIME DESTINATION bin)
 include(CPack)

@@ -31,14 +31,20 @@ impl ScanEventBridge {
 
 #[cfg(feature = "qt")]
 unsafe extern "C" {
-    fn openbc_run_gui() -> i32;
+    fn openbc_run_gui(argc: i32, argv: *const *const std::os::raw::c_char) -> i32;
 }
 
 fn main() -> Result<()> {
     openbc_observability::init().map_err(anyhow::Error::msg)?;
     #[cfg(feature = "qt")]
     {
-        let exit_code = unsafe { openbc_run_gui() };
+        // Forward the real command line (paths, --compare, --dependency-check ...) to the Qt side.
+        let args: Vec<std::ffi::CString> = std::env::args_os()
+            .map(|a| std::ffi::CString::new(a.to_string_lossy().as_bytes()).unwrap_or_default())
+            .collect();
+        let mut argv: Vec<*const std::os::raw::c_char> = args.iter().map(|a| a.as_ptr()).collect();
+        argv.push(std::ptr::null());
+        let exit_code = unsafe { openbc_run_gui((argv.len() - 1) as i32, argv.as_ptr()) };
         anyhow::ensure!(
             exit_code == 0,
             "Qt application exited with code {exit_code}"

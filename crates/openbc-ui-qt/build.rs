@@ -1,8 +1,9 @@
 #[cfg(feature = "qt")]
 fn main() {
-    // The views are header-only and included from qt_app.cpp, so track the whole src dir,
-    // otherwise editing a .h file does not trigger a rebuild.
+    // The views are mostly header-only and pulled in through cpp/app/qt_app.cpp, so track the
+    // whole cpp/ tree (headers included) or editing a .h file would not trigger a rebuild.
     println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=cpp");
     println!("cargo:rerun-if-changed=qml");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
 
@@ -64,8 +65,12 @@ fn main() {
             qrc_files: &[],
         })
         .cc_builder(move |cc| {
-            cc.file("src/qt_app.cpp");
-            cc.include("src");
+            // Every .cpp under cpp/ is part of the staticlib so the cargo `openbc-qt` binary links
+            // the same C++ as the CMake `openbc` executable. Headers are found via `cpp/` as root.
+            for source in cpp_sources(std::path::Path::new("cpp")) {
+                cc.file(source);
+            }
+            cc.include("cpp");
             if multimedia_enabled {
                 cc.define("OPENBC_HAVE_QT_MULTIMEDIA", None);
             }
@@ -75,6 +80,29 @@ fn main() {
             cc.flag_if_supported("-std=c++17");
         })
         .build();
+}
+
+#[cfg(feature = "qt")]
+fn cpp_sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(cpp_sources(&path));
+            } else if path.extension().is_some_and(|e| e == "cpp") && !is_standalone_tool(&path) {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// `cpp/tools/*` are separate executables (own `main()`), never part of the GUI library.
+#[cfg(feature = "qt")]
+fn is_standalone_tool(path: &std::path::Path) -> bool {
+    path.components().any(|c| c.as_os_str() == "tools")
 }
 
 #[cfg(not(feature = "qt"))]
