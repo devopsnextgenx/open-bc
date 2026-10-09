@@ -21,9 +21,22 @@ fn main() {
     let qt_opengl_widgets = pkg_config::Config::new()
         .probe("Qt6OpenGLWidgets")
         .expect("Qt6OpenGLWidgets development files are required for the 3D Compare tab");
+    let qt_multimedia = pkg_config::Config::new()
+        .cargo_metadata(false)
+        .probe("Qt6Multimedia")
+        .ok();
+    let qt_multimedia_widgets = pkg_config::Config::new()
+        .cargo_metadata(false)
+        .probe("Qt6MultimediaWidgets")
+        .ok();
+    let multimedia_enabled = qt_multimedia.is_some() && qt_multimedia_widgets.is_some();
 
     let mut include_paths = Vec::new();
-    for lib in [&qt_widgets, &qt_opengl, &qt_opengl_widgets] {
+    for lib in [&qt_widgets, &qt_opengl, &qt_opengl_widgets]
+        .into_iter()
+        .chain(qt_multimedia.iter())
+        .chain(qt_multimedia_widgets.iter())
+    {
         for p in &lib.include_paths {
             if !include_paths.contains(p) {
                 include_paths.push(p.clone());
@@ -31,13 +44,17 @@ fn main() {
         }
     }
 
-    cxx_qt_build::CxxQtBuilder::new()
+    let mut builder = cxx_qt_build::CxxQtBuilder::new()
         .qt_module("Widgets")
         .qt_module("OpenGL")
         .qt_module("OpenGLWidgets")
-        .qt_module("Qml")
-        .qt_module("Multimedia")
-        .qt_module("MultimediaWidgets")
+        .qt_module("Qml");
+    if multimedia_enabled {
+        builder = builder
+            .qt_module("Multimedia")
+            .qt_module("MultimediaWidgets");
+    }
+    builder
         .qml_module(cxx_qt_build::QmlModule {
             uri: "OpenBC",
             version_major: 1,
@@ -49,6 +66,9 @@ fn main() {
         .cc_builder(move |cc| {
             cc.file("src/qt_app.cpp");
             cc.include("src");
+            if multimedia_enabled {
+                cc.define("OPENBC_HAVE_QT_MULTIMEDIA", None);
+            }
             for include_path in &include_paths {
                 cc.include(include_path);
             }

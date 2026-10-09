@@ -21,11 +21,11 @@ install_packages() {
 }
 
 if command -v apt-get >/dev/null 2>&1; then
-    install_packages apt build-essential clang cmake pkg-config qt6-base-dev libssl-dev libssh2-1-dev libvulkan-dev vulkan-tools
+    install_packages apt build-essential clang cmake pkg-config qt6-base-dev qt6-multimedia-dev libssl-dev libssh2-1-dev libvulkan-dev vulkan-tools
 elif command -v dnf >/dev/null 2>&1; then
-    install_packages dnf gcc-c++ clang cmake pkgconf-pkg-config qt6-qtbase-devel openssl-devel libssh2-devel vulkan-loader-devel vulkan-tools
+    install_packages dnf gcc-c++ clang cmake pkgconf-pkg-config qt6-qtbase-devel qt6-qtmultimedia-devel openssl-devel libssh2-devel vulkan-loader-devel vulkan-tools
 elif command -v pacman >/dev/null 2>&1; then
-    install_packages pacman base-devel clang cmake pkgconf qt6-base openssl libssh2 vulkan-headers vulkan-tools
+    install_packages pacman base-devel clang cmake pkgconf qt6-base qt6-multimedia openssl libssh2 vulkan-headers vulkan-tools
 else
     echo "Unsupported Linux package manager. Install Qt6, CMake, a C++17 toolchain, OpenSSL, libssh2, and Vulkan SDK manually." >&2
     exit 1

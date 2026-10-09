@@ -16,6 +16,73 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#ifndef OPENBC_HAVE_QT_MULTIMEDIA
+
+#include <QByteArray>
+#include <QLabel>
+#include <QPixmap>
+#include <QVBoxLayout>
+#include <QWidget>
+#include <functional>
+
+namespace openbc::app {
+
+class MediaPlayerPane : public QWidget {
+public:
+    explicit MediaPlayerPane(const QString& path, QWidget* parent = nullptr) : QWidget(parent), path_(path) {
+        auto* layout = new QVBoxLayout(this);
+        layout->setContentsMargins(6, 2, 6, 2);
+        status_ = new QLabel("Playback unavailable: Qt Multimedia is not installed", this);
+        status_->setAlignment(Qt::AlignCenter);
+        cover_ = new QLabel(this);
+        cover_->setAlignment(Qt::AlignCenter);
+        layout->addWidget(status_);
+        layout->addWidget(cover_);
+        setVisible(!path_.isEmpty());
+    }
+
+    std::function<void()> onVideoChanged;
+    std::function<void()> onStateChanged;
+    std::function<void(qint64)> onSeeked;
+    std::function<void(const QByteArray&)> onCoverReplaced;
+    std::function<void()> onCoverRemoved;
+
+    const QString& path() const { return path_; }
+    void setPath(const QString& path) {
+        path_ = path;
+        setVisible(!path_.isEmpty());
+    }
+    bool hasVideo() const { return false; }
+    bool playing() const { return false; }
+    void play() {}
+    void pause() {}
+    void rewind() {}
+    void seek(qint64) {}
+    void stop() {}
+    void setMuted(bool) {}
+    void setVolume(double) {}
+    void preview() {}
+    void release() {}
+    void reset() {}
+    void setCover(const QPixmap& pixmap) {
+        if (pixmap.isNull()) {
+            cover_->clear();
+            return;
+        }
+        cover_->setPixmap(pixmap.scaledToHeight(160, Qt::SmoothTransformation));
+    }
+    void setCoverEditable(bool) {}
+
+private:
+    QString path_;
+    QLabel* status_ = nullptr;
+    QLabel* cover_ = nullptr;
+};
+
+}  // namespace openbc::app
+
+#else
+
 #include <QAudioOutput>
 #include <QByteArray>
 #include <QDesktopServices>
@@ -287,3 +354,5 @@ private:
 };
 
 }  // namespace openbc::app
+
+#endif

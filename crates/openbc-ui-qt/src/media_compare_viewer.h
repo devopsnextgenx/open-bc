@@ -30,8 +30,11 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
-#include <QAction>
+#ifdef OPENBC_HAVE_QT_MULTIMEDIA
 #include <QAudio>
+#endif
+
+#include <QAction>
 #include <QBrush>
 #include <QByteArray>
 #include <QCheckBox>
@@ -227,6 +230,25 @@ private:
         return p;
     }
 
+    void updatePlaybackActions() {
+        if (!playLeftAction_) return;
+#ifdef OPENBC_HAVE_QT_MULTIMEDIA
+        playLeftAction_->setEnabled(!leftPath_.isEmpty());
+        playRightAction_->setEnabled(!rightPath_.isEmpty());
+        playBothAction_->setEnabled(!leftPath_.isEmpty() && !rightPath_.isEmpty());
+        playLeftAction_->setToolTip("Play / pause the left file (uses the system's media decoders)");
+        playRightAction_->setToolTip("Play / pause the right file (uses the system's media decoders)");
+        playBothAction_->setToolTip("Restart and play both files together (use the crossfade slider to switch between them)");
+#else
+        playLeftAction_->setEnabled(false);
+        playRightAction_->setEnabled(false);
+        playBothAction_->setEnabled(false);
+        playLeftAction_->setToolTip("Playback requires Qt Multimedia");
+        playRightAction_->setToolTip("Playback requires Qt Multimedia");
+        playBothAction_->setToolTip("Playback requires Qt Multimedia");
+#endif
+    }
+
     void commitPath(std::uint8_t side, const QString& raw) {
         QString& current = side == 0 ? leftPath_ : rightPath_;
         PathSelector* selector = side == 0 ? leftSelector_ : rightSelector_;
@@ -245,9 +267,7 @@ private:
         selector->setText(path);
         if (!path.isEmpty()) selector->remember(path);
         pane(side)->setPath(path);
-        playLeftAction_->setEnabled(!leftPath_.isEmpty());
-        playRightAction_->setEnabled(!rightPath_.isEmpty());
-        playBothAction_->setEnabled(!leftPath_.isEmpty() && !rightPath_.isEmpty());
+        updatePlaybackActions();
         reloadAction_->setEnabled(!leftPath_.isEmpty() || !rightPath_.isEmpty());
         if (leftPath_.isEmpty() && rightPath_.isEmpty()) showEmptyState();
         else startSession();
@@ -511,9 +531,13 @@ private:
 
     void applyVolumes() {
         if (!master_ || !crossfade_) return;
+#ifdef OPENBC_HAVE_QT_MULTIMEDIA
         const double master = muteButton_->isChecked()
                                   ? 0.0
                                   : QAudio::convertVolume(master_->value() / 100.0, QAudio::LogarithmicVolumeScale, QAudio::LinearVolumeScale);
+#else
+        const double master = muteButton_->isChecked() ? 0.0 : master_->value() / 100.0;
+#endif
         // Equal-power crossfade: 0 = Left only, 1000 = Right only, centre = both at -3 dB.
         const double t = crossfade_->value() / 1000.0;
         const double gl = std::cos(t * media_detail::kPi / 2.0), gr = std::sin(t * media_detail::kPi / 2.0);
@@ -541,12 +565,7 @@ private:
         playLeftAction_ = bar->addAction(icons::glyph(Glyph::Play), "Play Left");
         playRightAction_ = bar->addAction(icons::glyph(Glyph::Play), "Play Right");
         playBothAction_ = bar->addAction(icons::glyph(Glyph::Play), "Play Both");
-        playLeftAction_->setEnabled(!leftPath_.isEmpty());
-        playRightAction_->setEnabled(!rightPath_.isEmpty());
-        playBothAction_->setEnabled(!leftPath_.isEmpty() && !rightPath_.isEmpty());
-        playLeftAction_->setToolTip("Play / pause the left file (uses the system's media decoders)");
-        playRightAction_->setToolTip("Play / pause the right file (uses the system's media decoders)");
-        playBothAction_->setToolTip("Restart and play both files together (use the crossfade slider to switch between them)");
+        updatePlaybackActions();
         bar->addSeparator();
         saveLeftAction_ = bar->addAction(icons::glyph(Glyph::Save), "Save Left");
         saveRightAction_ = bar->addAction(icons::glyph(Glyph::Save), "Save Right");
@@ -578,6 +597,9 @@ private:
     }
 
     QHBoxLayout* makeMixerStrip() {
+#ifndef OPENBC_HAVE_QT_MULTIMEDIA
+        return new QHBoxLayout;
+#else
         using icons::Glyph;
         auto* mix = new QHBoxLayout;
         mix->setContentsMargins(6, 2, 6, 2);
@@ -630,6 +652,7 @@ private:
             applyVolumes();
         });
         return mix;
+#endif
     }
 
     void updateTopHeight() {
