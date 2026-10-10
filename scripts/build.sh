@@ -88,6 +88,15 @@ OUT_DIR="$BUILD_DIR/packages"
 VERSION="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"
 VERSION="${VERSION:-1.0.0}"
 
+deploy_win_runtime() {
+  echo "=== Copying MinGW/UCRT runtime DLLs into $BUILD_DIR"
+  $DRY && return 0
+  "$BUILD_DIR/openbc-depcheck.exe" "$BUILD_DIR/openbc.exe" | tr -d '\r' \
+    | sed -n 's/^  ok  *\(.*\.dll\) -> [Cc]:\\msys64\\ucrt64\\bin\\.*/\1/p' \
+    | while read -r dll; do cp -n "/c/msys64/ucrt64/bin/$dll" "$BUILD_DIR/" && echo "   + $dll"; done
+}
+if [ "$PLATFORM" = win ]; then deploy_win_runtime; fi
+
 # ---- clean + build --------------------------------------------------------------------------
 if $CLEAN; then echo "=== Cleaning $BUILD_DIR"; run rm -rf "$BUILD_DIR"; fi
 
@@ -176,16 +185,36 @@ pkg_msi() {
   echo "--- copying remaining MinGW/UCRT DLLs until openbc-depcheck reports nothing missing"
   # openbc-depcheck is the same checker as 'openbc --dependency-check'; it reads the PE import
   # tables, so this loop no longer depends on ldd output formats.
+  # if ! $DRY; then
+  #   for _ in 1 2 3 4 5 6 7 8; do
+  #     missing="$("$stage/openbc-depcheck.exe" "$stage/openbc.exe" --dir /c/msys64/ucrt64/bin | sed -n 's/^  MISSING  \(.*\.dll\) (needed by.*/\1/p' || true)"
+  #     [ -z "$missing" ] && break
+  #     while IFS= read -r dll; do
+  #       [ -f "/c/msys64/ucrt64/bin/$dll" ] && cp "/c/msys64/ucrt64/bin/$dll" "$stage/" && echo "   + $dll"
+  #     done <<< "$missing"
+  #   done
+  #   echo "--- final dependency report"
+  #   # Search ONLY the staging folder (plus Windows itself) so the report reflects what the MSI ships.
+  #   PATH="/c/Windows/System32" "$stage/openbc-depcheck.exe" "$stage/openbc.exe" || {
+  #     echo "ERROR: the package would be missing the DLLs listed above." >&2; exit 2; }
+  # fi
+
+  echo "--- copying remaining MinGW/UCRT DLLs"
   if ! $DRY; then
-    for _ in 1 2 3 4 5 6 7 8; do
-      missing="$("$stage/openbc-depcheck.exe" "$stage/openbc.exe" --dir /c/msys64/ucrt64/bin | sed -n 's/^  MISSING  \(.*\.dll\) (needed by.*/\1/p' || true)"
-      [ -z "$missing" ] && break
-      while IFS= read -r dll; do
-        [ -f "/c/msys64/ucrt64/bin/$dll" ] && cp "/c/msys64/ucrt64/bin/$dll" "$stage/" && echo "   + $dll"
-      done <<< "$missing"
+    UCRT=/c/msys64/ucrt64/bin
+    for _ in $(seq 1 10); do
+      copied=0
+      while IFS= read -r bin; do
+        while IFS= read -r dll; do
+          [ -z "$dll" ] && continue
+          if [ ! -f "$stage/$dll" ] && [ -f "$UCRT/$dll" ]; then
+            cp "$UCRT/$dll" "$stage/" && echo "   + $dll" && copied=1
+          fi
+        done < <(objdump -p "$bin" 2>/dev/null | tr -d '\r' | sed -n 's/^[[:space:]]*DLL Name: //p')
+      done < <(find "$stage" -type f \( -iname '*.exe' -o -iname '*.dll' \))
+      [ "$copied" = 0 ] && break
     done
     echo "--- final dependency report"
-    # Search ONLY the staging folder (plus Windows itself) so the report reflects what the MSI ships.
     PATH="/c/Windows/System32" "$stage/openbc-depcheck.exe" "$stage/openbc.exe" || {
       echo "ERROR: the package would be missing the DLLs listed above." >&2; exit 2; }
   fi
