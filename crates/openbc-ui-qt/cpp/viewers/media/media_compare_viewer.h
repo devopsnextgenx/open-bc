@@ -23,10 +23,15 @@
 //
 // Editing: rows the backend flags as editable (bit 2) can be edited by
 // double-clicking the Left/Right cell. Edits (and cover replace/remove) stay
-// pending - shown in gold italics - until "Save Left" / "Save Right". Saving
-// releases that side's player (file lock on Windows), asks the backend to
-// rewrite the file, and the backend answers with a fresh Result (a failed save
-// is reported through that side's error text, "Save failed: ...").
+// pending until saved. A pending cell is tinted green - the same tint text
+// compare paints on edited lines - and the side's Save button (next to its path)
+// turns blue. Save writes with the side's button, "Save Left" / "Save Right", or
+// Ctrl+S, which saves the ACTIVE side (the column of the current row, or the
+// player pane that last had focus). Saving releases that side's player (file
+// lock on Windows), asks the backend to rewrite the file, and the backend answers
+// with a fresh Result (a failed save is reported through that side's error text,
+// "Save failed: ..."). Closing the tab / Reload / changing a path with pending
+// edits shows the shared two-sided UnsavedChangesDialog.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -37,6 +42,7 @@
 #include <QAction>
 #include <QBrush>
 #include <QByteArray>
+#include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
@@ -48,12 +54,15 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMap>
+#include <QKeySequence>
 #include <QMessageBox>
 #include <QPixmap>
+#include <QPointer>
 #include <QPushButton>
 #include <QSlider>
 #include <QShowEvent>
 #include <QSplitter>
+#include <QStyle>
 #include <QStyledItemDelegate>
 #include <QTimer>
 #include <QToolBar>
@@ -72,6 +81,7 @@
 #include "viewers/media/media_player_pane.h"
 #include "common/path_selector.h"
 #include "common/remote_selector.h"
+#include "common/unsaved_changes_dialog.h"
 #include "style/qt_style.h"
 
 namespace openbc::app {
@@ -133,13 +143,16 @@ public:
     QString leftText() const { return leftPath_; }
     QString rightText() const { return rightPath_; }
 
-    // For the tab host: call before closing the tab; returns false if the user wants to keep editing.
+    // For the tab host: call before closing the tab. confirmClose() shows the two-sided
+    // dialog when there are unsaved edits and returns false if the user cancels.
     bool hasUnsavedChanges() const { return dirty(0) || dirty(1); }
     bool confirmClose() { return confirmDiscard(); }
 
     std::function<void()> onHomeRequested;
     std::function<void()> onSessionsRequested;
     std::function<void()> onTitleChanged;
+
+    QList<QAction*> editMenuItems() const { return {saveAction_, saveLeftAction_, saveRightAction_}; }
 
     QList<QAction*> actionsMenuItems() const {
         return {playLeftAction_, playRightAction_, playBothAction_, saveLeftAction_, saveRightAction_, reloadAction_};
@@ -210,16 +223,22 @@ private:
             summary_->setText(event.message);
         } else if (event.kind == OPENBC_EV_RESULT) {
             view_ = std::static_pointer_cast<OpenBcMediaView>(event.handle);
+            bool wasSave = false, saveOk = true;
+            QString saveError;
             if (savingSide_ >= 0) {
                 // A save re-read that side: drop its pending edits unless the backend says the save failed.
                 const auto side = static_cast<std::uint8_t>(savingSide_);
                 savingSide_ = -1;
-                if (!sideError(side).startsWith("Save failed")) clearPending(side);
+                wasSave = true;
+                saveError = sideError(side);
+                saveOk = !saveError.startsWith("Save failed");
+                if (saveOk) clearPending(side);
             } else {
                 clearPending(0);  // fresh session / reload
                 clearPending(1);
             }
             rebuild();
+            if (wasSave) finishSave(saveOk, saveOk ? QString() : saveError);  // after rebuild: the dialog sees final state
         }
     }
 
@@ -275,9 +294,32 @@ private:
         else startSession();
     }
 
+    // One dialog for both sides: Save per side (only for a side with changes), Continue, Cancel.
     bool confirmDiscard() {
+        commitEditors();
         if (!hasUnsavedChanges()) return true;
-        return QMessageBox::question(this, "Unsaved metadata", "Discard the unsaved metadata edits?") == QMessageBox::Yes;
+        return confirmUnsavedChanges(this, {leftPath_, changeCount(0)}, {rightPath_, changeCount(1)},
+                                     [this](bool left, SaveDone done) { saveSide(left ? 0 : 1, std::move(done)); });
+    }
+
+    int changeCount(std::uint8_t side) const { return edits_[side].size() + (coverMode_[side] != CoverKeep ? 1 : 0); }
+
+    // A cell editor that is still open has not reached itemChanged yet: leaving it commits the text.
+    void commitEditors() {
+        QWidget* focus = QApplication::focusWidget();
+        if (focus && focus != tree_ && tree_->isAncestorOf(focus)) tree_->setFocus();
+    }
+
+    // Ctrl+S: the side of the current row's column, or the player pane that last had focus.
+    void saveActiveSide() {
+        commitEditors();
+        const std::uint8_t side = static_cast<std::uint8_t>(activeSide_);
+        const QString name = side == 0 ? "left" : "right";
+        if (!dirty(side)) {
+            summary_->setText("Nothing to save on the " + name + " side.");
+            return;
+        }
+        saveSide(side);
     }
 
     // ---- backend string helpers (pointer is fetched BEFORE the length is read) ----
@@ -353,7 +395,22 @@ private:
     void updateSaveActions() {
         saveLeftAction_->setEnabled(session_ && dirty(0));
         saveRightAction_->setEnabled(session_ && dirty(1));
-        const int pending = edits_[0].size() + edits_[1].size() + (coverMode_[0] != CoverKeep) + (coverMode_[1] != CoverKeep);
+        // Blue save button next to each path while that side has edits - the same cue text compare gives.
+        static const QColor kDirtyBlue(0x4e, 0x9c, 0xff);
+        static const QColor kCleanInk(0xdd, 0xe0, 0xee);
+        for (std::uint8_t s = 0; s < 2; ++s) {
+            if (!saveBtn_[s]) continue;
+            const bool d = dirty(s);
+            saveBtn_[s]->setEnabled(session_ && d);
+            saveBtn_[s]->setIcon(icons::saveIcon(d ? kDirtyBlue : kCleanInk));
+            saveBtn_[s]->setProperty("dirty", d);
+            saveBtn_[s]->setToolTip(d ? "Unsaved changes on this side - click or Ctrl+S to write to disk"
+                                      : (s == 0 ? "Save left file (Ctrl+S while this side is active)"
+                                                : "Save right file (Ctrl+S while this side is active)"));
+            saveBtn_[s]->style()->unpolish(saveBtn_[s]);
+            saveBtn_[s]->style()->polish(saveBtn_[s]);
+        }
+        const int pending = changeCount(0) + changeCount(1);
         pendingLabel_->setText(pending ? QString("%1 unsaved change(s)").arg(pending) : QString());
     }
 
@@ -362,7 +419,7 @@ private:
         using namespace media_detail;
         const QString dash = QStringLiteral("-");
         const QBrush differBrush(QColor(0xe5, 0x53, 0x4b, 56));
-        const QBrush pendingBrush(QColor(0xf2, 0xc0, 0x4a));
+        const QBrush editedBrush(QColor(40, 170, 90, 170));  // same tint text compare paints on edited lines
         const Cell* cells[2] = {&l, &r};
         item->setText(1, l.shown ? l.text : dash);
         item->setText(2, r.shown ? r.text : dash);
@@ -371,15 +428,16 @@ private:
         for (int c = 0; c < 2; ++c) {
             item->setData(c + 1, kShownRole, cells[c]->shown);
             QFont f = tree_->font();
-            f.setItalic(cells[c]->pending);
             f.setBold(differs);
             item->setFont(c + 1, f);
-            item->setForeground(c + 1, cells[c]->pending ? pendingBrush : QBrush());
+            item->setForeground(c + 1, QBrush());
         }
         QFont key = tree_->font();
         key.setBold(differs);
         item->setFont(0, key);
         for (int c = 0; c < 3; ++c) item->setBackground(c, differs ? differBrush : QBrush());
+        for (int c = 0; c < 2; ++c)
+            if (cells[c]->pending) item->setBackground(c + 1, editedBrush);  // edited side's cell: green
     }
 
     void onItemChanged(QTreeWidgetItem* item, int col) {
@@ -407,8 +465,16 @@ private:
 
     // ---- saving ---------------------------------------------------------------
 
-    void saveSide(std::uint8_t side) {
-        if (!session_ || !dirty(side)) return;
+    // `done` (dialog / Ctrl+S) is told once the backend has rewritten the file and re-read it.
+    void saveSide(std::uint8_t side, SaveDone done = {}) {
+        if (!dirty(side)) {
+            if (done) done(true, {});
+            return;
+        }
+        if (!session_) {
+            if (done) done(false, "No open comparison.");
+            return;
+        }
         std::vector<QByteArray> groups, keys, values;
         std::vector<const char*> groupPtrs, keyPtrs, valuePtrs;
         for (auto it = edits_[side].cbegin(); it != edits_[side].cend(); ++it) {
@@ -428,6 +494,7 @@ private:
         pane(side)->release();  // the player must not hold the file open while it is rewritten
         previewed_[side] = false;
         savingSide_ = side;
+        saveDone_ = std::move(done);
         summary_->setText("Saving " + QFileInfo(side == 0 ? leftPath_ : rightPath_).fileName() + "...");
         const std::uint8_t accepted = openbc_media_save(
             session_, side, groupPtrs.size(), groupPtrs.data(), keyPtrs.data(), valuePtrs.data(),
@@ -436,7 +503,14 @@ private:
         if (!accepted) {
             savingSide_ = -1;
             summary_->setText("Could not start saving (session busy or closed)");
+            finishSave(false, "Could not start saving (session busy or closed).");
         }
+    }
+
+    void finishSave(bool ok, const QString& error) {
+        SaveDone done;
+        std::swap(done, saveDone_);
+        if (done) done(ok, error);
     }
 
     // ---- table ------------------------------------------------------------------
@@ -575,6 +649,12 @@ private:
         saveRightAction_->setToolTip("Write the edited tags / cover of the right file");
         saveLeftAction_->setEnabled(false);
         saveRightAction_->setEnabled(false);
+        // Ctrl+S saves the active side; scoped to this tab (and its children) like text compare's save action.
+        saveAction_ = new QAction(icons::glyph(Glyph::Save), "Save", this);
+        saveAction_->setShortcut(QKeySequence::Save);
+        saveAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        saveAction_->setToolTip("Save the active side (the side of the current row's column)");
+        addAction(saveAction_);
         bar->addSeparator();
         reloadAction_ = bar->addAction(icons::glyph(Glyph::Refresh), "Reload");
         reloadAction_->setEnabled(!leftPath_.isEmpty() || !rightPath_.isEmpty());
@@ -686,8 +766,21 @@ private:
         paths->setContentsMargins(6, 2, 6, 2);
         leftSelector_ = makeSelector("Left", leftPath_, 0);
         rightSelector_ = makeSelector("Right", rightPath_, 1);
+        for (std::uint8_t side = 0; side < 2; ++side) {
+            saveBtn_[side] = new QToolButton(this);
+            saveBtn_[side]->setObjectName("saveSideBtn");  // qt_style.h paints it blue while property dirty=true
+            saveBtn_[side]->setIcon(icons::saveIcon(QColor(0xdd, 0xe0, 0xee)));
+            saveBtn_[side]->setIconSize(QSize(15, 15));
+            saveBtn_[side]->setCursor(Qt::PointingHandCursor);
+            saveBtn_[side]->setEnabled(false);
+            saveBtn_[side]->setToolTip(side == 0 ? "Save left file (Ctrl+S while this side is active)"
+                                                 : "Save right file (Ctrl+S while this side is active)");
+            QObject::connect(saveBtn_[side], &QToolButton::clicked, this, [this, side]() { commitEditors(); saveSide(side); });
+        }
         paths->addWidget(leftSelector_, 1);
+        paths->addWidget(saveBtn_[0]);
         paths->addWidget(rightSelector_, 1);
+        paths->addWidget(saveBtn_[1]);
         root->addLayout(paths);
 
         // ---- top half: preview players + mixer strip -----------------------
@@ -724,7 +817,7 @@ private:
         header->setContentsMargins(6, 2, 6, 2);
         summary_ = new QLabel("Metadata", this);
         pendingLabel_ = new QLabel(this);
-        pendingLabel_->setStyleSheet("color:#f2c04a;");
+        pendingLabel_->setStyleSheet("color:#4e9cff;");  // blue = needs saving, like the save buttons
         onlyDifferences_ = new QCheckBox("Differences only", this);
         auto* copy = new QPushButton("Copy", this);
         copy->setToolTip("Copy all rows to the clipboard (tab separated)");
@@ -795,8 +888,23 @@ private:
             tree_->editItem(item, col);
         });
         QObject::connect(tree_, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int col) { onItemChanged(item, col); });
-        QObject::connect(saveLeftAction_, &QAction::triggered, this, [this]() { saveSide(0); });
-        QObject::connect(saveRightAction_, &QAction::triggered, this, [this]() { saveSide(1); });
+        QObject::connect(saveLeftAction_, &QAction::triggered, this, [this]() { commitEditors(); saveSide(0); });
+        QObject::connect(saveRightAction_, &QAction::triggered, this, [this]() { commitEditors(); saveSide(1); });
+        QObject::connect(saveAction_, &QAction::triggered, this, [this]() { saveActiveSide(); });
+
+        // Ctrl+S target: the column of the row being worked on, else the player pane that last had focus.
+        QObject::connect(tree_, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem*, int col) {
+            if (col == 1 || col == 2) activeSide_ = col - 1;
+        });
+        QObject::connect(tree_, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem*, QTreeWidgetItem*) {
+            const int col = tree_->currentColumn();
+            if (col == 1 || col == 2) activeSide_ = col - 1;
+        });
+        QObject::connect(qApp, &QApplication::focusChanged, this, [this](QWidget*, QWidget* now) {
+            if (!now) return;
+            if (leftPane_ == now || leftPane_->isAncestorOf(now) || leftSelector_ == now || leftSelector_->isAncestorOf(now)) activeSide_ = 0;
+            else if (rightPane_ == now || rightPane_->isAncestorOf(now) || rightSelector_ == now || rightSelector_->isAncestorOf(now)) activeSide_ = 1;
+        });
         leftPane_->onCoverReplaced = [this](const QByteArray& bytes) { setPendingCover(0, CoverReplace, bytes); };
         rightPane_->onCoverReplaced = [this](const QByteArray& bytes) { setPendingCover(1, CoverReplace, bytes); };
         leftPane_->onCoverRemoved = [this]() { setPendingCover(0, CoverRemove); };
@@ -850,6 +958,8 @@ private:
     bool populating_ = false;
     bool sideEditable_[2] = {false, false};
     int savingSide_ = -1;
+    int activeSide_ = 0;     // side of the current column / last focused pane; target of Ctrl+S
+    SaveDone saveDone_;      // completion of the save currently in flight (dialog / Ctrl+S)
     Edits edits_[2];
     CoverMode coverMode_[2] = {CoverKeep, CoverKeep};
     QByteArray coverBytes_[2];
@@ -859,9 +969,11 @@ private:
     QAction* playLeftAction_ = nullptr;
     QAction* playRightAction_ = nullptr;
     QAction* playBothAction_ = nullptr;
+    QAction* saveAction_ = nullptr;
     QAction* saveLeftAction_ = nullptr;
     QAction* saveRightAction_ = nullptr;
     QAction* reloadAction_ = nullptr;
+    QToolButton* saveBtn_[2] = {nullptr, nullptr};
     PathSelector* leftSelector_ = nullptr;
     PathSelector* rightSelector_ = nullptr;
     MediaPlayerPane* leftPane_ = nullptr;

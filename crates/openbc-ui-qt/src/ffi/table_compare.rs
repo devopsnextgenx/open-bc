@@ -231,3 +231,30 @@ pub unsafe extern "C" fn openbc_table_side_error(v: *const ViewHandle, side: u8,
     let view = handle_ref!(v, out_opt_str(None, len));
     out_opt_str(view.sides[side_of(side)].error.as_deref(), len)
 }
+// ------------------------------------------------------------------------ cell editing
+
+/// Type `utf8_text` into one cell of `side` (0 left / 1 right). `row` is a diff row (the same
+/// index `openbc_table_cell` takes), `col` a column. Returns 1 when the backend took the
+/// command, 0 when it is busy (the caller may retry). The re-diffed view arrives as a Result.
+///
+/// # Safety
+/// `s` valid; `utf8_text` null or NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_table_set_cell(s: *mut TableSession, side: u8, row: usize, col: usize, utf8_text: *const c_char) -> u8 {
+    let session = handle_ref!(s, 0);
+    let text = if utf8_text.is_null() { String::new() } else { std::ffi::CStr::from_ptr(utf8_text).to_string_lossy().into_owned() };
+    let side = if side == 0 { Side::Left } else { Side::Right };
+    u8::from(session.handle.send(TableCommand::SetCell { side, row, col, text }))
+}
+
+/// Non-zero when this side's row was typed into since load / last save.
+///
+/// # Safety
+/// `v` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_table_row_edited(v: *const ViewHandle, row: usize, side: u8) -> u8 {
+    let view = handle_ref!(v, 0);
+    let Some(diff) = view.diff.get(row) else { return 0 };
+    let number = if side == 0 { diff.left_row } else { diff.right_row } as usize;
+    u8::from(number > 0 && view.edited[usize::from(side != 0)].contains(&(number - 1)))
+}

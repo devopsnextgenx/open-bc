@@ -56,6 +56,11 @@ const uint8_t* openbc_table_sheet_name(const OpenBcTableView*, uint8_t side, siz
 int32_t openbc_table_selected_sheet(const OpenBcTableView*, uint8_t side);
 uint32_t openbc_table_side_flags(const OpenBcTableView*, uint8_t side);  // 1 loaded 2 editable 4 dirty
 const uint8_t* openbc_table_side_error(const OpenBcTableView*, uint8_t side, size_t* len);
+/* Replace one cell of `side` (0 left / 1 right). `row` = view row index, `col` = column.
+   Returns 1 if the command was accepted, 0 if the session is busy (same contract as openbc_table_copy). */
+uint8_t openbc_table_set_cell(OpenBcTableSession*, uint8_t side, size_t row, size_t col, const char* utf8_text);
+/* Non-zero when this side's row was changed since load / last save (typed edit OR copied in). */
+uint8_t openbc_table_row_edited(const OpenBcTableView*, size_t row, uint8_t side);
 
 // --------------------------------------------------------------- registry
 struct OpenBcRegistrySession;
@@ -82,6 +87,8 @@ size_t openbc_registry_group_start(const OpenBcRegistryView*, size_t group);
 size_t openbc_registry_group_end(const OpenBcRegistryView*, size_t group);
 uint32_t openbc_registry_side_flags(const OpenBcRegistryView*, uint8_t side);
 const uint8_t* openbc_registry_side_error(const OpenBcRegistryView*, uint8_t side, size_t* len);
+uint8_t openbc_registry_set_value(OpenBcRegistrySession*, size_t row, uint8_t side, const char* utf8_data);
+uint8_t openbc_registry_row_edited(const OpenBcRegistryView*, size_t row, uint8_t side);
 
 // -------------------------------------------------------------------- hex
 struct OpenBcHexSession;
@@ -132,4 +139,5 @@ extern "C" std::uint8_t openbc_media_save(OpenBcMediaSession* session, std::uint
                                           const char* const* values /* null entry = remove tag */,
                                           std::uint8_t cover_mode /* 0 keep, 1 replace, 2 remove */,
                                           const std::uint8_t* cover, std::size_t cover_len);
+
 }  // extern "C"

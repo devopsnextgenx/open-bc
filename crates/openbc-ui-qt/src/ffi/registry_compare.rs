@@ -192,3 +192,30 @@ pub unsafe extern "C" fn openbc_registry_side_error(v: *const RegistryViewHandle
     let view = handle_ref!(v, out_opt_str(None, len));
     out_opt_str(view.view.sides[usize::from(side != 0)].error.as_deref(), len)
 }
+// ------------------------------------------------------------------------ value editing
+
+/// Type new data into the value of diff row `row` on `side` (0 left / 1 right), in the form
+/// `openbc_registry_row_data` shows it. Returns 1 when the backend took the command, 0 when it
+/// is busy. The re-diffed view arrives as a Result; a bad input arrives as an Error event.
+///
+/// # Safety
+/// `s` valid; `utf8_data` null or NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_registry_set_value(s: *mut RegistrySession, row: usize, side: u8, utf8_data: *const c_char) -> u8 {
+    let session = handle_ref!(s, 0);
+    let text = if utf8_data.is_null() { String::new() } else { std::ffi::CStr::from_ptr(utf8_data).to_string_lossy().into_owned() };
+    let side = if side == 0 { Side::Left } else { Side::Right };
+    u8::from(session.handle.send(RegistryCommand::SetValue { side, row, text }))
+}
+
+/// Non-zero when this side's row was typed into or copied into since load / last save.
+///
+/// # Safety
+/// `v` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_registry_row_edited(v: *const RegistryViewHandle, row: usize, side: u8) -> u8 {
+    let view = handle_ref!(v, 0);
+    let Some(r) = view.view.rows.get(row) else { return 0 };
+    let id = (r.key.to_lowercase(), r.name.as_deref().map(str::to_lowercase).unwrap_or_default());
+    u8::from(view.view.edited[usize::from(side != 0)].contains(&id))
+}

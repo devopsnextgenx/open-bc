@@ -55,6 +55,7 @@
 #include "common/line_number_editor.h"
 #include "common/minimap.h"
 #include "common/path_selector.h"
+#include "common/unsaved_changes_dialog.h"
 #include "style/qt_style.h"
 #include "remote/remote_profile_store.h"
 #include "remote/remote_vfs_bridge.h"
@@ -84,6 +85,11 @@ public:
     }
 
     QString instrumentationSessionId() const { return instrumentationSessionId_; }
+
+    // For the tab host: call before closing the tab. confirmClose() shows the shared two-sided
+    // UnsavedChangesDialog (same one table / registry / media use) and returns false if the user cancels.
+    bool hasUnsavedChanges() const { return sideDirty(true) || sideDirty(false); }
+    bool confirmClose() { return confirmDiscard(); }
 
     std::function<void()> onHomeRequested;
     std::function<void()> onSessionsRequested;
@@ -410,7 +416,16 @@ private:
                                     /*showUp=*/false, "All files (*.*)", /*enableRemote=*/true,
                                     &sharedVfsBridge());
         selector->combo()->setObjectName("sidePath");
-        selector->onBrowsed = [this, left](const QString& path) { loadSide(left, path); };
+        selector->onBrowsed = [this, left](const QString& path) {
+            // Loading replaces this side's text: offer to save first (both sides are listed, like on close).
+            if (sideDirty(left) && !confirmDiscard()) {
+                PathSelector* sel = left ? leftSelector_ : rightSelector_;
+                const QSignalBlocker block(sel->combo());
+                sel->combo()->setEditText(left ? leftPath_ : rightPath_);  // put the old path back
+                return;
+            }
+            loadSide(left, path);
+        };
         pathRow->addWidget(selector, 1);
         saveButton = new QToolButton(frame);
         saveButton->setObjectName("saveSideBtn");
@@ -1650,7 +1665,26 @@ private:
         });
     }
 
-    void saveSide(bool left) {
+    bool sideDirty(bool left) const {
+        return (left ? leftUnsaved_ : rightUnsaved_) || !(left ? leftDirtyLines_ : rightDirtyLines_).isEmpty();
+    }
+
+    int changeCount(bool left) const {
+        if (!sideDirty(left)) return 0;
+        return qMax<int>((left ? leftDirtyLines_ : rightDirtyLines_).size(), 1);  // unsaved but not line-countable still counts as one
+    }
+
+    // Shows the shared dialog when a side has unsaved edits. true = caller may proceed.
+    bool confirmDiscard() {
+        flushPendingEdits();
+        syncFromEditors();
+        if (!sideDirty(true) && !sideDirty(false)) return true;
+        return confirmUnsavedChanges(this, {leftPath_, changeCount(true)}, {rightPath_, changeCount(false)},
+                                     [this](bool left, SaveDone done) { saveSide(left, std::move(done)); });
+    }
+
+    // `done` (optional) is called exactly once: immediately for local files, after the write for remote ones.
+    void saveSide(bool left, SaveDone done = {}) {
         const QString& path = left ? leftPath_ : rightPath_;
         RemoteProfile remoteProfile;
         if (RemoteProfileStore::findProfileForPath(path, &remoteProfile)) {
@@ -1660,15 +1694,17 @@ private:
             const QPointer<TextCompareViewer> view(this);
             status_->setText("Saving " + QFileInfo(relativePath).fileName() + "...");
             QThreadPool::globalInstance()->start([view, left, path, remoteProfile, relativePath,
-                                                  contents, bytes]() {
+                                                  contents, bytes, done]() {
                 QString error;
                 const bool saved = sharedVfsBridge().remoteWriteFile(
                     remoteProfile, relativePath, bytes, &error);
-                QMetaObject::invokeMethod(qApp, [view, left, path, contents, saved, error]() {
-                    if (!view) return;
+                QMetaObject::invokeMethod(qApp, [view, left, path, contents, saved, error, done]() {
+                    if (!view) { if (done) done(false, "The tab was closed."); return; }
                     if (!saved) {
-                        view->status_->setText("Could not save " + path +
-                                               (error.isEmpty() ? QString() : " (" + error + ")"));
+                        const QString reason = "Could not save " + path +
+                                               (error.isEmpty() ? QString() : " (" + error + ")");
+                        view->status_->setText(reason);
+                        if (done) done(false, reason);
                         return;
                     }
                     QStringList& current = left ? view->leftOriginal_ : view->rightOriginal_;
@@ -1679,26 +1715,30 @@ private:
                         view->refreshSideHeader(left);
                     }
                     view->status_->setText(QFileInfo(path).fileName() + " saved.");
+                    if (done) done(true, QString());
                 }, Qt::QueuedConnection);
             });
             return;
         }
         QFile file(path);
         if (path.isEmpty() || !file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            status_->setText("Could not save " + (path.isEmpty() ? QString("(no file)") : path));
+            const QString reason = "Could not save " + (path.isEmpty() ? QString("(no file)") : path);
+            status_->setText(reason);
+            if (done) done(false, reason);
             return;
         }
         QTextStream out(&file);
         out << (left ? leftOriginal_ : rightOriginal_).join('\n');
         file.close();
         (left ? leftDirtyLines_ : rightDirtyLines_).clear();
-        if (left) leftUnsaved_ = false; else rightUnsaved_ = false; 
+        if (left) leftUnsaved_ = false; else rightUnsaved_ = false;
         refreshDirtyIndicators();
         refreshSideHeader(left);
         status_->setText(QFileInfo(path).fileName() + " saved.");
         // Deliberately no history push: saving must not wipe the undo/redo
         // stacks, otherwise Ctrl+Z after a save would have nothing to walk
         // back to.
+        if (done) done(true, QString());
     }
 
     void applyPreviewEdit(bool left, const QString& text) {

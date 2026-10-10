@@ -1,10 +1,11 @@
 //! Registry compare actor: loads `.reg` exports, diffs keys/values, applies copy edits.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use openbc_core::registry_compare::{apply_reg_copy, diff_reg, group_reg_rows, parse_reg, write_reg, RegCompareOptions, RegDiffRow, RegFile};
+use openbc_core::registry_compare::{apply_reg_copy, diff_reg, group_reg_rows, parse_reg, set_reg_value_text, write_reg, RegCompareOptions, RegDiffRow, RegFile, RegRowKind};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
@@ -17,6 +18,9 @@ pub enum RegistryCommand {
     SetOptions(RegCompareOptions),
     Reload,
     Copy { start: usize, end: usize, to_right: bool },
+    /// Type new data into the value of diff row `row` on `side`, in the form `RegValue::display`
+    /// shows it. The value keeps its kind; the side turns dirty.
+    SetValue { side: Side, row: usize, text: String },
     /// `None` saves in place; `Some` writes a new `.reg` (UTF-16, v5.00).
     Save { side: Side, path: Option<PathBuf> },
 }
@@ -34,6 +38,9 @@ pub struct RegistryView {
     /// Inclusive `(start, end)` row ranges, one per copy arrow.
     pub groups: Vec<(usize, usize)>,
     pub sides: [RegSideInfo; 2],
+    /// Per side: `(lower-cased key, lower-cased value name or empty for the key row)` touched by
+    /// typing or a copy since load / last save.
+    pub edited: [HashSet<(String, String)>; 2],
 }
 
 #[derive(Debug)]
@@ -53,7 +60,7 @@ pub fn spawn_registry_compare(
     left: PathBuf,
     right: PathBuf,
 ) -> (RegistryCompareHandle, mpsc::Receiver<RegistryEvent>) {
-    let side = |path| RegSide { path, file: None, error: None, dirty: false };
+    let side = |path| RegSide { path, file: None, error: None, dirty: false, edited: HashSet::new() };
     spawn_batched(rt, |etx| Actor { source, sides: [side(left), side(right)], options: RegCompareOptions::default(), last_rows: Vec::new(), etx })
 }
 
@@ -62,6 +69,11 @@ struct RegSide {
     file: Option<RegFile>,
     error: Option<String>,
     dirty: bool,
+    edited: HashSet<(String, String)>,
+}
+
+fn edit_id(key: &str, name: Option<&str>) -> (String, String) {
+    (key.to_lowercase(), name.map(str::to_lowercase).unwrap_or_default())
 }
 
 struct Actor {
@@ -91,6 +103,7 @@ impl BatchedActor for Actor {
                 self.copy(start, end, to_right);
                 true
             }
+            RegistryCommand::SetValue { side, row, text } => self.set_value(side, row, text).await,
             RegistryCommand::Save { side, path } => self.save(side, path).await,
         }
     }
@@ -104,7 +117,7 @@ impl BatchedActor for Actor {
         };
         self.last_rows = rows.clone();
         let info = |s: &RegSide| RegSideInfo { error: s.error.clone(), loaded: s.file.is_some(), dirty: s.dirty };
-        let view = RegistryView { groups: group_reg_rows(&rows), rows, sides: [info(&self.sides[0]), info(&self.sides[1])] };
+        let view = RegistryView { groups: group_reg_rows(&rows), rows, sides: [info(&self.sides[0]), info(&self.sides[1])], edited: [self.sides[0].edited.clone(), self.sides[1].edited.clone()] };
         self.emit(RegistryEvent::Result(Arc::new(view))).await
     }
 }
@@ -127,6 +140,7 @@ impl Actor {
             let loaded = self.load_side(idx).await;
             let side = &mut self.sides[idx];
             side.dirty = false;
+            side.edited.clear();
             match loaded {
                 Ok(file) => (side.file, side.error) = (file, None),
                 Err(e) => (side.file, side.error) = (None, Some(e)),
@@ -144,6 +158,34 @@ impl Actor {
         apply_reg_copy(&mut l, &mut r, &self.last_rows, start, end, to_right);
         (self.sides[0].file, self.sides[1].file) = (Some(l), Some(r));
         self.sides[dst].dirty = true;
+        for row in self.last_rows.iter().skip(start).take(end.saturating_sub(start) + 1) {
+            if row.kind != RegRowKind::Equal {
+                self.sides[dst].edited.insert(edit_id(&row.key, row.name.as_deref()));
+            }
+        }
+    }
+
+    async fn set_value(&mut self, side: Side, row: usize, text: String) -> bool {
+        let idx = side.index();
+        let Some(diff) = self.last_rows.get(row).cloned() else { return true };
+        let present = if idx == 0 { diff.left.is_some() } else { diff.right.is_some() };
+        let (Some(name), true) = (diff.name.as_deref(), present) else {
+            let msg = format!("That row has no value on the {} side; copy it across first", side.label());
+            return self.emit(RegistryEvent::Error(msg)).await;
+        };
+        let Some(file) = self.sides[idx].file.as_mut() else {
+            return self.emit(RegistryEvent::Error(format!("{} side has nothing to edit", side.label()))).await;
+        };
+        match set_reg_value_text(file, &diff.key, name, &text) {
+            Ok(changed) => {
+                if changed {
+                    self.sides[idx].dirty = true;
+                    self.sides[idx].edited.insert(edit_id(&diff.key, Some(name)));
+                }
+                true
+            }
+            Err(message) => self.emit(RegistryEvent::Error(message)).await,
+        }
     }
 
     async fn save(&mut self, side: Side, path: Option<PathBuf>) -> bool {
@@ -161,6 +203,7 @@ impl Actor {
             Ok(()) => {
                 if in_place {
                     self.sides[side.index()].dirty = false;
+                    self.sides[side.index()].edited.clear();
                 }
                 self.emit(RegistryEvent::Saved { side, path: target.display().to_string() }).await
             }

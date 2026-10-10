@@ -1,5 +1,6 @@
 //! Table compare actor: loads CSV/spreadsheets, aligns rows, applies copy edits, saves CSV.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -32,6 +33,9 @@ pub enum TableCommand {
     Reload,
     /// Make the other side match for diff rows `start..=end`.
     Copy { start: usize, end: usize, to_right: bool },
+    /// Type `text` into one cell. `row` is a diff row (as in `TableView::diff`), `col` a column.
+    /// CSV sides only; the side turns dirty and the row is reported in `TableView::edited`.
+    SetCell { side: Side, row: usize, col: usize, text: String },
     /// `path: None` saves in place (CSV only); `Some` exports the selected sheet as CSV.
     Save { side: Side, path: Option<PathBuf> },
 }
@@ -55,6 +59,9 @@ pub struct TableView {
     pub groups: Vec<DiffGroup>,
     pub sides: [SideInfo; 2],
     pub columns: usize,
+    /// Per side: 0-based sheet rows typed into since load / last save. Row numbers shift when
+    /// rows are copied across, so a copy clears the destination's marks (the side stays dirty).
+    pub edited: [HashSet<usize>; 2],
 }
 
 #[derive(Debug)]
@@ -92,11 +99,12 @@ struct SideState {
     selected: Option<usize>,
     error: Option<String>,
     dirty: bool,
+    edited: HashSet<usize>,
 }
 
 impl SideState {
     fn new(path: PathBuf) -> Self {
-        Self { path, workbook: None, selected: None, error: None, dirty: false }
+        Self { path, workbook: None, selected: None, error: None, dirty: false, edited: HashSet::new() }
     }
 
     fn table(&self) -> Arc<Table> {
@@ -167,6 +175,7 @@ impl BatchedActor for Actor {
                 self.copy(start, end, to_right);
                 true
             }
+            TableCommand::SetCell { side, row, col, text } => self.set_cell(side, row, col, text).await,
             TableCommand::Save { side, path } => self.save(side, path).await,
         }
     }
@@ -184,6 +193,7 @@ impl BatchedActor for Actor {
             groups: group_changed(&diff),
             diff,
             sides: [self.sides[0].info(), self.sides[1].info()],
+            edited: [self.sides[0].edited.clone(), self.sides[1].edited.clone()],
             left,
             right,
         };
@@ -200,6 +210,9 @@ impl Actor {
         for (side, pick) in self.sides.iter_mut().zip([left, right]) {
             let count = side.workbook.as_ref().map_or(0, |w| w.sheets.len());
             if let Some(i) = pick.filter(|&i| i < count) {
+                if side.selected != Some(i) {
+                    side.edited.clear();
+                }
                 side.selected = Some(i);
             }
         }
@@ -220,6 +233,7 @@ impl Actor {
             let loaded = self.load_side(idx).await; // one unreadable side never blocks the other
             let side = &mut self.sides[idx];
             (side.dirty, side.error) = (false, None);
+            side.edited.clear();
             match loaded {
                 Ok(wb) => (side.workbook, side.selected) = (wb.filter(|w| !w.sheets.is_empty()), Some(0)),
                 Err(e) => (side.workbook, side.selected, side.error) = (None, None, Some(e)),
@@ -254,6 +268,40 @@ impl Actor {
         self.sides[0].put_table(l);
         self.sides[1].put_table(r);
         self.sides[dst].dirty = true;
+        self.sides[dst].edited.clear();
+    }
+
+    async fn set_cell(&mut self, side: Side, row: usize, col: usize, text: String) -> bool {
+        let idx = side.index();
+        if !self.sides[idx].info().editable {
+            let msg = format!("{} side is not an editable CSV file", side.label());
+            return self.emit(TableEvent::Error(msg)).await;
+        }
+        let number = self.last_diff.get(row).map_or(0, |r| if idx == 0 { r.left_row } else { r.right_row }) as usize;
+        if number == 0 {
+            let msg = format!("That row does not exist on the {} side; copy it across first", side.label());
+            return self.emit(TableEvent::Error(msg)).await;
+        }
+        let mut table = self.sides[idx].take_table();
+        let changed = match Arc::make_mut(&mut table).rows.get_mut(number - 1) {
+            Some(cells) => {
+                if cells.len() <= col {
+                    cells.resize(col + 1, String::new());
+                }
+                let differs = cells[col] != text;
+                if differs {
+                    cells[col] = text;
+                }
+                differs
+            }
+            None => false,
+        };
+        self.sides[idx].put_table(table);
+        if changed {
+            self.sides[idx].dirty = true;
+            self.sides[idx].edited.insert(number - 1);
+        }
+        true
     }
 
     async fn save(&mut self, side: Side, path: Option<PathBuf>) -> bool {
@@ -280,6 +328,7 @@ impl Actor {
             Ok(()) => {
                 if in_place {
                     self.sides[side.index()].dirty = false;
+                    self.sides[side.index()].edited.clear();
                 }
                 self.emit(TableEvent::Saved { side, path: target.display().to_string() }).await
             }

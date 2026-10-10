@@ -21,7 +21,7 @@ mod syntax;
 mod write;
 
 pub use diff::{diff_reg, group_reg_rows, RegCompareOptions, RegDiffRow, RegRowKind};
-pub use edit::apply_reg_copy;
+pub use edit::{apply_reg_copy, set_reg_value_text};
 pub use model::{RegError, RegFile, RegKey, RegValue, DELETE_KEY_NAME};
 pub use parse::parse_reg;
 pub use write::write_reg;

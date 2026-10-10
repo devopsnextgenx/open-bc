@@ -63,6 +63,9 @@ namespace openbc::app {
 
 class PersistedMainWindow : public QMainWindow {
 public:
+    // Set by the tab host: true when every tab with unsaved edits may be closed.
+    std::function<bool()> confirmAllTabsClose;
+
     explicit PersistedMainWindow(QSettings& preferences, QWidget* parent = nullptr)
         : QMainWindow(parent), preferences_(preferences) {
         const auto document = QJsonDocument::fromJson(
@@ -93,6 +96,10 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override {
+        if (confirmAllTabsClose && !confirmAllTabsClose()) {
+            event->ignore();
+            return;
+        }
         saveWindowState();
         QMainWindow::closeEvent(event);
     }
@@ -516,12 +523,42 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         if (widget == home) {
             return;
         }
+        // Tabs with editable sides ask first (shared UnsavedChangesDialog); Cancel keeps the tab.
+        bool mayClose = true;
+        if (auto* v = dynamic_cast<TextCompareViewer*>(widget)) mayClose = v->confirmClose();
+        else if (auto* v = dynamic_cast<TableCompareViewer*>(widget)) mayClose = v->confirmClose();
+        else if (auto* v = dynamic_cast<RegistryCompareViewer*>(widget)) mayClose = v->confirmClose();
+        else if (auto* v = dynamic_cast<MediaCompareViewer*>(widget)) mayClose = v->confirmClose();
+        if (!mayClose) {
+            return;
+        }
         tabs->removeTab(index);
         widget->deleteLater();
         home->refreshHistory();
         if (tabs->count() == 0) {
             addSession(QString(), QString(), false);  // never leave the window empty
         }
+    };
+
+    // Closing the window: every tab with unsaved edits gets its dialog (tab is brought to front first).
+    window.confirmAllTabsClose = [&]() {
+        for (int i = 0; i < tabs->count(); ++i) {
+            QWidget* w = tabs->widget(i);
+            bool dirty = false;
+            if (auto* v = dynamic_cast<TextCompareViewer*>(w)) dirty = v->hasUnsavedChanges();
+            else if (auto* v = dynamic_cast<TableCompareViewer*>(w)) dirty = v->hasUnsavedChanges();
+            else if (auto* v = dynamic_cast<RegistryCompareViewer*>(w)) dirty = v->hasUnsavedChanges();
+            else if (auto* v = dynamic_cast<MediaCompareViewer*>(w)) dirty = v->hasUnsavedChanges();
+            if (!dirty) continue;
+            tabs->setCurrentIndex(i);
+            bool ok = true;
+            if (auto* v = dynamic_cast<TextCompareViewer*>(w)) ok = v->confirmClose();
+            else if (auto* v = dynamic_cast<TableCompareViewer*>(w)) ok = v->confirmClose();
+            else if (auto* v = dynamic_cast<RegistryCompareViewer*>(w)) ok = v->confirmClose();
+            else if (auto* v = dynamic_cast<MediaCompareViewer*>(w)) ok = v->confirmClose();
+            if (!ok) return false;
+        }
+        return true;
     };
 
     auto duplicateTab = [&](int index) {
