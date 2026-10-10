@@ -33,3 +33,5 @@ openbc.wixobj
 openbc.wxs
 files.wxs
 files.wixobj
+
+build-win.log

@@ -26,6 +26,7 @@
 #include <QDropEvent>
 #include <QElapsedTimer>
 #include <QFileDialog>
+#include <QMessageBox>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -69,6 +70,7 @@
 #include "viewers/picture/picture_metadata.h"
 #include "style/qt_style.h"
 #include "common/path_selector.h"
+#include "common/remote_selector.h"
 
 namespace openbc::app {
 
@@ -419,8 +421,14 @@ public:
         const QString left = leftSelector_->text().trimmed();
         const QString right = rightSelector_->text().trimmed();
         if (left.isEmpty() || right.isEmpty() || !handle_) return;
-        const QByteArray l = left.toUtf8();
-        const QByteArray r = right.toUtf8();
+        QString leftLocal, rightLocal, resolveError;
+        if (!openbc_remote::resolveLocalPath(left, &leftLocal, &resolveError) ||
+            !openbc_remote::resolveLocalPath(right, &rightLocal, &resolveError)) {
+            QMessageBox::warning(this, "Picture Compare", resolveError);
+            return;
+        }
+        const QByteArray l = leftLocal.toUtf8();
+        const QByteArray r = rightLocal.toUtf8();
         const OpenbcImageCompareOptions native = nativeOptions();
         openbc_image_compare_set_options(handle_, &native);
         openbc_image_compare_open(handle_, reinterpret_cast<const std::uint8_t*>(l.constData()),
@@ -1045,7 +1053,8 @@ private:
             auto* col = new QVBoxLayout;
             col->setSpacing(2);
             // Same row as every other compare viewer: combo + Browse, MRU history, Enter commits.
-            selector = new PathSelector(PathSelector::Mode::File, name, box, false, pictureFileDialogFilter(), false);
+            selector = new PathSelector(PathSelector::Mode::File, name, box, false, pictureFileDialogFilter(),
+                                        /*enableRemote=*/true, &sharedVfsBridge());
             selector->onBrowsed = [this](QString) { compare(); };
             connect(selector->combo()->lineEdit(), &QLineEdit::returnPressed, this, [this]() { compare(); });
             connect(selector->combo(), QOverload<int>::of(&QComboBox::activated), this, [this](int) { compare(); });

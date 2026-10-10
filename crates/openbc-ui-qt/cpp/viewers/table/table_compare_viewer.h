@@ -49,6 +49,7 @@
 #include "common/minimap.h"
 #include "style/qt_style.h"
 #include "common/path_selector.h"
+#include "common/remote_selector.h"
 
 namespace openbc::app {
 
@@ -149,8 +150,8 @@ private:
     void startSession() {
         stopSession();
         view_.reset();
-        const QByteArray left = leftPath_.toUtf8();
-        const QByteArray right = rightPath_.toUtf8();
+        const QByteArray left = openbc_remote::localCopy(leftPath_).toUtf8();
+        const QByteArray right = openbc_remote::localCopy(rightPath_).toUtf8();
         session_ = openbc_table_session_create(left.constData(), right.constData(), BackendChannel::callback(), channel_.user());
         status_->setText("Loading...");
         if (onTitleChanged) onTitleChanged();
@@ -367,8 +368,9 @@ private:
         PathSelector* selector = sides_[side].path;
         const QString path = cleanPathInput(raw);
         if (path == current) return;
-        if (!path.isEmpty() && !QFileInfo(path).isFile()) {
-            status_->setText("Not a file: " + path);
+        QString localPath, resolveError;
+        if (!path.isEmpty() && !openbc_remote::resolveLocalPath(path, &localPath, &resolveError)) {
+            status_->setText(resolveError);
             selector->setText(current);
             return;
         }
@@ -413,7 +415,7 @@ private:
         SidePane& pane = sides_[side];
         auto* header = new QHBoxLayout;
         header->setContentsMargins(4, 2, 4, 0);
-        pane.path = makeCommitSelector(
+        pane.path = openbc_remote::makeRemoteFileSelector(
             box, side == 0 ? "Left" : "Right", side == 0 ? leftPath_ : rightPath_,
             "Tables (*.csv *.tsv *.xlsx *.xlsm *.xlsb *.xls *.ods);;All files (*.*)",
             [this, side](QString p) { commitPath(side, p); });

@@ -88,15 +88,6 @@ OUT_DIR="$BUILD_DIR/packages"
 VERSION="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"
 VERSION="${VERSION:-1.0.0}"
 
-deploy_win_runtime() {
-  echo "=== Copying MinGW/UCRT runtime DLLs into $BUILD_DIR"
-  $DRY && return 0
-  "$BUILD_DIR/openbc-depcheck.exe" "$BUILD_DIR/openbc.exe" | tr -d '\r' \
-    | sed -n 's/^  ok  *\(.*\.dll\) -> [Cc]:\\msys64\\ucrt64\\bin\\.*/\1/p' \
-    | while read -r dll; do cp -n "/c/msys64/ucrt64/bin/$dll" "$BUILD_DIR/" && echo "   + $dll"; done
-}
-if [ "$PLATFORM" = win ]; then deploy_win_runtime; fi
-
 # ---- clean + build --------------------------------------------------------------------------
 if $CLEAN; then echo "=== Cleaning $BUILD_DIR"; run rm -rf "$BUILD_DIR"; fi
 
@@ -107,6 +98,17 @@ if [ ! -f "$BUILD_DIR/build.ninja" ] && [ ! -f "$BUILD_DIR/Makefile" ]; then
 fi
 run cmake --build "$BUILD_DIR" --target openbc openbc-depcheck
 $DRY || mkdir -p "$OUT_DIR"
+
+# ---- deploy Windows runtime DLLs -------------------------------------------------------------
+
+deploy_win_runtime() {
+  echo "=== Copying MinGW/UCRT runtime DLLs into $BUILD_DIR"
+  $DRY && return 0
+  "$BUILD_DIR/openbc-depcheck.exe" "$BUILD_DIR/openbc.exe" | tr -d '\r' \
+    | sed -n 's/^  ok  *\(.*\.dll\) -> [Cc]:\\msys64\\ucrt64\\bin\\.*/\1/p' \
+    | while read -r dll; do cp -n "/c/msys64/ucrt64/bin/$dll" "$BUILD_DIR/" && echo "   + $dll"; done
+}
+if [ "$PLATFORM" = win ]; then deploy_win_runtime; fi
 
 # ---- package builders -------------------------------------------------------------------------
 pkg_deb() {

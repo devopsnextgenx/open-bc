@@ -31,6 +31,7 @@
 #include <QDropEvent>
 #include <QElapsedTimer>
 #include <QFileDialog>
+#include <QMessageBox>
 #include <QFileInfo>
 #include <QFrame>
 #include <QGridLayout>
@@ -65,6 +66,7 @@
 #include "viewers/model3d/model3d_viewport.h"
 #include "style/qt_style.h"
 #include "common/path_selector.h"
+#include "common/remote_selector.h"
 
 namespace openbc::app {
 
@@ -197,7 +199,13 @@ public:
         if (left.isEmpty() || right.isEmpty() || !handle_) return;
         const Openbc3dOptions native = nativeOptions();
         openbc_model3d_set_options(handle_, &native);
-        const QByteArray l = left.toUtf8(), r = right.toUtf8();
+        QString leftLocal, rightLocal, resolveError;
+        if (!openbc_remote::resolveLocalPath(left, &leftLocal, &resolveError) ||
+            !openbc_remote::resolveLocalPath(right, &rightLocal, &resolveError)) {
+            QMessageBox::warning(this, "3D Compare", resolveError);
+            return;
+        }
+        const QByteArray l = leftLocal.toUtf8(), r = rightLocal.toUtf8();
         fitPending_ = true;
         openbc_model3d_open(handle_, reinterpret_cast<const std::uint8_t*>(l.constData()), std::size_t(l.size()),
                             reinterpret_cast<const std::uint8_t*>(r.constData()), std::size_t(r.size()));
@@ -867,7 +875,8 @@ private:
         row->setContentsMargins(6, 0, 6, 4); row->setSpacing(8);
         auto side = [&](PathSelector*& selector, QLabel*& info, const QString& name) {
             auto* col = new QVBoxLayout; col->setSpacing(2);
-            selector = new PathSelector(PathSelector::Mode::File, name, box, false, QString(), false);
+            selector = new PathSelector(PathSelector::Mode::File, name, box, false, QString(),
+                                        /*enableRemote=*/true, &sharedVfsBridge());
             selector->fileFilterProvider = [this]() { return model3dFileDialogFilter(handle_); };
             selector->onBrowsed = [this](QString) { compare(); };
             connect(selector->combo()->lineEdit(), &QLineEdit::returnPressed, this, [this]() { compare(); });

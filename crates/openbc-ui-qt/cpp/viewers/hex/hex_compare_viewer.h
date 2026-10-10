@@ -37,6 +37,7 @@
 #include "common/minimap.h"
 #include "style/qt_style.h"
 #include "common/path_selector.h"
+#include "common/remote_selector.h"
 
 namespace openbc::app {
 
@@ -207,7 +208,7 @@ private:
         shared_.window[0].clear();
         shared_.window[1].clear();
         shared_.size[0] = shared_.size[1] = 0;
-        const QByteArray left = leftPath_.toUtf8(), right = rightPath_.toUtf8();
+        const QByteArray left = openbc_remote::localCopy(leftPath_).toUtf8(), right = openbc_remote::localCopy(rightPath_).toUtf8();
         session_ = openbc_hex_session_create(left.constData(), right.constData(), BackendChannel::callback(), channel_.user());
         status_->setText("Scanning...");
         progress_->setValue(0);
@@ -228,8 +229,9 @@ private:
         PathSelector* selector = selectors_[side];
         const QString path = cleanPathInput(raw);
         if (path == current) return;
-        if (!path.isEmpty() && !QFileInfo(path).isFile()) {
-            status_->setText("Not a file: " + path);
+        QString localPath, resolveError;
+        if (!path.isEmpty() && !openbc_remote::resolveLocalPath(path, &localPath, &resolveError)) {
+            status_->setText(resolveError);
             selector->setText(current);
             return;
         }
@@ -400,7 +402,7 @@ private:
         for (std::uint8_t side = 0; side < 2; ++side) {
             auto* column = new QVBoxLayout;
             column->setSpacing(0);
-            selectors_[side] = makeCommitSelector(
+            selectors_[side] = openbc_remote::makeRemoteFileSelector(
                 this, side == 0 ? "Left" : "Right", side == 0 ? leftPath_ : rightPath_, "All files (*.*)",
                 [this, side](QString p) { commitPath(side, p); });
             panes_[side] = new HexPane(side, &shared_, this);

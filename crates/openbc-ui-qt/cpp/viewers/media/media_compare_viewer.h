@@ -71,6 +71,7 @@
 #include "backend/compare_backend_api.h"
 #include "viewers/media/media_player_pane.h"
 #include "common/path_selector.h"
+#include "common/remote_selector.h"
 #include "style/qt_style.h"
 
 namespace openbc::app {
@@ -179,7 +180,7 @@ private:
         clearPending(1);
         leftPane_->reset();
         rightPane_->reset();
-        const QByteArray left = leftPath_.toUtf8(), right = rightPath_.toUtf8();
+        const QByteArray left = openbc_remote::localCopy(leftPath_).toUtf8(), right = openbc_remote::localCopy(rightPath_).toUtf8();
         session_ = openbc_media_session_create(left.constData(), right.constData(), BackendChannel::callback(), channel_.user());
         summary_->setText("Reading media headers...");
         if (onTitleChanged) onTitleChanged();
@@ -254,8 +255,9 @@ private:
         PathSelector* selector = side == 0 ? leftSelector_ : rightSelector_;
         const QString path = cleanInput(raw);
         if (path == current) return;
-        if (!path.isEmpty() && !QFileInfo(path).isFile()) {
-            summary_->setText("Not a file: " + path);
+        QString localPath, resolveError;
+        if (!path.isEmpty() && !openbc_remote::resolveLocalPath(path, &localPath, &resolveError)) {
+            summary_->setText(resolveError);
             selector->setText(current);
             return;
         }
@@ -266,7 +268,7 @@ private:
         current = path;
         selector->setText(path);
         if (!path.isEmpty()) selector->remember(path);
-        pane(side)->setPath(path);
+        pane(side)->setPath(openbc_remote::localCopy(path));
         updatePlaybackActions();
         reloadAction_->setEnabled(!leftPath_.isEmpty() || !rightPath_.isEmpty());
         if (leftPath_.isEmpty() && rightPath_.isEmpty()) showEmptyState();
@@ -580,20 +582,11 @@ private:
     }
 
     PathSelector* makeSelector(const QString& side, const QString& initial, std::uint8_t sideIndex) {
-        // Remote browsing is off: playback and the backend read local files only.
-        auto* selector = new PathSelector(PathSelector::Mode::File, side, this, false,
-                                          "Media files (*.mp3 *.wav *.flac *.ogg *.oga *.opus *.m4a *.aac *.wma *.mp4 *.m4v *.mov *.avi *.mkv *.webm);;All files (*.*)",
-                                          false);
-        if (!initial.isEmpty()) {
-            selector->remember(initial);
-            selector->setText(initial);
-        }
-        selector->onBrowsed = [this, sideIndex](QString p) { commitPath(sideIndex, p); };
-        QObject::connect(selector->combo()->lineEdit(), &QLineEdit::returnPressed, this,
-                         [this, selector, sideIndex]() { commitPath(sideIndex, selector->text()); });
-        QObject::connect(selector->combo(), QOverload<int>::of(&QComboBox::activated), this,
-                         [this, selector, sideIndex](int) { commitPath(sideIndex, selector->text()); });
-        return selector;
+        // Remote picker enabled like the text viewer; remote files are downloaded to a temp copy for playback/backend.
+        return openbc_remote::makeRemoteFileSelector(
+            this, side, initial,
+            "Media files (*.mp3 *.wav *.flac *.ogg *.oga *.opus *.m4a *.aac *.wma *.mp4 *.m4v *.mov *.avi *.mkv *.webm);;All files (*.*)",
+            [this, sideIndex](QString p) { commitPath(sideIndex, p); });
     }
 
     QHBoxLayout* makeMixerStrip() {
