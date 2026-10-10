@@ -17,12 +17,20 @@
 #include <QString>
 #include <QTemporaryDir>
 #include <functional>
+#include <QFile>   // add to the include list
+
 
 #include "common/path_selector.h"
 #include "remote/remote_profile_store.h"
 #include "remote/remote_vfs_bridge.h"
 
 namespace openbc_remote {
+
+using openbc::app::PathSelector;
+using openbc::app::RemoteProfile;
+using openbc::app::RemoteProfileStore;
+using openbc::app::sharedVfsBridge;
+using openbc::app::remoteRelativePath;
 
 inline bool isRemotePath(const QString& path) {
     RemoteProfile profile;
