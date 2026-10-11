@@ -5,7 +5,9 @@
 #pragma once
 
 #include <QEvent>
+#include <QClipboard>
 #include <QFocusEvent>
+#include <QMimeData>
 #include <QKeyEvent>
 #include <QPair>
 #include <QPen>
@@ -21,6 +23,8 @@
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QSet>
+#include <QStringList>
+#include <QTextDocument>
 #include <QTextBlock>
 #include <QTextLayout>
 #include <QTextLine>
@@ -41,6 +45,11 @@ public:
         : QPlainTextEdit(parent), numberSide_(numberSide), arrowSide_(arrowSide) {
         setLineWrapMode(QPlainTextEdit::NoWrap);
         setTabStopDistance(fontMetrics().horizontalAdvance(' ') * 4);
+        // Must be the first contentsChange listener so the block bookkeeping
+        // is up to date before the highlighter / viewer react to the edit.
+        connect(document(), &QTextDocument::contentsChange, this,
+                [this](int pos, int removed, int added) { trackContentsChange(pos, removed, added); });
+        resetEditTracking({});
         connect(this, &QPlainTextEdit::blockCountChanged, this,
                 [this](int) { updateMarginWidths(); });
         connect(this, &QPlainTextEdit::updateRequest, this,
@@ -113,6 +122,36 @@ public:
 
     std::function<void(int, int)> onArrowClicked;
 
+    // ---- alignment-filler bookkeeping --------------------------------------
+    // The compare view pads each pane with empty "filler" rows so both sides
+    // line up. They are display-only: they are not lines of the file. After
+    // the viewer (re)fills the pane it passes, per block, whether that block
+    // is a filler. The editor then keeps that information correct through
+    // every edit, so realLines() can return the file's lines without the
+    // padding. (Reading toPlainText() instead turned every filler into a
+    // permanent blank line on the next rebuild.)
+    void resetEditTracking(const QVector<bool>& fillerBlocks) {
+        filler_ = fillerBlocks;
+        const int blocks = document()->blockCount();
+        if (filler_.size() != blocks) filler_.resize(blocks);   // new entries are false
+        snap_.clear();
+        snap_.reserve(blocks);
+        for (QTextBlock b = document()->begin(); b.isValid(); b = b.next()) snap_ << b.text();
+        snapChars_ = document()->characterCount();
+    }
+
+    QStringList realLines() const {
+        QStringList out;
+        for (QTextBlock b = document()->begin(); b.isValid(); b = b.next()) {
+            const int i = b.blockNumber();
+            const QString text = b.text();
+            if (i < filler_.size() && filler_[i] && text.isEmpty()) continue;
+            out << text;
+        }
+        if (out.isEmpty()) out << QString();
+        return out;
+    }
+
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override {
         if (watched == lineNumberArea_ && event->type() == QEvent::Paint) {
@@ -152,7 +191,63 @@ protected:
     }
     void keyPressEvent(QKeyEvent* event) override {
         gutterRow_ = -1;
+        const bool noSelection = !textCursor().hasSelection();
+        const Qt::KeyboardModifiers mods = event->modifiers() & ~Qt::KeypadModifier;
+
+        // Ctrl+C / Ctrl+X with nothing selected act on the whole current
+        // line, including its line break (like VS Code).
+        if (noSelection && event->matches(QKeySequence::Copy)) {
+            copyCurrentLine(/*cut=*/false);
+            event->accept();
+            return;
+        }
+        if (noSelection && event->matches(QKeySequence::Cut)) {
+            copyCurrentLine(/*cut=*/!isReadOnly());
+            event->accept();
+            return;
+        }
+        if (!isReadOnly()) {
+            // Enter always inserts exactly one line break. (Qt's default turns
+            // Shift+Enter into a U+2028 separator that is not a new block.)
+            if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
+                !(mods & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+                QTextCursor cursor = textCursor();
+                cursor.insertBlock();
+                setTextCursor(cursor);
+                ensureCursorVisible();
+                event->accept();
+                return;
+            }
+            // Delete on an empty line removes that line and its line break.
+            // (Backspace on an empty line already does exactly that.)
+            if (event->key() == Qt::Key_Delete && mods == Qt::NoModifier && noSelection) {
+                const QTextBlock block = textCursor().block();
+                if (block.text().isEmpty() && block.next().isValid()) {
+                    removeBlock(block.blockNumber());
+                    event->accept();
+                    return;
+                }
+            }
+        }
         QPlainTextEdit::keyPressEvent(event);
+    }
+
+    // Pasting something that was copied/cut as a whole line (no selection)
+    // inserts it above the current line, wherever the caret is in that line.
+    void insertFromMimeData(const QMimeData* source) override {
+        if (isReadOnly() || !source) return;
+        if (source->hasText()) {
+            const QString text = normalizeNewlines(source->text());
+            if (source->hasFormat(QString::fromLatin1(kLineMime)) && !textCursor().hasSelection()) {
+                pasteWholeLine(text);
+                return;
+            }
+            QMimeData plain;
+            plain.setText(text);
+            QPlainTextEdit::insertFromMimeData(&plain);
+            return;
+        }
+        QPlainTextEdit::insertFromMimeData(source);
     }
 
     // (paintEvent unchanged)
@@ -441,6 +536,132 @@ private:
         }
     }
 
+    static constexpr const char* kLineMime = "application/x-openbc-linecopy";
+
+    static QString normalizeNewlines(QString text) {
+        text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+        text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+        text.replace(QChar::LineSeparator, QLatin1Char('\n'));
+        text.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+        return text;
+    }
+
+    void copyCurrentLine(bool cut) {
+        const QTextBlock block = textCursor().block();
+        auto* mime = new QMimeData;
+        mime->setText(block.text() + QLatin1Char('\n'));
+        mime->setData(QString::fromLatin1(kLineMime), QByteArrayLiteral("1"));
+        QGuiApplication::clipboard()->setMimeData(mime);
+        if (cut) removeBlock(block.blockNumber());
+    }
+
+    // Removes block `number` together with its line break.
+    void removeBlock(int number) {
+        const QTextBlock block = document()->findBlockByNumber(number);
+        if (!block.isValid()) return;
+        QTextCursor cursor(document());
+        cursor.beginEditBlock();
+        if (block.next().isValid()) {
+            cursor.setPosition(block.position());
+            cursor.setPosition(block.next().position(), QTextCursor::KeepAnchor);
+            adoptEndBlockFlag_ = true;     // the *following* block survives the merge
+        } else if (block.previous().isValid()) {
+            cursor.setPosition(block.previous().position() + block.previous().length() - 1);
+            cursor.setPosition(block.position() + block.length() - 1, QTextCursor::KeepAnchor);
+        } else {
+            cursor.setPosition(block.position());
+            cursor.setPosition(block.position() + block.length() - 1, QTextCursor::KeepAnchor);
+        }
+        cursor.removeSelectedText();
+        cursor.endEditBlock();
+        adoptEndBlockFlag_ = false;
+        ensureCursorVisible();
+    }
+
+    void pasteWholeLine(QString text) {
+        if (!text.endsWith(QLatin1Char('\n'))) text += QLatin1Char('\n');
+        QTextCursor cursor = textCursor();
+        const int column = cursor.positionInBlock();
+        cursor.beginEditBlock();
+        cursor.movePosition(QTextCursor::StartOfBlock);
+        cursor.insertText(text);
+        cursor.endEditBlock();
+        // `cursor` now sits at the start of the original (pushed-down) line;
+        // keep the caret in that line at its previous column.
+        QTextCursor caret = cursor;
+        caret.setPosition(cursor.position() + column);
+        setTextCursor(caret);
+        ensureCursorVisible();
+    }
+
+    // Keeps filler_/snap_ in step with the document. Qt reports every edit
+    // as "chars [pos, pos+removed) were replaced by [pos, pos+added)", so we
+    // map that onto whole blocks and decide which of the resulting blocks
+    // are still padding.
+    void trackContentsChange(int pos, int removed, int added) {
+        QTextDocument* doc = document();
+        if (snap_.isEmpty() || filler_.size() != snap_.size() ||
+            snapChars_ - removed + added != doc->characterCount()) {
+            resyncTracking();
+            return;
+        }
+        int bs = -1;
+        int be = -1;
+        qint64 offset = 0;
+        for (int i = 0; i < snap_.size(); ++i) {
+            const qint64 end = offset + snap_[i].size();
+            if (bs < 0 && pos <= end) bs = i;
+            if (be < 0 && pos + removed <= end) { be = i; break; }
+            offset = end + 1;
+        }
+        const int nbs = doc->findBlock(pos).blockNumber();
+        const int nbe = doc->findBlock(pos + added).blockNumber();
+        if (bs < 0 || be < 0 || nbs != bs || nbe < nbs) {
+            resyncTracking();
+            return;
+        }
+        QStringList fresh;
+        for (QTextBlock b = doc->findBlockByNumber(nbs); b.isValid() && b.blockNumber() <= nbe; b = b.next()) {
+            fresh << b.text();
+        }
+        // Formatting-only notification (syntax colours, inline diffs): same text.
+        if (removed == added && snap_.mid(bs, be - bs + 1) == fresh) return;
+
+        const int k = nbe - nbs;
+        QVector<bool> flags(k + 1, false);
+        const bool fbs = filler_[bs];
+        const bool fbe = filler_[be];
+        if (bs == be) {
+            if (k == 0) {
+                flags[0] = fbs;                         // typing inside a block
+            } else if (fbs) {
+                // Edit inside a filler row: it stays one empty row, the new
+                // text/lines are real.
+                if (fresh[0].isEmpty()) flags[0] = true;
+                else if (fresh[k].isEmpty()) flags[k] = true;
+            }
+        } else if (k == 0) {
+            // Two or more blocks merged into one. When the result is empty
+            // the surviving block decides whether it is still padding.
+            flags[0] = (adoptEndBlockFlag_ ? fbe : fbs) && fresh[0].isEmpty();
+        } else {
+            flags[0] = fbs && fresh[0].isEmpty();
+            flags[k] = fbe && fresh[k].isEmpty();
+        }
+        filler_.remove(bs, be - bs + 1);
+        snap_.erase(snap_.begin() + bs, snap_.begin() + be + 1);
+        for (int i = 0; i <= k; ++i) {
+            filler_.insert(bs + i, flags[i]);
+            snap_.insert(bs + i, fresh[i]);
+        }
+        snapChars_ = doc->characterCount();
+        if (snap_.size() != doc->blockCount()) resyncTracking();
+    }
+
+    // Fallback if the bookkeeping ever disagrees with the document: treat
+    // every block as a real line (never silently drops text).
+    void resyncTracking() { resetEditTracking({}); }
+
     QWidget* lineNumberArea_ = nullptr;
     QWidget* arrowArea_ = nullptr;
     GutterSide numberSide_ = GutterSide::Left;
@@ -450,6 +671,10 @@ private:
     QVector<DiffGroup> diffGroups_;
     QSet<int> dirtyRows_;
     int gutterRow_ = -1;  // row picked by clicking the blank arrow gutter
+    QVector<bool> filler_;        // per block: alignment padding, not a file line
+    QStringList snap_;            // per block text as last seen by trackContentsChange
+    qint64 snapChars_ = 0;
+    bool adoptEndBlockFlag_ = false;
 
     QVector<QVector<CharSegment>> inlineDiffs_;
 

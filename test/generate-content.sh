@@ -11,7 +11,7 @@ for path in "${levels[@]}"; do
 EOF
   cp "source/${path}/config.json" "target/${path}/config.json"
 
-  # Standard YAML
+  # Standard YAML 1
   cat <<'EOF' > "source/${path}/settings.yml"
 server:
   host: 127.0.0.1
@@ -19,7 +19,7 @@ server:
 EOF
   cp "source/${path}/settings.yml" "target/${path}/settings.yml"
 
-  # Executable Shell Script
+  # Executable Shell Script 2
   cat <<'EOF' > "source/${path}/run.sh"
 #!/usr/bin/env bash
 echo "Executing test script"
@@ -28,8 +28,8 @@ EOF
   cp -p "source/${path}/run.sh" "target/${path}/run.sh"
 done
 
-# --- 2. Files with Content Differences ---
-# JSON content difference
+# --- 2. Files with Content Differences --- 3
+# JSON content difference 4
 cat <<'EOF' > source/level1_A/level2_1/data.json
 {"status": "pending", "retries": 3}
 EOF
@@ -66,7 +66,9 @@ EOF
 
 cat <<'EOF' > source/level1_B/level2_1/level3/source_script.sh
 #!/usr/bin/env bash
-echo "Source only script"
+echo "Source only script1"
+echo "Source only script2"
+echo "Source only script3"
 EOF
 
 # Unique to Target

@@ -66,8 +66,16 @@ public:
     }
 
     void refreshInlineDiffs() {
-        if (!deferred_) rehighlight();
+        if (deferred_) return;
+        manualRehighlight_ = true;
+        rehighlight();
+        manualRehighlight_ = false;
     }
+
+    // True while this highlighter is re-applying formats. Qt reports those
+    // format-only changes through QTextDocument::contentsChanged, so owners
+    // use this to tell them apart from real text edits (dirty tracking).
+    bool isHighlighting() const { return refreshing_ || manualRehighlight_; }
 
 protected:
     void highlightBlock(const QString& text) override {
@@ -186,6 +194,7 @@ private:
     bool enabled_ = true;
     bool deferred_ = false;
     bool refreshing_ = false;
+    bool manualRehighlight_ = false;
 };
 
 }  // namespace openbc::app

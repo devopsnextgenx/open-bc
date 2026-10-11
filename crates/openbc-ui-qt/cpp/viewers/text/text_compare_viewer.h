@@ -286,7 +286,24 @@ private:
             [&]() { QList<int> values; for (int i = 1; i <= rightOriginal_.size(); ++i) values << i; return values; }()));
         leftEditor_->setDiffData({}, {});
         rightEditor_->setDiffData({}, {});
+        leftEditor_->resetEditTracking({});
+        rightEditor_->resetEditTracking({});
         applyingProgrammaticUpdate_ = false;
+    }
+
+    // Tells each pane which of its blocks are alignment padding (no line of
+    // that file) so edits never turn padding into real blank lines.
+    void registerFillerRows() {
+        QVector<bool> leftFiller;
+        QVector<bool> rightFiller;
+        leftFiller.reserve(rows_.size());
+        rightFiller.reserve(rows_.size());
+        for (const auto& row : rows_) {
+            leftFiller << (row.leftNumber <= 0 && row.left.isEmpty());
+            rightFiller << (row.rightNumber <= 0 && row.right.isEmpty());
+        }
+        leftEditor_->resetEditTracking(leftFiller);
+        rightEditor_->resetEditTracking(rightFiller);
     }
 
     void beginAsyncRebuild() {
@@ -380,6 +397,7 @@ private:
         restoreCursor(rightEditor_, rightSnap);
         leftEditor_->setLineNumbers(leftNumbers);
         rightEditor_->setLineNumbers(rightNumbers);
+        registerFillerRows();
         leftEditor_->setDiffData(rows_, groups_);
         rightEditor_->setDiffData(rows_, groups_);
         leftEditor_->setInlineDiffs(leftInline_);
@@ -765,13 +783,13 @@ private:
             pushSideHistory(/*left=*/false);
         });
         connect(leftEditor_->document(), &QTextDocument::contentsChanged, this, [this]() {
-            if (applyingProgrammaticUpdate_ || restoringHistory_) return;
+            if (applyingProgrammaticUpdate_ || restoringHistory_ || leftHighlighter_->isHighlighting()) return;
             leftUnsaved_ = true;
             refreshSideHeader(true);
             if (leftEditTimer_) leftEditTimer_->start();
         });
         connect(rightEditor_->document(), &QTextDocument::contentsChanged, this, [this]() {
-            if (applyingProgrammaticUpdate_ || restoringHistory_) return;
+            if (applyingProgrammaticUpdate_ || restoringHistory_ || rightHighlighter_->isHighlighting()) return;
             rightUnsaved_ = true;
             refreshSideHeader(false);
             if (rightEditTimer_) rightEditTimer_->start();
@@ -1110,7 +1128,7 @@ private:
             }
             leftOriginal_ = materializeSide(true);
         } else {
-            leftOriginal_ = leftEditor_->toPlainText().split('\n');
+            leftOriginal_ = leftEditor_->realLines();
         }
         if (!rightStructurallyEdited_) {
             for (int i = 0; i < rows_.size() && i < rightEditor_->document()->blockCount(); ++i) {
@@ -1118,7 +1136,7 @@ private:
             }
             rightOriginal_ = materializeSide(false);
         } else {
-            rightOriginal_ = rightEditor_->toPlainText().split('\n');
+            rightOriginal_ = rightEditor_->realLines();
         }
     }
 
@@ -1492,6 +1510,7 @@ private:
 
         leftEditor_->setLineNumbers(leftNumbers);
         rightEditor_->setLineNumbers(rightNumbers);
+        registerFillerRows();
         leftEditor_->setDiffData(rows_, groups_);
         rightEditor_->setDiffData(rows_, groups_);
         leftEditor_->setInlineDiffs(leftInline_);
