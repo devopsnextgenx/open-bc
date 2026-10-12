@@ -58,6 +58,8 @@
 #include "home/session_history.h"
 #include "app/cli_options.h"
 #include "app/dependency_check.h"
+#include "app/app_options.h"
+#include "app/options_dialog.h"
 
 namespace openbc::app {
 
@@ -152,6 +154,10 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     PersistedMainWindow window(preferences);
     window.setWindowIcon(QApplication::windowIcon());
 
+    // Tools > Options. The store holds the committed options (mocked for now:
+    // in-memory only, see app_options.h); the dialog edits a copy of them.
+    OptionsStore optionsStore;
+
     // Put the main window into GL-composed mode before it is first shown. Otherwise the first
     // 3D tab flips the backing store and Qt recreates the native window mid-session, which
     // shows up as the window minimizing/maximizing. 1x1, invisible, never interacted with.
@@ -233,6 +239,12 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         preferences.setValue("theme/dark", dark);
     });
 
+    // Tools > Options... lives in every tab's Tools menu (rebuildMenus re-adds it
+    // after the tab's own tools, since it clears that menu on each tab switch).
+    auto* optionsAction = new QAction("&Options...", &window);
+    QObject::connect(optionsAction, &QAction::triggered, &window,
+                     [&]() { OptionsDialog::edit(optionsStore, &window); });
+
     // Esc closes the current compare tab - every viewer except Home and the folder compare
     // viewer (Esc there is too easy to hit by accident; it holds the session's context).
     auto* closeTabOnEscape = new QAction(&window);
@@ -305,6 +317,8 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
                         : pictureView ? pictureView->toolsMenuItems()
                         : model3dView ? model3dView->toolsMenuItems()
                                       : QList<QAction*>());
+        if (!toolsMenu->isEmpty()) toolsMenu->addSeparator();
+        toolsMenu->addAction(optionsAction);
     };
     auto updateWindowTitle = [&]() {
         FolderCompareViewer* session = currentSession();

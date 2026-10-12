@@ -35,3 +35,5 @@ files.wxs
 files.wixobj
 
 build-win.log
+
+crates/**/*.zip
