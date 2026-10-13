@@ -117,8 +117,11 @@ pkg_deb() {
   out="$OUT_DIR/openbc_${VERSION}_${arch}.deb"
   echo "=== deb -> $out"
   run rm -rf "$stage"
-  run mkdir -p "$stage/usr/bin" "$stage/DEBIAN"
+  run mkdir -p "$stage/usr/bin" "$stage/DEBIAN" \
+    "$stage/usr/share/applications" "$stage/usr/share/icons/hicolor/512x512/apps"
   run cp "$BUILD_DIR/openbc" "$BUILD_DIR/openbc-depcheck" "$stage/usr/bin/"
+  run cp resources/io.openbc.OpenBC.desktop "$stage/usr/share/applications/"
+  run cp resources/icons/fevicon.png "$stage/usr/share/icons/hicolor/512x512/apps/openbc.png"
   $DRY || cat > "$stage/DEBIAN/control" <<CTRL
 Package: openbc
 Version: ${VERSION}
