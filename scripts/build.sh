@@ -130,7 +130,7 @@ Maintainer: OpenBC Team <info@example.com>
 Description: OpenBC File and Directory Comparison Tool
  OpenBC is an open-source comparison tool integrated with Rust backends and Qt6 GUI.
 CTRL
-  run dpkg-deb --build "$stage" "$out"
+  run dpkg-deb --root-owner-group --build "$stage" "$out"
 }
 
 pkg_rpm() {
