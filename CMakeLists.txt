@@ -31,7 +31,7 @@ set(Rust_COMPILER "${RUSTC_EXECUTABLE}" CACHE FILEPATH "Rust compiler used by Co
 # Without them the app still builds and the Play buttons stay disabled.
 # MSYS2: pacman -S mingw-w64-ucrt-x86_64-qt6-multimedia
 find_package(Qt6 REQUIRED
-    COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets
+    COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Network
     OPTIONAL_COMPONENTS Multimedia MultimediaWidgets
 )
 
@@ -101,6 +101,7 @@ target_link_libraries(openbc PRIVATE
     Qt6::Widgets
     Qt6::OpenGL
     Qt6::OpenGLWidgets
+    Qt6::Network
     openbc_ui_qt-static
     ZLIB::ZLIB
     OpenSSL::SSL
@@ -154,7 +155,7 @@ endif()
 
 # --- Packaging Configuration ---
 set(CPACK_PACKAGE_NAME "OpenBC")
-set(CPACK_PACKAGE_VERSION "1.0.0")
+set(CPACK_PACKAGE_VERSION "1.0.1")
 set(CPACK_PACKAGE_VENDOR "OpenBC")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenBC File & Directory Comparison Tool")
 

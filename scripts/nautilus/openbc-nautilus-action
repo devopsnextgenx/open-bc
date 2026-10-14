@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -u
+
+action=${0##*/}
+selected_paths=()
+mapfile -t selected_paths <<< "${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-}"
+
+fail() {
+    if command -v zenity >/dev/null 2>&1; then
+        zenity --error --text="$1" 2>/dev/null
+    else
+        printf '%s\n' "$1" >&2
+    fi
+    exit 1
+}
+
+[[ -n "${selected_paths[0]:-}" ]] || fail "Select an item first."
+openbc_bin=${OPENBC_BIN:-openbc}
+command -v "$openbc_bin" >/dev/null 2>&1 || fail "OpenBC was not found in PATH."
+
+case "$action" in
+    "Select Left Folder")
+        [[ ${#selected_paths[@]} -eq 1 && -d ${selected_paths[0]} ]] || fail "Select one folder."
+        exec "$openbc_bin" --select-left-folder "${selected_paths[0]}"
+        ;;
+    "Compare to Left Folder")
+        [[ ${#selected_paths[@]} -eq 1 && -d ${selected_paths[0]} ]] || fail "Select one folder."
+        exec "$openbc_bin" --compare-to-left-folder "${selected_paths[0]}"
+        ;;
+    "Select Left File")
+        [[ ${#selected_paths[@]} -eq 1 && -f ${selected_paths[0]} ]] || fail "Select one file."
+        exec "$openbc_bin" --select-left-file "${selected_paths[0]}"
+        ;;
+    "Compare to Left File")
+        [[ ${#selected_paths[@]} -eq 1 && -f ${selected_paths[0]} ]] || fail "Select one file."
+        exec "$openbc_bin" --compare-to-left-file "${selected_paths[0]}"
+        ;;
+    "Compare")
+        [[ ${#selected_paths[@]} -eq 2 ]] || fail "Select exactly two files or exactly two folders."
+        [[ -e ${selected_paths[0]} && -e ${selected_paths[1]} ]] || fail "Both selected items must exist."
+        [[ -d ${selected_paths[0]} && -d ${selected_paths[1]} ]] &&
+            exec "$openbc_bin" "${selected_paths[0]}" "${selected_paths[1]}"
+        [[ ! -d ${selected_paths[0]} && ! -d ${selected_paths[1]} ]] ||
+            fail "Select two folders or two files, not one of each."
+        exec "$openbc_bin" "${selected_paths[0]}" "${selected_paths[1]}"
+        ;;
+    *)
+        fail "Unknown OpenBC action: $action"
+        ;;
+esac

@@ -22,11 +22,14 @@ struct LaunchRequest {
     QString left;
     QString right;
     QString compareType;          // as typed by the user; empty = auto-detect
+    QString contextAction;
+    QString contextPath;
     bool dependencyCheck = false;
     bool showHelp = false;
     bool showVersion = false;
     QString error;                // non-empty = invalid command line (message for the user)
     bool hasPaths() const { return !left.isEmpty() || !right.isEmpty(); }
+    bool hasContextAction() const { return !contextAction.isEmpty(); }
 };
 
 // `arguments` excludes argv[0].

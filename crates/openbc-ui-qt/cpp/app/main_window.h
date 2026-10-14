@@ -18,6 +18,7 @@
 #include <QDialog>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QIcon>
 #include <QKeySequence>
@@ -60,6 +61,7 @@
 #include "app/dependency_check.h"
 #include "app/app_options.h"
 #include "app/options_dialog.h"
+#include "app/single_instance.h"
 
 namespace openbc::app {
 
@@ -124,7 +126,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         return 0;
     }
     if (launch.showVersion) {
-        printToConsole("openbc 1.0.0\n");
+        printToConsole("openbc 1.0.1\n");
         return 0;
     }
     if (launch.dependencyCheck) {
@@ -143,6 +145,10 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     #endif
     QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);   // <-- new, must precede QApplication
     QApplication application(argc, argv);
+    SingleInstance singleInstance(launch);
+    if (!singleInstance.isPrimary()) {
+        return singleInstance.wasForwarded() ? 0 : 1;
+    }
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/openbc.png")));
 
     QApplication::setStyle(QStyleFactory::create("Fusion"));
@@ -809,30 +815,96 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     rebuildMenus();
     updateWindowTitle();
     instrumentationButton->setEnabled(!activeInstrumentationSessionId().isEmpty());
-    window.show();
 
-    // Launch request from the command line: open the chosen (or auto-detected) compare tab.
-    if (launch.hasPaths() || !launch.compareType.isEmpty()) {
+    auto focusWindow = [&]() {
+        if (window.isMinimized()) {
+            window.setWindowState(window.windowState() & ~Qt::WindowMinimized);
+        }
+        window.show();
+        window.raise();
+        window.activateWindow();
+    };
+    auto openBlankFolderCompare = [&]() {
+        for (int i = 0; i < tabs->count(); ++i) {
+            auto* session = dynamic_cast<FolderCompareViewer*>(tabs->widget(i));
+            if (session && session->leftText().isEmpty() && session->rightText().isEmpty()) {
+                tabs->setCurrentIndex(i);
+                focusWindow();
+                return;
+            }
+        }
+        addSession(QString(), QString(), false);
+        focusWindow();
+    };
+    auto dispatchComparison = [&](const LaunchRequest& request) {
         QString launchError;
-        const QString kind = resolveLaunchKind(launch, &launchError);
+        const QString kind = resolveLaunchKind(request, &launchError);
         if (!launchError.isEmpty()) {
             window.statusBar()->showMessage(launchError, 15000);
-        } else if (!kind.isEmpty()) {
-            QTimer::singleShot(0, &window, [&, kind]() {
-                QStringList paths;
-                if (!launch.left.isEmpty() || !launch.right.isEmpty()) paths << launch.left << launch.right;
-                if (kind == "text-compare") {
-                    auto readText = [](const QString& path) {
-                        QFile file(path);
-                        return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
-                    };
-                    addTextView(launch.left, launch.right, readText(launch.left), readText(launch.right), nullptr);
-                } else {
-                    home->onNewSession(kind, paths);
-                }
-            });
+            focusWindow();
+            return;
         }
-    }
+        if (kind.isEmpty()) return;
+        QStringList paths;
+        if (!request.left.isEmpty() || !request.right.isEmpty()) paths << request.left << request.right;
+        if (kind == "text-compare") {
+            auto readText = [](const QString& path) {
+                QFile file(path);
+                return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
+            };
+            addTextView(request.left, request.right, readText(request.left), readText(request.right), nullptr);
+        } else {
+            home->onNewSession(kind, paths);
+        }
+        focusWindow();
+    };
+    auto handleLaunch = [&](const LaunchRequest& request) {
+        if (request.hasContextAction()) {
+            const bool folderAction = request.contextAction.endsWith("folder");
+            const bool selectLeft = request.contextAction.startsWith("select-left-");
+            const QFileInfo selected(request.contextPath);
+            if ((folderAction && !selected.isDir()) || (!folderAction && !selected.isFile())) {
+                window.statusBar()->showMessage(folderAction ? "Select a folder for this action"
+                                                             : "Select a file for this action", 10000);
+                focusWindow();
+                return;
+            }
+            if (selectLeft) {
+                preferences.setValue("context/leftKind", folderAction ? "folder" : "file");
+                preferences.setValue("context/leftPath", request.contextPath);
+                if (folderAction) {
+                    openBlankFolderCompare();
+                    if (auto* session = currentSession()) session->setPaths(request.contextPath, QString());
+                }
+                window.statusBar()->showMessage("Selected left " + QString(folderAction ? "folder: " : "file: ") +
+                                                    QDir::toNativeSeparators(request.contextPath), 10000);
+                focusWindow();
+                return;
+            }
+
+            const QString expectedKind = folderAction ? "folder" : "file";
+            const QString leftKind = preferences.value("context/leftKind").toString();
+            const QString leftPath = preferences.value("context/leftPath").toString();
+            if (leftKind != expectedKind || leftPath.isEmpty()) {
+                window.statusBar()->showMessage("Select a left " + expectedKind + " first", 10000);
+                focusWindow();
+                return;
+            }
+            LaunchRequest comparison;
+            comparison.left = leftPath;
+            comparison.right = request.contextPath;
+            dispatchComparison(comparison);
+            return;
+        }
+        if (!request.hasPaths() && request.compareType.isEmpty()) {
+            openBlankFolderCompare();
+            return;
+        }
+        dispatchComparison(request);
+    };
+    window.show();
+    QTimer::singleShot(0, &window, [&, launch]() { handleLaunch(launch); });
+    singleInstance.setLaunchHandler(handleLaunch);
 
     return application.exec();
 }

@@ -67,6 +67,10 @@ cargo test --workspace
 
 For the Qt application, use the repository's platform setup and build scripts as described in [`build-launch.sh`](build-launch.sh) and [`setup.sh`](setup.sh).
 
+### File manager integration
+
+The Windows MSI adds Explorer actions for selecting a left file or folder, comparing the next matching item to it, and comparing two selected items directly. Debian packages install a Nautilus context-menu extension (provided by `python3-nautilus`); restart Nautilus after installation to load it. Select one left item and then choose its matching `Compare to Left` action, or select exactly two files or two folders and choose `Compare`. The `openbc-install-nautilus` command remains available to add equivalent actions to Nautilus' Scripts menu on systems without the extension API.
+
 ## Contributing
 
 OpenBC will be better with people who care about reliable, fast, and user-friendly comparison tools. Connect with the project by opening an issue, starting a discussion, or sending a pull request with a focused change.

@@ -118,8 +118,12 @@ pkg_deb() {
   echo "=== deb -> $out"
   run rm -rf "$stage"
   run mkdir -p "$stage/usr/bin" "$stage/DEBIAN" \
-    "$stage/usr/share/applications" "$stage/usr/share/icons/hicolor/512x512/apps"
+    "$stage/usr/share/applications" "$stage/usr/share/icons/hicolor/512x512/apps" \
+    "$stage/usr/share/openbc/nautilus" "$stage/usr/share/nautilus-python/extensions"
   run cp "$BUILD_DIR/openbc" "$BUILD_DIR/openbc-depcheck" "$stage/usr/bin/"
+  run install -m 0755 scripts/nautilus/openbc-nautilus-action "$stage/usr/share/openbc/nautilus/"
+  run install -m 0755 scripts/nautilus/install-nautilus.sh "$stage/usr/bin/openbc-install-nautilus"
+  run install -m 0644 scripts/nautilus/openbc_nautilus.py "$stage/usr/share/nautilus-python/extensions/openbc.py"
   run cp resources/io.openbc.OpenBC.desktop "$stage/usr/share/applications/"
   run cp resources/icons/fevicon.png "$stage/usr/share/icons/hicolor/512x512/apps/openbc.png"
   $DRY || cat > "$stage/DEBIAN/control" <<CTRL
@@ -128,7 +132,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: ${arch}
-Depends: libqt6widgets6 (>= 6.0), libqt6opengl6 (>= 6.0), libqt6openglwidgets6 (>= 6.0), zlib1g, liblzma5, libssl3
+Depends: libqt6widgets6 (>= 6.0), libqt6network6 (>= 6.0), libqt6opengl6 (>= 6.0), libqt6openglwidgets6 (>= 6.0), python3-nautilus, zlib1g, liblzma5, libssl3
 Maintainer: OpenBC Team <info@example.com>
 Description: OpenBC File and Directory Comparison Tool
  OpenBC is an open-source comparison tool integrated with Rust backends and Qt6 GUI.
@@ -158,10 +162,15 @@ OpenBC is a comparison tool with Rust backends and a Qt6 GUI.
 mkdir -p %{buildroot}/usr/bin
 install -m 0755 $ROOT/$BUILD_DIR/openbc %{buildroot}/usr/bin/openbc
 install -m 0755 $ROOT/$BUILD_DIR/openbc-depcheck %{buildroot}/usr/bin/openbc-depcheck
+mkdir -p %{buildroot}/usr/share/openbc/nautilus
+install -m 0755 $ROOT/scripts/nautilus/openbc-nautilus-action %{buildroot}/usr/share/openbc/nautilus/
+install -m 0755 $ROOT/scripts/nautilus/install-nautilus.sh %{buildroot}/usr/bin/openbc-install-nautilus
 
 %files
 /usr/bin/openbc
 /usr/bin/openbc-depcheck
+/usr/bin/openbc-install-nautilus
+/usr/share/openbc/nautilus/openbc-nautilus-action
 SPEC
   run rpmbuild -bb --define "_topdir $top" "$top/SPECS/openbc.spec"
   $DRY || find "$top/RPMS" -name '*.rpm' -exec cp {} "$OUT_DIR/" \;
@@ -250,10 +259,56 @@ pkg_msi() {
         <RegistryValue Root="HKCU" Key="Software\OpenBC" Name="desktop_shortcut" Type="integer" Value="1" KeyPath="yes"/>
       </Component>
     </DirectoryRef>
+    <DirectoryRef Id="TARGETDIR">
+      <Component Id="OpenBCFolderSelectLeft" Guid="*">
+        <RegistryKey Root="HKCR" Key="Directory\shell\OpenBC.SelectLeftFolder">
+          <RegistryValue Name="MUIVerb" Type="string" Value="Select Left Folder" KeyPath="yes" />
+          <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; --select-left-folder &quot;%1&quot;" /></RegistryKey>
+        </RegistryKey>
+      </Component>
+      <Component Id="OpenBCFolderCompareToLeft" Guid="*">
+        <RegistryKey Root="HKCR" Key="Directory\shell\OpenBC.CompareToLeftFolder">
+          <RegistryValue Name="MUIVerb" Type="string" Value="Compare to Left Folder" KeyPath="yes" />
+          <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; --compare-to-left-folder &quot;%1&quot;" /></RegistryKey>
+        </RegistryKey>
+      </Component>
+      <Component Id="OpenBCFileSelectLeft" Guid="*">
+        <RegistryKey Root="HKCR" Key="*\shell\OpenBC.SelectLeftFile">
+          <RegistryValue Name="MUIVerb" Type="string" Value="Select Left File" KeyPath="yes" />
+          <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; --select-left-file &quot;%1&quot;" /></RegistryKey>
+        </RegistryKey>
+      </Component>
+      <Component Id="OpenBCFileCompareToLeft" Guid="*">
+        <RegistryKey Root="HKCR" Key="*\shell\OpenBC.CompareToLeftFile">
+          <RegistryValue Name="MUIVerb" Type="string" Value="Compare to Left File" KeyPath="yes" />
+          <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; --compare-to-left-file &quot;%1&quot;" /></RegistryKey>
+        </RegistryKey>
+      </Component>
+      <Component Id="OpenBCFolderCompareSelection" Guid="*">
+        <RegistryKey Root="HKCR" Key="Directory\shell\OpenBC.Compare">
+          <RegistryValue Name="MUIVerb" Type="string" Value="Compare" KeyPath="yes" />
+          <RegistryValue Name="MultiSelectModel" Type="string" Value="Player" />
+          <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; %*" /></RegistryKey>
+        </RegistryKey>
+      </Component>
+      <Component Id="OpenBCFileCompareSelection" Guid="*">
+        <RegistryKey Root="HKCR" Key="*\shell\OpenBC.Compare">
+          <RegistryValue Name="MUIVerb" Type="string" Value="Compare" KeyPath="yes" />
+          <RegistryValue Name="MultiSelectModel" Type="string" Value="Player" />
+          <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; %*" /></RegistryKey>
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
     <Feature Id="MainFeature" Title="OpenBC Core" Level="1">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="ApplicationShortcut" />
       <ComponentRef Id="DesktopShortcut" />
+      <ComponentRef Id="OpenBCFolderSelectLeft" />
+      <ComponentRef Id="OpenBCFolderCompareToLeft" />
+      <ComponentRef Id="OpenBCFileSelectLeft" />
+      <ComponentRef Id="OpenBCFileCompareToLeft" />
+      <ComponentRef Id="OpenBCFolderCompareSelection" />
+      <ComponentRef Id="OpenBCFileCompareSelection" />
     </Feature>
   </Product>
 </Wix>

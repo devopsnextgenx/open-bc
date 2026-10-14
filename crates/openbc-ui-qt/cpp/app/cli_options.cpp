@@ -47,6 +47,10 @@ QString cliHelpText() {
         "OpenBC - file and folder comparison\n\n"
         "Usage: openbc [options] [LEFT [RIGHT]]\n\n"
         "  LEFT, RIGHT           two files or two folders to compare (both optional)\n"
+        "  --select-left-folder PATH   remember a folder as the left side\n"
+        "  --compare-to-left-folder PATH   compare a folder to the remembered left folder\n"
+        "  --select-left-file PATH   remember a file as the left side\n"
+        "  --compare-to-left-file PATH   compare a file to the remembered left file\n"
         "  --compare <type>      force a viewer instead of auto-detecting from the paths:\n"
         "                        folder | text | picture | 3d | table | registry | hex | media\n"
         "  --dependency-check    verify required .dll/.so files and exit (0 = ok, 2 = missing)\n"
@@ -73,6 +77,14 @@ LaunchRequest parseLaunchArguments(const QStringList& arguments) {
             r.showVersion = true;
         } else if (a == "--dependency-check") {
             r.dependencyCheck = true;
+        } else if (a == "--select-left-folder" || a == "--compare-to-left-folder" ||
+                   a == "--select-left-file" || a == "--compare-to-left-file") {
+            if (i + 1 >= arguments.size()) {
+                r.error = a + " needs a path";
+                return r;
+            }
+            r.contextAction = a.mid(2);
+            r.contextPath = arguments[++i];
         } else if (a == "--compare" || a.startsWith("--compare=")) {
             if (a.startsWith("--compare=")) {
                 r.compareType = a.mid(10);
@@ -93,6 +105,10 @@ LaunchRequest parseLaunchArguments(const QStringList& arguments) {
     }
     if (positional.size() > 2) {
         r.error = "at most two paths can be given, got " + QString::number(positional.size());
+        return r;
+    }
+    if (r.hasContextAction() && (!positional.isEmpty() || r.contextPath.isEmpty())) {
+        r.error = "a file-manager action needs exactly one path";
         return r;
     }
     r.left = positional.value(0);
