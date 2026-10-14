@@ -6,4 +6,4 @@ Exec=openbc
 Icon=openbc
 Terminal=false
 Categories=Utility;
-StartupNotify=true
+StartupNotify=false

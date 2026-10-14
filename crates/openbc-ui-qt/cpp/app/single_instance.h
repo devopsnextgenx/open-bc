@@ -2,12 +2,14 @@
 
 #include <QCryptographicHash>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLockFile>
 #include <QLocalServer>
 #include <QLocalSocket>
+#include <QThread>
 #include <QTimer>
 #include <QVector>
 #include <QtEndian>
@@ -19,30 +21,19 @@ namespace openbc::app {
 
 class SingleInstance {
 public:
-    explicit SingleInstance(const LaunchRequest& request) {
+    explicit SingleInstance(const LaunchRequest& request)
+        : serverName_(serverNameForUser()),
+          instanceLock_(QDir::tempPath() + "/" + serverName_ + ".lock") {
         server_.setSocketOptions(QLocalServer::UserAccessOption);
-        const QString digest = QString::fromLatin1(
-            QCryptographicHash::hash(QDir::homePath().toUtf8(), QCryptographicHash::Sha256).toHex().left(16));
-        serverName_ = "openbc-" + digest;
-
-        if (startServer()) return;
-
-        if (forward(serverName_, request)) {
-            forwarded_ = true;
+        if (instanceLock_.tryLock(0)) {
+            if (!startServer()) {
+                QLocalServer::removeServer(serverName_);
+                if (!startServer()) instanceLock_.unlock();
+            }
             return;
         }
 
-        QLockFile recoveryLock(QDir::tempPath() + "/openbc-" + digest + ".recovery.lock");
-        if (!recoveryLock.tryLock(1500)) {
-            forwarded_ = forward(serverName_, request);
-            return;
-        }
-        if (forward(serverName_, request)) {
-            forwarded_ = true;
-            return;
-        }
-        QLocalServer::removeServer(serverName_);
-        if (!startServer()) forwarded_ = forward(serverName_, request);
+        forwarded_ = forward(serverName_, request);
     }
 
     bool isPrimary() const { return primary_; }
@@ -57,6 +48,12 @@ public:
     }
 
 private:
+    static QString serverNameForUser() {
+        const QString digest = QString::fromLatin1(
+            QCryptographicHash::hash(QDir::homePath().toUtf8(), QCryptographicHash::Sha256).toHex().left(16));
+        return "openbc-" + digest;
+    }
+
     bool startServer() {
         if (!server_.listen(serverName_)) return false;
         primary_ = true;
@@ -79,7 +76,12 @@ private:
         if (buffer.size() < 4) return;
         const auto* bytes = reinterpret_cast<const uchar*>(buffer.constData());
         const quint32 payloadSize = qFromBigEndian<quint32>(bytes);
-        if (payloadSize > 1024 * 1024 || buffer.size() < 4 + payloadSize) return;
+        if (payloadSize > 1024 * 1024) {
+            socket->write("0", 1);
+            socket->disconnectFromServer();
+            return;
+        }
+        if (buffer.size() < 4 + payloadSize) return;
         const auto document = QJsonDocument::fromJson(buffer.mid(4, payloadSize));
         if (document.isObject()) {
             const QJsonObject object = document.object();
@@ -89,15 +91,27 @@ private:
             forwarded.compareType = object.value("compareType").toString();
             forwarded.contextAction = object.value("contextAction").toString();
             forwarded.contextPath = object.value("contextPath").toString();
+            socket->write("1", 1);
+            socket->flush();
             dispatch(forwarded);
+        } else {
+            socket->write("0", 1);
         }
         socket->disconnectFromServer();
     }
 
     static bool forward(const QString& serverName, const LaunchRequest& request) {
+        constexpr int timeoutMs = 30000;
         QLocalSocket socket;
-        socket.connectToServer(serverName);
-        if (!socket.waitForConnected(500)) return false;
+        QElapsedTimer timeout;
+        timeout.start();
+        while (timeout.elapsed() < timeoutMs) {
+            socket.connectToServer(serverName);
+            if (socket.waitForConnected(100)) break;
+            socket.abort();
+            QThread::msleep(50);
+        }
+        if (socket.state() != QLocalSocket::ConnectedState) return false;
 
         const QJsonObject object{{"left", request.left},
                                  {"right", request.right},
@@ -110,7 +124,11 @@ private:
                               reinterpret_cast<uchar*>(frame.data()));
         frame += payload;
         if (socket.write(frame) != frame.size()) return false;
-        return socket.waitForBytesWritten(1500);
+        while (socket.bytesToWrite() > 0) {
+            if (!socket.waitForBytesWritten(1500)) return false;
+        }
+        const int remainingMs = qMax(1, timeoutMs - static_cast<int>(timeout.elapsed()));
+        return socket.waitForReadyRead(remainingMs) && socket.read(1) == QByteArrayLiteral("1");
     }
 
     void dispatch(const LaunchRequest& request) {
@@ -123,6 +141,7 @@ private:
     std::function<void(const LaunchRequest&)> handler_;
     QVector<LaunchRequest> pending_;
     QString serverName_;
+    QLockFile instanceLock_;
     bool primary_ = false;
     bool forwarded_ = false;
 };
