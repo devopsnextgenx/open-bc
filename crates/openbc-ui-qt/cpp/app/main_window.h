@@ -817,6 +817,8 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     instrumentationButton->setEnabled(!activeInstrumentationSessionId().isEmpty());
 
     auto focusWindow = [&]() {
+        while (QApplication::overrideCursor()) QApplication::restoreOverrideCursor();
+        window.unsetCursor();
         if (window.isMinimized()) {
             window.setWindowState(window.windowState() & ~Qt::WindowMinimized);
         }
