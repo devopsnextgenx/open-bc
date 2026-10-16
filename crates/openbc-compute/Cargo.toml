@@ -18,6 +18,7 @@ openbc-core = { path = "../openbc-core" }
 openbc-observability = { path = "../openbc-observability" }
 rayon.workspace = true
 sha2 = "0.10"
+symphonia.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 wgpu = { workspace = true, optional = true }

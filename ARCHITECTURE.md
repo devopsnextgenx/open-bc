@@ -57,6 +57,12 @@ Image compare (Picture Compare tab) follows the same layering as folder compare:
 
 Memory is bounded: the event channel holds at most four events (each can carry a canvas-sized overlay), and files above `ImageCompareConfig::max_file_bytes` or decoders above `MAX_DECODE_ALLOC` are rejected per path without affecting the other side.
 
+## Audio spectral compare
+
+- `openbc-compute::audio_compare` decodes audio to normalized interleaved PCM; `openbc-compute::spectral_diff` applies a Hann-windowed, radix-2 STFT and converts aligned magnitudes into a bounded-width RGB888 image. Channel power is averaged across each track's channels, and the longer duration defines the timeline.
+- The composite uses neutral gray for matching magnitudes, magenta for excess energy in A, and cyan for excess energy in B. Frequency runs from DC at the bottom to Nyquist at the top.
+- `openbc-ui-qt::AudioSpectralDiffWidget` copies the RGB buffer into a `QImage` and paints only the source rectangle for the visible time viewport. Its playhead and viewport callbacks allow the host to synchronize both players and other timeline views without work on a background thread touching Qt state.
+
 ## Failure model
 
 VFS failures are attached to the affected path and emitted as scan events. A single unreadable file must not terminate unrelated sibling work. Fatal configuration and channel-closure errors terminate the scan with an explicit error.

@@ -7,6 +7,8 @@
 //! dispatcher .... ComputeDispatcher: content hashing HAL (CPU pool + optional GPU marker)
 //! hex ........... byte-range comparison for hex compare
 //! table ......... CSV/TSV + spreadsheet decoding and parallel row diffing
+//! audio_compare . decoded PCM, multi-resolution peaks and aligned sample deltas
+//! spectral_diff . STFT-based spectral comparison and RGB heat-map rendering
 //! media ......... container metadata (audio via lofty; MP4/MOV and AVI header walkers)
 //! image ......... decode, resize and pixel compare (CPU kernel + GPU contract)
 //! model3d ....... mesh loaders, alignment, deviation fields, analysis, volumetric changes
@@ -16,10 +18,12 @@
 //! `MediaError`, `model3d::ComputeError`) because callers match on them independently.
 
 pub mod gpu_policy;
+pub mod audio_compare;
 pub mod hex;
 pub mod image;
 pub mod media;
 pub mod model3d;
+pub mod spectral_diff;
 pub mod table;
 
 mod dispatcher;
