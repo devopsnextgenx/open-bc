@@ -1,9 +1,10 @@
-//! C ABI for the Media Compare tab (container/tag metadata only). See `ffi::common`.
+//! C ABI for the Media Compare tab (metadata, audio waveform peaks, and tag edits).
+//! See `ffi::common`.
 
 use std::ffi::{c_char, c_void, CStr};
 use std::sync::Arc;
 
-use openbc_engine::media_compare::{spawn_media_compare, CoverEdit, MediaCommand, MediaCompareHandle, MediaEvent, MediaSave, MediaView, TagEdit};
+use openbc_engine::media_compare::{spawn_media_compare, AudioPeak, AudioWaveform, CoverEdit, MediaCommand, MediaCompareHandle, MediaEvent, MediaSave, MediaView, TagEdit};
 use openbc_engine::media_compare::is_editable;
 
 use super::common::*;
@@ -136,6 +137,83 @@ pub unsafe extern "C" fn openbc_media_side_cover(v: *const ViewHandle, side: u8,
         }
     }
 }
+
+fn audio_waveform(view: &MediaView, side: u8) -> Option<&AudioWaveform> {
+    view.audio.as_ref()?.waveforms.get(usize::from(side))
+}
+
+/// # Safety
+/// `v` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_media_audio_present(v: *const ViewHandle) -> u8 {
+    u8::from(handle_ref!(v, 0).audio.is_some())
+}
+
+/// # Safety
+/// `v` valid; `len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_media_audio_error(v: *const ViewHandle, len: *mut usize) -> *const u8 {
+    let view = handle_ref!(v, out_opt_str(None, len));
+    out_opt_str(view.audio_error.as_deref(), len)
+}
+
+/// `side`: 0 left, 1 right, 2 absolute difference.
+///
+/// # Safety
+/// `v` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_media_audio_frame_count(v: *const ViewHandle, side: u8) -> u64 {
+    audio_waveform(handle_ref!(v, 0), side).map_or(0, |waveform| waveform.frame_count)
+}
+
+/// `side`: 0 left, 1 right, 2 absolute difference.
+///
+/// # Safety
+/// `v` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_media_audio_sample_rate(v: *const ViewHandle, side: u8) -> u32 {
+    audio_waveform(handle_ref!(v, 0), side).map_or(0, |waveform| waveform.sample_rate)
+}
+
+/// `side`: 0 left, 1 right, 2 absolute difference.
+///
+/// # Safety
+/// `v` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_media_audio_level_count(v: *const ViewHandle, side: u8) -> usize {
+    audio_waveform(handle_ref!(v, 0), side).map_or(0, |waveform| waveform.levels.len())
+}
+
+/// `side`: 0 left, 1 right, 2 absolute difference.
+///
+/// # Safety
+/// `v` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_media_audio_level_frames_per_bin(v: *const ViewHandle, side: u8, level: usize) -> u64 {
+    audio_waveform(handle_ref!(v, 0), side).and_then(|waveform| waveform.levels.get(level))
+        .map_or(0, |level| level.frames_per_bin)
+}
+
+/// `side`: 0 left, 1 right, 2 absolute difference.
+///
+/// # Safety
+/// `v` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_media_audio_bin_count(v: *const ViewHandle, side: u8, level: usize) -> usize {
+    audio_waveform(handle_ref!(v, 0), side).and_then(|waveform| waveform.levels.get(level))
+        .map_or(0, |level| level.bins.len())
+}
+
+/// `side`: 0 left, 1 right, 2 absolute difference. The pointer stays valid until the view is destroyed.
+///
+/// # Safety
+/// `v` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_media_audio_level_data(v: *const ViewHandle, side: u8, level: usize) -> *const AudioPeak {
+    audio_waveform(handle_ref!(v, std::ptr::null()), side).and_then(|waveform| waveform.levels.get(level))
+        .map_or(std::ptr::null(), |level| level.bins.as_ptr())
+}
+
 unsafe fn cstr(p: *const c_char) -> String {
     if p.is_null() { String::new() } else { CStr::from_ptr(p).to_string_lossy().into_owned() }
 }

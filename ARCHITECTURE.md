@@ -63,6 +63,12 @@ Memory is bounded: the event channel holds at most four events (each can carry a
 - The composite uses neutral gray for matching magnitudes, magenta for excess energy in A, and cyan for excess energy in B. Frequency runs from DC at the bottom to Nyquist at the top.
 - `openbc-ui-qt::AudioSpectralDiffWidget` copies the RGB buffer into a `QImage` and paints only the source rectangle for the visible time viewport. Its playhead and viewport callbacks allow the host to synchronize both players and other timeline views without work on a background thread touching Qt state.
 
+## Media Compare audio waveform
+
+- `openbc-engine::media_compare` prepares three aligned, multiresolution peak pyramids for supported audio-file pairs: left, right, and absolute sample difference. Decoding and peak preparation run on Rayon alongside the metadata reads.
+- The Media Compare C ABI exposes peak buffers only for the lifetime of its result handle. `openbc-ui-qt::MediaCompareViewer` copies them into `AudioDiffVisualizer`, displayed above the metadata table; audio decode failures appear in the visualization area without failing metadata comparison.
+- The visualization playhead follows the active player. Clicking or dragging its timeline seeks the left player and also the right when Link seek is enabled.
+
 ## Failure model
 
 VFS failures are attached to the affected path and emitted as scan events. A single unreadable file must not terminate unrelated sibling work. Fatal configuration and channel-closure errors terminate the scan with an explicit error.

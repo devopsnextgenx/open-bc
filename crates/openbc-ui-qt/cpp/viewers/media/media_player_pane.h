@@ -44,6 +44,7 @@ public:
     std::function<void()> onVideoChanged;
     std::function<void()> onStateChanged;
     std::function<void(qint64)> onSeeked;
+    std::function<void(qint64)> onPositionChanged;
     std::function<void(const QByteArray&)> onCoverReplaced;
     std::function<void()> onCoverRemoved;
 
@@ -203,6 +204,7 @@ public:
         connect(player_, &QMediaPlayer::positionChanged, this, [this](qint64 position) {
             if (!slider_->isSliderDown()) slider_->setValue(static_cast<int>(position));
             refreshTime();
+            if (onPositionChanged) onPositionChanged(position);
         });
         connect(slider_, &QSlider::sliderMoved, this, [this](int position) {
             ensureSource();
@@ -226,6 +228,8 @@ public:
     std::function<void()> onStateChanged;
     // Fired when the user drags this side's slider (viewer may mirror it to the other side).
     std::function<void(qint64)> onSeeked;
+    // Fired for playback and seeks so a host can synchronize timeline visualizations.
+    std::function<void(qint64)> onPositionChanged;
     // Cover editing requests (viewer keeps the pending change and previews it via setCover()).
     std::function<void(const QByteArray&)> onCoverReplaced;
     std::function<void()> onCoverRemoved;

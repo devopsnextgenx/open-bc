@@ -1,9 +1,7 @@
 // media_compare_viewer.h
 // ---------------------------------------------------------------------------
-// MediaCompareViewer: compares the METADATA of two media files (mp3, wav, flac,
-// ogg, m4a, mp4, mov, avi, mkv ...): container, codec, duration, dimensions,
-// bitrate, channels, tags, embedded cover art. The audio/video payload is never
-// decoded for comparison.
+// MediaCompareViewer compares media metadata and shows an aligned waveform/delta
+// visualization for supported audio files.
 //
 // Presentation only: header parsing, property alignment and tag WRITING happen
 // in the backend behind the openbc_media_* C ABI. Rows whose values differ are
@@ -79,6 +77,7 @@
 #include "backend/backend_channel.h"
 #include "backend/compare_backend_api.h"
 #include "viewers/media/media_player_pane.h"
+#include "viewers/media/audio_diff_visualizer.h"
 #include "common/path_selector.h"
 #include "common/remote_selector.h"
 #include "common/unsaved_changes_dialog.h"
@@ -188,6 +187,8 @@ private:
     void startSession() {
         stopSession();
         view_.reset();
+        audioVisualizer_->hide();
+        audioStatus_->hide();
         previewed_[0] = previewed_[1] = false;
         clearPending(0);
         clearPending(1);
@@ -223,6 +224,7 @@ private:
             summary_->setText(event.message);
         } else if (event.kind == OPENBC_EV_RESULT) {
             view_ = std::static_pointer_cast<OpenBcMediaView>(event.handle);
+            updateAudioVisualization();
             bool wasSave = false, saveOk = true;
             QString saveError;
             if (savingSide_ >= 0) {
@@ -349,6 +351,55 @@ private:
         QPixmap pixmap;
         if (p && length) pixmap.loadFromData(reinterpret_cast<const uchar*>(p), static_cast<uint>(length));
         return pixmap;
+    }
+
+    static AudioWaveform loadAudioWaveform(const OpenBcMediaView* view, std::uint8_t side) {
+        AudioWaveform waveform;
+        waveform.frameCount = openbc_media_audio_frame_count(view, side);
+        waveform.sampleRate = openbc_media_audio_sample_rate(view, side);
+        const std::size_t levelCount = openbc_media_audio_level_count(view, side);
+        waveform.levels.reserve(static_cast<qsizetype>(levelCount));
+        for (std::size_t levelIndex = 0; levelIndex < levelCount; ++levelIndex) {
+            AudioPeakLevel level;
+            level.framesPerBin = openbc_media_audio_level_frames_per_bin(view, side, levelIndex);
+            const std::size_t binCount = openbc_media_audio_bin_count(view, side, levelIndex);
+            const OpenBcAudioPeak* bins = openbc_media_audio_level_data(view, side, levelIndex);
+            if (binCount != 0 && !bins) return {};
+            level.bins.reserve(static_cast<qsizetype>(binCount));
+            for (std::size_t bin = 0; bin < binCount; ++bin) {
+                level.bins.append({bins[bin].minimum, bins[bin].maximum});
+            }
+            waveform.levels.append(std::move(level));
+        }
+        return waveform;
+    }
+
+    void updateAudioVisualization() {
+        const OpenBcMediaView* mediaView = view_.get();
+        if (openbc_media_audio_present(mediaView)) {
+            AudioWaveform left = loadAudioWaveform(mediaView, 0);
+            AudioWaveform right = loadAudioWaveform(mediaView, 1);
+            AudioWaveform delta = loadAudioWaveform(mediaView, 2);
+            QString error;
+            if (audioVisualizer_->setWaveforms(std::move(left), std::move(right), std::move(delta), &error)) {
+                audioStatus_->hide();
+                audioVisualizer_->show();
+                return;
+            }
+            audioStatus_->setText("Audio visualization unavailable: " + error);
+        } else {
+            std::size_t length = 0;
+            const auto* error = openbc_media_audio_error(mediaView, &length);
+            const QString message = backendString(error, length);
+            if (message.isEmpty()) {
+                audioVisualizer_->hide();
+                audioStatus_->hide();
+                return;
+            }
+            audioStatus_->setText("Audio visualization unavailable: " + message);
+        }
+        audioVisualizer_->hide();
+        audioStatus_->show();
     }
 
     MediaPlayerPane* pane(std::uint8_t side) const { return side == 0 ? leftPane_ : rightPane_; }
@@ -606,6 +657,7 @@ private:
     // ---- volume / crossfade -------------------------------------------------------
 
     void applyVolumes() {
+        audioVisualizer_->setPaused(!leftPane_->playing() && !rightPane_->playing());
         if (!master_ || !crossfade_) return;
 #ifdef OPENBC_HAVE_QT_MULTIMEDIA
         const double master = muteButton_->isChecked()
@@ -813,6 +865,18 @@ private:
         errors_->hide();
         bottomLayout->addWidget(errors_);
 
+        audioStatus_ = new QLabel(this);
+        audioStatus_->setStyleSheet("color:#e5a84b;");
+        audioStatus_->setWordWrap(true);
+        audioStatus_->setContentsMargins(6, 2, 6, 2);
+        audioStatus_->hide();
+        bottomLayout->addWidget(audioStatus_);
+
+        audioVisualizer_ = new AudioDiffVisualizer(this);
+        audioVisualizer_->setObjectName("audioDiffVisualizer");
+        audioVisualizer_->hide();
+        bottomLayout->addWidget(audioVisualizer_);
+
         auto* header = new QHBoxLayout;
         header->setContentsMargins(6, 2, 6, 2);
         summary_ = new QLabel("Metadata", this);
@@ -915,6 +979,16 @@ private:
         rightPane_->onStateChanged = [this]() { applyVolumes(); };
         leftPane_->onSeeked = [this](qint64 ms) { if (linkSeek_->isChecked()) rightPane_->seek(ms); };
         rightPane_->onSeeked = [this](qint64 ms) { if (linkSeek_->isChecked()) leftPane_->seek(ms); };
+        audioVisualizer_->onSeekRequested = [this](qint64 ms) {
+            leftPane_->seek(ms);
+            if (linkSeek_->isChecked()) rightPane_->seek(ms);
+        };
+        leftPane_->onPositionChanged = [this](qint64 ms) {
+            if (leftPane_->playing() || !rightPane_->playing()) audioVisualizer_->setPlaybackPosition(ms);
+        };
+        rightPane_->onPositionChanged = [this](qint64 ms) {
+            if (!leftPane_->playing()) audioVisualizer_->setPlaybackPosition(ms);
+        };
         applyVolumes();
 
         // Play Left / Right: toggle that side and pause the other so two files never overlap by accident.
@@ -988,6 +1062,8 @@ private:
     QLabel* summary_ = nullptr;
     QLabel* pendingLabel_ = nullptr;
     QLabel* errors_ = nullptr;
+    QLabel* audioStatus_ = nullptr;
+    AudioDiffVisualizer* audioVisualizer_ = nullptr;
     QCheckBox* onlyDifferences_ = nullptr;
     QTreeWidget* tree_ = nullptr;
     QWidget* top_ = nullptr;
