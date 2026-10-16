@@ -552,9 +552,12 @@ private:
         rulesAction_ = toolbar_->addAction(icons::glyph(Glyph::Rules), "Rules");
         rulesAction_->setCheckable(true);
         rulesAction_->setToolTip("Ignore matching samples such as timestamps, UUIDs, or pod IDs");
-        formatAction_ = toolbar_->addAction(icons::glyph(Glyph::Format), "Format");
+        formatAction_ = toolbar_->addAction(icons::glyph(Glyph::Format), "Word Wrap");
         formatAction_->setCheckable(true);
-        formatAction_->setToolTip("Wrap long lines");
+        formatAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Z));
+        formatAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        formatAction_->setToolTip("Wrap long lines (Alt+Z)");
+        addAction(formatAction_);
         toolbar_->addSeparator();
 
         pixelMinimapAction_ = toolbar_->addAction(icons::glyph(Glyph::MinimapPixel), "Minimap");
