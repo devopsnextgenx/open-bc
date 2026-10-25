@@ -1,9 +1,11 @@
+# Self-hosted GitHub Actions runner for the "linux" job (.deb + Flatpak).
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install core build tools, Qt6, Flatpak, and dependencies
-RUN apt-get update && apt-get install -y \
+# Build tools, Qt6, Flatpak, and Python deps for flatpak-cargo-generator.py
+# (aiohttp + tomlkit + yaml are what the generator imports).
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     ninja-build \
@@ -20,13 +22,46 @@ RUN apt-get update && apt-get install -y \
     liblzma-dev \
     flatpak \
     flatpak-builder \
+    bubblewrap \
     appstream \
+    python3 \
+    python3-aiohttp \
+    python3-tomlkit \
+    python3-yaml \
     git \
     curl \
+    ca-certificates \
+    sudo \
+    tar \
+    gzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust stable toolchain system-wide
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-ENV PATH="/root/.cargo/bin:${PATH}"
+# The runner refuses to run as root, so use a normal user.
+RUN useradd -m -s /bin/bash runner
 
-WORKDIR /workspace
+# Install the GitHub Actions runner (RUNNER_VERSION=latest resolves the newest release at build time).
+ARG RUNNER_VERSION=latest
+WORKDIR /home/runner/actions-runner
+RUN set -eux; \
+    case "$(uname -m)" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) echo "unsupported arch"; exit 1 ;; esac; \
+    if [ "${RUNNER_VERSION}" = "latest" ]; then \
+        RUNNER_VERSION="$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')"; \
+    fi; \
+    curl -fsSL -o runner.tar.gz "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${arch}-${RUNNER_VERSION}.tar.gz"; \
+    tar xzf runner.tar.gz; rm runner.tar.gz; \
+    ./bin/installdependencies.sh; \
+    chown -R runner:runner /home/runner
+
+COPY --chown=runner:runner entrypoint.sh /home/runner/actions-runner/entrypoint.sh
+
+USER runner
+
+# Rust stable via rustup, installed for the runner user.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/home/runner/.cargo/bin:${PATH}"
+
+# Pre-create cache mount points so named volumes inherit runner ownership.
+RUN mkdir -p /home/runner/.local/share/flatpak /home/runner/.cargo/registry \
+    && sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
+
+ENTRYPOINT ["/home/runner/actions-runner/entrypoint.sh"]

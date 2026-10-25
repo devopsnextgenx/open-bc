@@ -1,25 +1,45 @@
 #!/bin/bash
+# Registers the runner, runs it, and deregisters on container stop.
+set -euo pipefail
 
-# Exit immediately if a command exits with a non-zero status
-set -e
+: "${REPO_URL:?REPO_URL must be provided}"
+: "${REG_TOKEN:?REG_TOKEN must be provided}"
 
-# Check if required environment variables are passed
-if [ -z "$REPO_URL" ] || [ -z "$REG_TOKEN" ]; then
-  echo "Error: REPO_URL and REG_TOKEN must be provided."
-  exit 1
-fi
+RUNNER_NAME="${RUNNER_NAME:-$(hostname)}"
+RUNNER_LABELS="${RUNNER_LABELS:-}"
 
-echo "Configuring runner for repository: $REPO_URL..."
+cd "$(dirname "$0")"
 
-# Configure the runner
-./config.sh --url "$REPO_URL" --token "$REG_TOKEN" --unattended --replace
+# A restarted container keeps its old config; clear it so config.sh does not refuse.
+rm -f .runner .credentials .credentials_rsaparams
 
-# Cleanup configuration on container exit
+echo "Configuring runner '$RUNNER_NAME' for $REPO_URL (labels: ${RUNNER_LABELS:-none})..."
+./config.sh --url "$REPO_URL" --token "$REG_TOKEN" \
+    --name "$RUNNER_NAME" ${RUNNER_LABELS:+--labels "$RUNNER_LABELS"} \
+    --unattended --replace
+
+CLEANED=0
 cleanup() {
+    [ "$CLEANED" -eq 1 ] && return
+    CLEANED=1
     echo "Removing runner from GitHub..."
-    ./config.sh remove --token "$REG_TOKEN"
+    ./config.sh remove --token "$REG_TOKEN" \
+        || echo "Warning: could not deregister (token expired?). Delete it under Settings > Actions > Runners."
 }
-trap cleanup EXIT
+
+# Forward stop signals to the runner so it can finish cleanly, then deregister.
+on_signal() {
+    kill -TERM "$RUN_PID" 2>/dev/null || true
+    wait "$RUN_PID" 2>/dev/null || true
+    cleanup
+    exit 0
+}
+trap on_signal INT TERM
 
 echo "Starting the GitHub Actions runner..."
-./run.sh
+./run.sh &
+RUN_PID=$!
+status=0
+wait "$RUN_PID" || status=$?
+cleanup
+exit "$status"

@@ -1,12 +1,23 @@
-# Builds every package on GitHub-hosted runners and, for a version tag (v*), publishes a GitHub Release
-# with all artifacts attached. Manual runs ("Run workflow") build and upload artifacts but do NOT release.
+# Builds every package and, for a version tag (v*), publishes a GitHub Release with all artifacts attached.
+# Manual runs ("Run workflow") build and upload artifacts but do NOT release.
 #
-#   git tag v1.0.1 && git push origin v1.0.1      -> release with deb, rpm, flatpak, msi, SHA256SUMS
+#   git tag v1.0.1 && git push origin v1.0.1      -> release with deb, rpm, flatpak, msi, SHA256SUMS (GitHub-hosted)
+#
+# Local runners (see runners/runner.sh): run the Linux jobs on your own machine with
+#   gh workflow run release.yml -f runner=self-hosted
+# deb + flatpak run on the "openbc-debian" runner, rpm on "openbc-fedora". The MSI always builds on
+# GitHub-hosted Windows. Tag pushes always use GitHub-hosted runners.
 #
 # UNTESTED scaffold: first run may need small tweaks (package names, WiX URL). Logs show which step.
 name: release
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Where to run the Linux jobs (deb, flatpak, rpm)
+        type: choice
+        options: [github-hosted, self-hosted]
+        default: github-hosted
   push:
     tags: ['v*']
 
@@ -16,10 +27,12 @@ permissions:
 jobs:
   # ------------------------------------------------------------------ .deb + Flatpak (one runner, one checkout)
   linux:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted","openbc-debian"]') || 'ubuntu-24.04' }}
     steps:
       # Host build + deb + flatpak-builder + KDE runtime need several GB; free the preinstalled toolchains.
+      # (GitHub-hosted only; the local image already has everything and must not be wiped.)
       - name: Free disk space
+        if: inputs.runner != 'self-hosted'
         run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
       - uses: actions/checkout@v4
       - name: Tag must match CMake version
@@ -27,18 +40,25 @@ jobs:
         run: |
           v="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"
           [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != CMake version v$v"; exit 1; }
+      # Local image (runners/Dockerfile.debian) already ships Rust, Qt, flatpak and the generator's Python deps.
       - uses: dtolnay/rust-toolchain@stable
+        if: inputs.runner != 'self-hosted'
       - name: Install build + flatpak dependencies
+        if: inputs.runner != 'self-hosted'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake ninja-build pkg-config perl \
             qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-multimedia-dev \
             libqt6opengl6-dev libgl1-mesa-dev \
             libssl-dev zlib1g-dev liblzma-dev \
-            flatpak flatpak-builder appstream
-          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+            flatpak flatpak-builder appstream \
+            python3-aiohttp python3-tomlkit python3-yaml
+      - name: Add Flathub remote
+        run: flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
       # Ubuntu 24.04 runners block unprivileged user namespaces, which flatpak-builder's sandbox needs.
+      # (Local container runs --privileged instead.)
       - name: Allow user namespaces
+        if: inputs.runner != 'self-hosted'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       # Separate steps keep failures attributable. The second call skips the host build (flatpak
@@ -51,14 +71,19 @@ jobs:
       - name: Generate offline Cargo sources
         run: |
           set -euo pipefail
-          sudo apt-get install -y python3-toml
+          rm -rf /tmp/open-bc-flatpak
           git clone --depth 1 --branch v1.0.3 \
             https://github.com/devopsnextgenx/open-bc.git \
             /tmp/open-bc-flatpak
-          curl -fsSL \
-            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py \
-            -o /tmp/flatpak-cargo-generator.py
-          python3 /tmp/flatpak-cargo-generator.py \
+          # Prefer a copy committed to the repo (pinned); fall back to upstream.
+          gen=scripts/packaging/flatpak-cargo-generator.py
+          if [ ! -f "$gen" ]; then
+            gen=/tmp/flatpak-cargo-generator.py
+            curl -fsSL \
+              https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py \
+              -o "$gen"
+          fi
+          python3 "$gen" \
             /tmp/open-bc-flatpak/Cargo.lock \
             -o scripts/packaging/cargo-sources.json
           test -s scripts/packaging/cargo-sources.json
@@ -70,10 +95,12 @@ jobs:
 
   # ------------------------------------------------------------------ .rpm (built on Fedora so it links Fedora's Qt/glibc)
   rpm:
-    runs-on: ubuntu-24.04
-    container: fedora:latest
+    runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted","openbc-fedora"]') || 'ubuntu-24.04' }}
+    # Hosted: run inside a fedora container. Self-hosted: the runner container already is Fedora.
+    container: ${{ inputs.runner != 'self-hosted' && 'fedora:latest' || null }}
     steps:
       - name: Install build dependencies
+        if: inputs.runner != 'self-hosted'
         run: |
           dnf install -y git gcc-c++ make cmake ninja-build rust cargo rpm-build which perl-core \
             qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel mesa-libGL-devel libxkbcommon-devel \
@@ -83,7 +110,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: pkg-rpm, path: build/lin/packages/*.rpm }
 
-  # ------------------------------------------------------------------ Windows MSI
+  # ------------------------------------------------------------------ Windows MSI (always GitHub-hosted)
   msi:
     runs-on: windows-2022
     steps:

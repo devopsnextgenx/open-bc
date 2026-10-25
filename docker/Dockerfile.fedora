@@ -1,6 +1,6 @@
+# Self-hosted GitHub Actions runner for the "rpm" job.
 FROM fedora:latest
 
-# Install build dependencies, Qt6 dev packages, and Rust via DNF
 RUN dnf install -y \
     git \
     gcc-c++ \
@@ -20,6 +20,31 @@ RUN dnf install -y \
     openssl-devel \
     zlib-devel \
     xz-devel \
+    tar \
+    gzip \
+    findutils \
     && dnf clean all
 
-WORKDIR /workspace
+# The runner refuses to run as root, so use a normal user.
+RUN useradd -m -s /bin/bash runner
+
+ARG RUNNER_VERSION=latest
+WORKDIR /home/runner/actions-runner
+RUN set -eux; \
+    case "$(uname -m)" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) echo "unsupported arch"; exit 1 ;; esac; \
+    if [ "${RUNNER_VERSION}" = "latest" ]; then \
+        RUNNER_VERSION="$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')"; \
+    fi; \
+    curl -fsSL -o runner.tar.gz "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${arch}-${RUNNER_VERSION}.tar.gz"; \
+    tar xzf runner.tar.gz; rm runner.tar.gz; \
+    ./bin/installdependencies.sh; \
+    chown -R runner:runner /home/runner
+
+COPY --chown=runner:runner entrypoint.sh /home/runner/actions-runner/entrypoint.sh
+
+USER runner
+
+RUN mkdir -p /home/runner/.cargo/registry \
+    && sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
+
+ENTRYPOINT ["/home/runner/actions-runner/entrypoint.sh"]
