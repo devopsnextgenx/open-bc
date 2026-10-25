@@ -1,0 +1,51 @@
+# Builds the Windows MSI on a GitHub-hosted Windows runner using the SAME MSYS2 UCRT64 toolchain
+# and the SAME scripts/build.sh you use locally - no Windows machine of your own to maintain.
+# UNTESTED scaffold: adjust package list / WiX URL if a step fails.
+name: windows-msi
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  msi:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      # release:false -> reuse the runner's preinstalled C:\msys64 (build.sh hardcodes /c/msys64)
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          release: false
+          update: true
+          install: >-
+            git
+            make
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-tools
+            mingw-w64-ucrt-x86_64-qt6-multimedia
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-xz
+            mingw-w64-ucrt-x86_64-pkgconf
+
+      # WiX 3 (heat/candle/light) - build.sh looks in /c/msys64/opt/wix
+      - name: Install WiX 3.14
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip -OutFile wix.zip
+          Expand-Archive wix.zip -DestinationPath C:\msys64\opt\wix
+
+      - name: Build MSI
+        shell: msys2 {0}
+        run: ./scripts/build.sh -c -p win
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openbc-msi
+          path: build/win/packages/*.msi

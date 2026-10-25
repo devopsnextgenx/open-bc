@@ -237,7 +237,7 @@ pkg_msi() {
   for c in windeployqt6 windeployqt-qt6 windeployqt; do
     command -v "$c" >/dev/null 2>&1 && { WDQ="$c"; break; }
   done
-  $DRY || [ -n "$WDQ" ] || { echo "windeployqt not found (pacman -S mingw-w64-ucrt-x86_64-qt6-base)" >&2; return 1; }
+  $DRY || [ -n "$WDQ" ] || { echo "windeployqt not found (pacman -S mingw-w64-ucrt-x86_64-qt6-tools)" >&2; return 1; }
   run "${WDQ:-windeployqt6}" --no-compiler-runtime --no-translations "$stage/openbc.exe"
 
   echo "--- copying remaining MinGW/UCRT DLLs (scans openbc.exe AND every Qt plugin / DLL in the stage)"
