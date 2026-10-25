@@ -34,7 +34,7 @@ modules:
       - type: git
         url: https://github.com/devopsnextgenx/open-bc.git
         tag: v1.0.10
-        commit: fc5a24dc469e58002032cfbe11f27b9e5c4bc174
+        commit: e5b3192d177ebbf19177dbf2e9ab5994099de8a5
 
       # 2. Offline Rust dependencies generated from this release's Cargo.lock.
       - cargo-sources.json
