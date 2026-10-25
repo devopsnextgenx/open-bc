@@ -1,4 +1,4 @@
-Act as a Principal Rust and Qt Systems Architect specializing in high-performance concurrent computing. I am starting an open-source, ultra-fast file and directory comparison tool named "OpenBC" (inspired by Beyond Compare).
+Act as a Principal Rust and Qt Systems Architect specializing in high-performance concurrent computing. I am starting an open-source, ultra-fast file and directory comparison tool named "OpenBC" (inspired by Compare).
 
 ===============================================================================
 1. PROJECT GOAL, VISION & ROADMAP

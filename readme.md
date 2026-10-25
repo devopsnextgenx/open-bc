@@ -13,7 +13,7 @@ few small compile errors (crate-version API drift in `image`, imports).
 
 ## OpenBC file/folder compare
 
-OpenBC is an open-source, native file and folder comparison tool. It aims to become a capable, transparent alternative to [Beyond Compare](https://www.scootersoftware.com/), built in the open with a modern Rust core and a Qt desktop interface.
+OpenBC is an open-source, native file and folder comparison tool. It aims to become a capable, transparent alternative to Welknown `[Compare Software]`, built in the open with a modern Rust core and a Qt desktop interface.
 
 The project is actively evolving. The goal is not only to reproduce familiar comparison workflows, but to build a fast, extensible tool that the community can inspect, improve, and adapt.
 
@@ -83,13 +83,13 @@ Useful ways to contribute include:
 - Improve hashing, diffing, scheduling, and performance in `openbc-compute` and `openbc-engine`
 - Shape the Qt experience in `openbc-ui-qt`
 - Add tests, benchmarks, platform support, and documentation
-- Share workflows that Beyond Compare handles well and that an open alternative should support
+- Share workflows that Byond Compare handles well and that an open alternative should support
 
 Before making a larger change, read [`docs/CODING_GUIDELINES.md`](docs/CODING_GUIDELINES.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md). Small, focused pull requests with tests and a clear explanation of the user problem are especially welcome.
 
 ## Community goal
 
-A strong open-source alternative to Beyond Compare should be shaped by the people who use comparison tools every day. If you have experience with code review, release engineering, data migration, backups, binary files, remote systems, or accessibility, your perspective can help set the direction.
+A strong open-source alternative to Byond Compare should be shaped by the people who use comparison tools every day. If you have experience with code review, release engineering, data migration, backups, binary files, remote systems, or accessibility, your perspective can help set the direction.
 
 Connect, contribute, and help us build OpenBC into a dependable comparison tool that belongs to its users.
 
