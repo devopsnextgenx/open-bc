@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # runner.sh - build and run local GitHub Actions self-hosted runners in Docker.
+# gh api -X POST repos/devopsnextgenx/open-bc/actions/runners/registration-token --jq .token
 set -euo pipefail
 
 # Git Bash on Windows rewrites arguments that look like paths (-v name:/home/..., URLs); keep them as-is.
@@ -7,7 +8,7 @@ export MSYS_NO_PATHCONV=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCKER="${DOCKER:-docker}"
-IMAGE_BASE="openbc-runner"
+IMAGE_BASE="docker.io/amitkshirsagar13/openbc-runner"
 
 COMMAND=""
 TARGET="all"
@@ -43,7 +44,7 @@ Options:
                                        e.g.  -r debian,fedora,windows
   -t, --token <TOKEN>                Registration token (start). Also read from $RUNNER_TOKEN.
                                        Repo > Settings > Actions > Runners > New self-hosted runner,
-                                       or: gh api -X POST repos/OWNER/REPO/actions/runners/registration-token --jq .token
+                                       or: gh api -X POST repos/devopsnextgenx/open-bc/actions/runners/registration-token --jq .token
                                        Valid ~1 hour; one token registers all runners.
   -u, --url <URL>                    Repository URL (start). Also read from $REPO_URL;
                                        defaults to this directory's git "origin" remote.
@@ -122,11 +123,15 @@ container_of() { echo "${PREFIX}-$1"; }
 
 # docker wrapper: picks the Linux or Windows engine (Docker Desktop contexts) for a target.
 # usage: dk <target> <docker args...>
+# docker wrapper: picks the Linux or Windows engine (Docker Desktop contexts) for a target.
+# usage: dk <target> <docker args...>
 dk() {
     local t="$1" ctx; shift
     if [ "$t" = "windows" ]; then ctx="${WINDOWS_DOCKER_CONTEXT:-desktop-windows}"
     else ctx="${LINUX_DOCKER_CONTEXT:-desktop-linux}"; fi
-    if "$DOCKER" context inspect "$ctx" >/dev/null 2>&1; then
+    # Only pass --context when the engine actually advertises that context.
+    # (podman has no --context flag; a stale Docker context shows up as [] from `inspect`.)
+    if "$DOCKER" context ls --format '{{.Name}}' 2>/dev/null | grep -qx "$ctx"; then
         "$DOCKER" --context "$ctx" "$@"
     else
         "$DOCKER" "$@"
