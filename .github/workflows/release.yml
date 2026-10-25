@@ -127,9 +127,9 @@ jobs:
               https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py \
               -o "$gen"
           fi
-          python3 "$gen" Cargo.lock -o scripts/packaging/cargo-sources.json
-
-
+          python3 "$gen" \
+            /tmp/open-bc-flatpak/Cargo.lock \
+            -o scripts/packaging/cargo-sources.json
           test -s scripts/packaging/cargo-sources.json
 
       - name: Build Flatpak
