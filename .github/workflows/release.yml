@@ -32,7 +32,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake ninja-build pkg-config perl \
-            qt6-base-dev qt6-multimedia-dev libqt6opengl6-dev libgl1-mesa-dev \
+            qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-multimedia-dev \
+            libqt6opengl6-dev libgl1-mesa-dev \
             libssl-dev zlib1g-dev liblzma-dev \
             flatpak flatpak-builder appstream
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
@@ -60,7 +61,7 @@ jobs:
       - name: Install build dependencies
         run: |
           dnf install -y git gcc-c++ make cmake ninja-build rust cargo rpm-build which perl-core \
-            qt6-qtbase-devel qt6-qtmultimedia-devel mesa-libGL-devel libxkbcommon-devel \
+            qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel mesa-libGL-devel libxkbcommon-devel \
             openssl-devel zlib-devel xz-devel
       - uses: actions/checkout@v4
       - run: ./scripts/build.sh -c -p lin -s rpm
@@ -85,6 +86,7 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-rust
             mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-declarative
             mingw-w64-ucrt-x86_64-qt6-tools
             mingw-w64-ucrt-x86_64-qt6-multimedia
             mingw-w64-ucrt-x86_64-openssl
