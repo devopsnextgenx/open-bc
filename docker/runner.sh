@@ -39,6 +39,7 @@ Options:
                                        Repo > Settings > Actions > Runners > New self-hosted runner.
                                        Valid for ~1 hour; one token registers both runners.
   -u, --url <URL>                    Repository URL (start). Also read from $REPO_URL;
+                                       gh api -X POST repos/devopsnextgenx/open-bc/actions/runners/registration-token --jq .token
                                        defaults to this directory's git "origin" remote.
   -n, --name-prefix <PREFIX>         Container/runner name prefix (default: openbc-local)
   -b, --build                        With start: rebuild the image(s) first
