@@ -145,11 +145,17 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     #endif
     QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);   // <-- new, must precede QApplication
     QApplication application(argc, argv);
+    // Wayland app_id / X11 class. MUST equal the .desktop file name without ".desktop" and the
+    // Flatpak app-id, or GNOME cannot tie this window to its launcher and shows a generic dock icon.
+    QGuiApplication::setDesktopFileName(QStringLiteral("io.openbc.OpenBC"));
     SingleInstance singleInstance(launch);
     if (!singleInstance.isPrimary()) {
         return singleInstance.wasForwarded() ? 0 : 1;
     }
-    QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/openbc.png")));
+    // Prefer the installed theme icon (same one the launcher uses); fall back to the embedded PNG
+    // when running straight from the build tree.
+    QApplication::setWindowIcon(QIcon::fromTheme(
+        QStringLiteral("io.openbc.OpenBC"), QIcon(QStringLiteral(":/icons/openbc.png"))));
 
     QApplication::setStyle(QStyleFactory::create("Fusion"));
     application.setPalette(openbc::ui::darkPalette());
