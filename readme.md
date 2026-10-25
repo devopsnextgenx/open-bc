@@ -25,6 +25,11 @@ These project assets show the visual direction for the desktop experience and it
 | --- | --- | --- |
 | ![OpenBC workspace](docs/imgs/x-home.png) | ![OpenBC folder workflow](docs/imgs/x-folder.png) | ![OpenBC context menu](docs/imgs/x-context-menu.png) |
 
+Video showing demo as below.
+
+![open-bc-long-demo.gif](./docs/imgs/open-bc-long-demo.gif)
+
+
 Additional UI and activity imagery is available in [`docs/imgs`](docs/imgs/).
 
 ## What is being built
