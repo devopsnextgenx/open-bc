@@ -33,7 +33,7 @@ modules:
       # Replace the commit placeholder with the verified 40-character tag target SHA.
       - type: git
         url: https://github.com/devopsnextgenx/open-bc.git
-        tag: v1.0.9
+        tag: v1.0.10
         commit: fc5a24dc469e58002032cfbe11f27b9e5c4bc174
 
       # 2. Offline Rust dependencies generated from this release's Cargo.lock.

@@ -126,7 +126,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         return 0;
     }
     if (launch.showVersion) {
-        printToConsole("openbc 1.0.9\n");
+        printToConsole("openbc 1.0.10\n");
         return 0;
     }
     if (launch.dependencyCheck) {
