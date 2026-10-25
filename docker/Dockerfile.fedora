@@ -1,0 +1,25 @@
+FROM fedora:latest
+
+# Install build dependencies, Qt6 dev packages, and Rust via DNF
+RUN dnf install -y \
+    git \
+    gcc-c++ \
+    make \
+    cmake \
+    ninja-build \
+    rust \
+    cargo \
+    rpm-build \
+    which \
+    perl-core \
+    qt6-qtbase-devel \
+    qt6-qtdeclarative-devel \
+    qt6-qtmultimedia-devel \
+    mesa-libGL-devel \
+    libxkbcommon-devel \
+    openssl-devel \
+    zlib-devel \
+    xz-devel \
+    && dnf clean all
+
+WORKDIR /workspace

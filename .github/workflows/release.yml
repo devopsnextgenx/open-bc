@@ -48,6 +48,21 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: pkg-deb, path: build/lin/packages/*.deb }
 
+      - name: Generate offline Cargo sources
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y python3-toml
+          git clone --depth 1 --branch v1.0.3 \
+            https://github.com/devopsnextgenx/open-bc.git \
+            /tmp/open-bc-flatpak
+          curl -fsSL \
+            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py \
+            -o /tmp/flatpak-cargo-generator.py
+          python3 /tmp/flatpak-cargo-generator.py \
+            /tmp/open-bc-flatpak/Cargo.lock \
+            -o scripts/packaging/cargo-sources.json
+          test -s scripts/packaging/cargo-sources.json
+
       - name: Build Flatpak
         run: ./scripts/build.sh -p lin -s flatpak
       - uses: actions/upload-artifact@v4

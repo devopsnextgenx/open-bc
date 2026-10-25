@@ -1,0 +1,32 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install core build tools, Qt6, Flatpak, and dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    ninja-build \
+    pkg-config \
+    perl \
+    qt6-base-dev \
+    qt6-declarative-dev \
+    qt6-declarative-dev-tools \
+    qt6-multimedia-dev \
+    libqt6opengl6-dev \
+    libgl1-mesa-dev \
+    libssl-dev \
+    zlib1g-dev \
+    liblzma-dev \
+    flatpak \
+    flatpak-builder \
+    appstream \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust stable toolchain system-wide
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /workspace
