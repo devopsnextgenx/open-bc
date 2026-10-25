@@ -221,11 +221,41 @@ case "$COMMAND" in
         done ;;
     logs)
         if [ "${#TARGETS[@]}" -eq 1 ]; then
-            dk "${TARGETS[0]}" logs -f "$(container_of "${TARGETS[0]}")"
+            t="${TARGETS[0]}"; name="$(container_of "$t")"
+
+            # 1) Stream the container's own stdout (runner diagnostics,
+            #    powered by ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1).
+            dk "$t" logs -f "$name" &
+            logs_pid=$!
+
+            # 2) Also stream the runner's per-job Worker logs, which are the
+            #    files that hold the actual `run:` step output.
+            worker_pid=""
+            if [ "$(dk "$t" inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)" = "true" ]; then
+                dk "$t" exec "$name" sh -c '
+                    # Wait until at least one Worker_*.log exists, then follow it.
+                    while ! ls _diag/pages/Worker_*.log >/dev/null 2>&1; do sleep 1; done
+                    exec tail -F -n 0 _diag/pages/Worker_*.log
+                ' &
+                worker_pid=$!
+            fi
+
+            # Make Ctrl-C clean: kill both children, then exit.
+            trap 'kill $logs_pid ${worker_pid:+"$worker_pid"} 2>/dev/null || true; exit 130' INT
+            wait
+            trap - INT
         else
             for t in "${TARGETS[@]}"; do
-                echo "==== $(container_of "$t")"
-                dk "$t" logs --tail 50 "$(container_of "$t")" || true
+                name="$(container_of "$t")"
+                echo "==== $name (container stdout)"
+                dk "$t" logs --tail 50 "$name" || true
+
+                if [ "$(dk "$t" inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)" = "true" ]; then
+                    echo "==== $name (worker logs)"
+                    dk "$t" exec "$name" sh -c \
+                        'ls _diag/pages/Worker_*.log >/dev/null 2>&1 && tail -n 50 _diag/pages/Worker_*.log || echo "(no worker logs yet)"' \
+                        || true
+                fi
             done
         fi ;;
 esac
