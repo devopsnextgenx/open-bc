@@ -14,10 +14,13 @@ permissions:
   contents: read
 
 jobs:
-  # ------------------------------------------------------------------ .deb
-  deb:
+  # ------------------------------------------------------------------ .deb + Flatpak (one runner, one checkout)
+  linux:
     runs-on: ubuntu-24.04
     steps:
+      # Host build + deb + flatpak-builder + KDE runtime need several GB; free the preinstalled toolchains.
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
       - uses: actions/checkout@v4
       - name: Tag must match CMake version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -25,15 +28,29 @@ jobs:
           v="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"
           [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != CMake version v$v"; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install build dependencies
+      - name: Install build + flatpak dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config \
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config perl \
             qt6-base-dev qt6-multimedia-dev libqt6opengl6-dev libgl1-mesa-dev \
-            libssl-dev zlib1g-dev liblzma-dev
-      - run: ./scripts/build.sh -c -p lin -s deb
+            libssl-dev zlib1g-dev liblzma-dev \
+            flatpak flatpak-builder appstream
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      # Ubuntu 24.04 runners block unprivileged user namespaces, which flatpak-builder's sandbox needs.
+      - name: Allow user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # Separate steps keep failures attributable. The second call skips the host build (flatpak
+      # compiles inside its own sandbox) and does not clean, so the deb stays in build/lin/packages.
+      - name: Build .deb
+        run: ./scripts/build.sh -c -p lin -s deb
       - uses: actions/upload-artifact@v4
         with: { name: pkg-deb, path: build/lin/packages/*.deb }
+
+      - name: Build Flatpak
+        run: ./scripts/build.sh -p lin -s flatpak
+      - uses: actions/upload-artifact@v4
+        with: { name: pkg-flatpak, path: build/lin/packages/*.flatpak }
 
   # ------------------------------------------------------------------ .rpm (built on Fedora so it links Fedora's Qt/glibc)
   rpm:
@@ -42,30 +59,13 @@ jobs:
     steps:
       - name: Install build dependencies
         run: |
-          dnf install -y git gcc-c++ cmake ninja-build rust cargo rpm-build which \
+          dnf install -y git gcc-c++ make cmake ninja-build rust cargo rpm-build which perl-core \
             qt6-qtbase-devel qt6-qtmultimedia-devel mesa-libGL-devel libxkbcommon-devel \
             openssl-devel zlib-devel xz-devel
       - uses: actions/checkout@v4
       - run: ./scripts/build.sh -c -p lin -s rpm
       - uses: actions/upload-artifact@v4
         with: { name: pkg-rpm, path: build/lin/packages/*.rpm }
-
-  # ------------------------------------------------------------------ Flatpak bundle
-  flatpak:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install flatpak tooling
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder appstream
-          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-      # Ubuntu 24.04 runners block unprivileged user namespaces, which flatpak-builder's sandbox needs.
-      - name: Allow user namespaces
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - run: ./scripts/build.sh -c -p lin -s flatpak
-      - uses: actions/upload-artifact@v4
-        with: { name: pkg-flatpak, path: build/lin/packages/*.flatpak }
 
   # ------------------------------------------------------------------ Windows MSI
   msi:
@@ -108,7 +108,7 @@ jobs:
   # ------------------------------------------------------------------ GitHub Release (tags only)
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [deb, rpm, flatpak, msi]
+    needs: [linux, rpm, msi]
     runs-on: ubuntu-24.04
     permissions:
       contents: write          # create the release and upload assets
