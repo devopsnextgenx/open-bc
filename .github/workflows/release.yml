@@ -34,39 +34,6 @@ permissions:
   contents: read
 
 jobs:
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   # ------------------------------------------------------------------ .deb + Flatpak (one runner, one checkout)
   linux:
     runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted","openbc-debian"]') || 'ubuntu-24.04' }}
