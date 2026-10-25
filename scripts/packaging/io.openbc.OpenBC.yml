@@ -31,6 +31,8 @@ modules:
     sources:
       - type: dir
         path: ../..
-        skip:
+        skip:        # keep the source checksum stable so flatpak-builder can cache-hit
           - build
           - target
+          - .git
+          - .flatpak-builder

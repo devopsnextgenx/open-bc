@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.openbc.OpenBC</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Proprietary</project_license>
+  <name>OpenBC</name>
+  <summary>OpenBC File and Directory Comparison Tool</summary>
+  <description>
+    <p>OpenBC is a high-performance open-source file and directory comparison tool integrated with Rust backends and a modern Qt6 GUI.</p>
+  </description>
+  <launchable type="desktop-id">io.openbc.OpenBC.desktop</launchable>
+  
+  <!-- Add the explicit icon declaration here -->
+  <icon type="cached">io.openbc.OpenBC.png</icon>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Main Application Window</caption>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+</component>

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # build.sh - unified build + packaging entry point (replaces win-build.sh, build-deb.sh,
 # build-msi.sh, build-pkg.sh).
+
 #
 #   ./scripts/build.sh [-c] [-p win|lin] [-s deb,rpm,flatpak,msi] [-r] [-n]
 #
@@ -91,12 +92,26 @@ VERSION="${VERSION:-1.0.0}"
 # ---- clean + build --------------------------------------------------------------------------
 if $CLEAN; then echo "=== Cleaning $BUILD_DIR"; run rm -rf "$BUILD_DIR"; fi
 
-echo "=== Building openbc ($PLATFORM, Release)"
-if [ ! -f "$BUILD_DIR/build.ninja" ] && [ ! -f "$BUILD_DIR/Makefile" ]; then
-  if command -v ninja >/dev/null 2>&1; then GEN=(-G Ninja); else GEN=(); fi
-  run cmake -B "$BUILD_DIR" "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release
+# The host build feeds deb/rpm/msi and -r. Flatpak compiles from source INSIDE its own sandbox against the
+# KDE runtime (different Qt/OpenSSL/glibc), so it can never reuse these binaries - skip the host build
+# when flatpak is the only thing requested.
+NEED_HOST_BUILD=false
+[ -z "$FORMATS" ] && NEED_HOST_BUILD=true          # plain build, no packaging
+$RUN && NEED_HOST_BUILD=true
+for f in "${FORMAT_LIST[@]:-}"; do
+  [ -n "$f" ] && [ "$f" != flatpak ] && NEED_HOST_BUILD=true
+done
+
+if $NEED_HOST_BUILD; then
+  echo "=== Building openbc ($PLATFORM, Release)"
+  if [ ! -f "$BUILD_DIR/build.ninja" ] && [ ! -f "$BUILD_DIR/Makefile" ]; then
+    if command -v ninja >/dev/null 2>&1; then GEN=(-G Ninja); else GEN=(); fi
+    run cmake -B "$BUILD_DIR" "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release
+  fi
+  run cmake --build "$BUILD_DIR" --target openbc openbc-depcheck
+else
+  echo "=== Skipping host build (flatpak compiles inside its own sandbox)"
 fi
-run cmake --build "$BUILD_DIR" --target openbc openbc-depcheck
 $DRY || mkdir -p "$OUT_DIR"
 
 # ---- deploy Windows runtime DLLs -------------------------------------------------------------
@@ -118,15 +133,33 @@ pkg_deb() {
   echo "=== deb -> $out"
   run rm -rf "$stage"
   run mkdir -p "$stage/usr/bin" "$stage/DEBIAN" \
-    "$stage/usr/share/applications" "$stage/usr/share/icons/hicolor/512x512/apps" \
+    "$stage/usr/share/applications" "$stage/usr/share/metainfo" \
+    "$stage/usr/share/icons/hicolor/512x512/apps" \
     "$stage/usr/share/openbc/nautilus" "$stage/usr/share/nautilus-python/extensions"
-  run cp "$BUILD_DIR/openbc" "$BUILD_DIR/openbc-depcheck" "$stage/usr/bin/"
+
+  # Single source of truth: CMake's install() rules (binaries, .desktop, metainfo, hicolor icons)
+  # - identical to what the Flatpak build installs.
+  run cmake --install "$BUILD_DIR" --prefix "$stage/usr"
   run install -m 0755 scripts/nautilus/openbc-nautilus-action "$stage/usr/share/openbc/nautilus/"
   run install -m 0755 scripts/nautilus/install-nautilus.sh "$stage/usr/bin/openbc-install-nautilus"
   run install -m 0644 scripts/nautilus/openbc_nautilus.py "$stage/usr/share/nautilus-python/extensions/openbc.py"
-  run cp resources/io.openbc.OpenBC.desktop "$stage/usr/share/applications/"
-  run cp resources/icons/fevicon.png "$stage/usr/share/icons/hicolor/512x512/apps/io.openbc.OpenBC.png"
-  
+
+  # refresh icon / desktop caches so the launcher icon shows up immediately after install
+  for hook in postinst postrm; do
+    $DRY || cat > "$stage/DEBIAN/$hook" <<'HOOK'
+#!/bin/sh
+set -e
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database -q /usr/share/applications || true
+fi
+exit 0
+HOOK
+    $DRY || chmod 0755 "$stage/DEBIAN/$hook"
+  done
+
   $DRY || cat > "$stage/DEBIAN/control" <<CTRL
 Package: openbc
 Version: ${VERSION}
@@ -148,32 +181,35 @@ pkg_rpm() {
   run rm -rf "$top"
   run mkdir -p "$top"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
   $DRY || cat > "$top/SPECS/openbc.spec" <<SPEC
+%global debug_package %{nil}
 Name:           openbc
 Version:        ${VERSION}
 Release:        1
 Summary:        OpenBC File and Directory Comparison Tool
 License:        Proprietary
 AutoReqProv:    yes
-Requires:       qt6-qtbase-gui, openssl-libs, zlib, xz-libs, qt6-qtmultimedia
+Requires:       qt6-qtbase-gui, openssl-libs, zlib, xz-libs, qt6-qtmultimedia, hicolor-icon-theme
 
 %description
 OpenBC is a comparison tool with Rust backends and a Qt6 GUI.
 
 %install
-mkdir -p %{buildroot}/usr/bin
-install -m 0755 $ROOT/$BUILD_DIR/openbc %{buildroot}/usr/bin/openbc
-install -m 0755 $ROOT/$BUILD_DIR/openbc-depcheck %{buildroot}/usr/bin/openbc-depcheck
-mkdir -p %{buildroot}/usr/share/applications
-install -m 0644 $ROOT/resources/io.openbc.OpenBC.desktop %{buildroot}/usr/share/applications/
-mkdir -p %{buildroot}/usr/share/icons/hicolor/512x512/apps
-install -m 0644 $ROOT/resources/icons/fevicon.png %{buildroot}/usr/share/icons/hicolor/512x512/apps/openbc.png
+cmake --install $ROOT/$BUILD_DIR --prefix %{buildroot}/usr
+
+%post
+gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
+update-desktop-database -q %{_datadir}/applications >/dev/null 2>&1 || :
+
+%postun
+gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
+update-desktop-database -q %{_datadir}/applications >/dev/null 2>&1 || :
 
 %files
 /usr/bin/openbc
 /usr/bin/openbc-depcheck
 /usr/share/applications/io.openbc.OpenBC.desktop
-/usr/share/icons/hicolor/512x512/apps/openbc.png
-/usr/share/icons/hicolor/512x512/apps/io.openbc.OpenBC.png
+/usr/share/metainfo/io.openbc.OpenBC.metainfo.xml
+/usr/share/icons/hicolor/*/apps/io.openbc.OpenBC.png
 SPEC
   run rpmbuild -bb --define "_topdir $top" "$top/SPECS/openbc.spec"
   $DRY || find "$top/RPMS" -name '*.rpm' -exec cp {} "$OUT_DIR/" \;
@@ -184,7 +220,7 @@ pkg_flatpak() {
   $DRY || command -v flatpak-builder >/dev/null 2>&1 || { echo "flatpak-builder not found" >&2; return 1; }
   local manifest="scripts/packaging/io.openbc.OpenBC.yml"
   [ -f "$manifest" ] || { echo "missing $manifest" >&2; return 1; }
-  run flatpak-builder --force-clean --user --install-deps-from=flathub \
+  run flatpak-builder --force-clean --ccache --user --install-deps-from=flathub \
       --repo="$BUILD_DIR/flatpak-repo" "$BUILD_DIR/flatpak-build" "$manifest"
   run flatpak build-bundle "$BUILD_DIR/flatpak-repo" "$OUT_DIR/openbc-${VERSION}.flatpak" io.openbc.OpenBC
 }
@@ -197,44 +233,54 @@ pkg_msi() {
   run cp "$BUILD_DIR/openbc.exe" "$BUILD_DIR/openbc-depcheck.exe" "$stage/"
 
   echo "--- windeployqt (Qt DLLs + platforms/qwindows.dll)"
-  run windeployqt --no-compiler-runtime --no-translations "$stage/openbc.exe"
+  local WDQ=""
+  for c in windeployqt6 windeployqt-qt6 windeployqt; do
+    command -v "$c" >/dev/null 2>&1 && { WDQ="$c"; break; }
+  done
+  $DRY || [ -n "$WDQ" ] || { echo "windeployqt not found (pacman -S mingw-w64-ucrt-x86_64-qt6-base)" >&2; return 1; }
+  run "${WDQ:-windeployqt6}" --no-compiler-runtime --no-translations "$stage/openbc.exe"
 
-  echo "--- copying remaining MinGW/UCRT DLLs until openbc-depcheck reports nothing missing"
-  # openbc-depcheck is the same checker as 'openbc --dependency-check'; it reads the PE import
-  # tables, so this loop no longer depends on ldd output formats.
-  # if ! $DRY; then
-  #   for _ in 1 2 3 4 5 6 7 8; do
-  #     missing="$("$stage/openbc-depcheck.exe" "$stage/openbc.exe" --dir /c/msys64/ucrt64/bin | sed -n 's/^  MISSING  \(.*\.dll\) (needed by.*/\1/p' || true)"
-  #     [ -z "$missing" ] && break
-  #     while IFS= read -r dll; do
-  #       [ -f "/c/msys64/ucrt64/bin/$dll" ] && cp "/c/msys64/ucrt64/bin/$dll" "$stage/" && echo "   + $dll"
-  #     done <<< "$missing"
-  #   done
-  #   echo "--- final dependency report"
-  #   # Search ONLY the staging folder (plus Windows itself) so the report reflects what the MSI ships.
-  #   PATH="/c/Windows/System32" "$stage/openbc-depcheck.exe" "$stage/openbc.exe" || {
-  #     echo "ERROR: the package would be missing the DLLs listed above." >&2; exit 2; }
-  # fi
-
-  echo "--- copying remaining MinGW/UCRT DLLs"
+  echo "--- copying remaining MinGW/UCRT DLLs (scans openbc.exe AND every Qt plugin / DLL in the stage)"
   if ! $DRY; then
-    UCRT=/c/msys64/ucrt64/bin
-    for _ in $(seq 1 10); do
+    local UCRT=/c/msys64/ucrt64/bin SYS32=/c/Windows/System32
+    # case-insensitive "is this DLL available in dir?" (PE import names and file names often differ in case)
+    have_dll() { [ -n "$(find "$1" -maxdepth 1 -iname "$2" -print -quit 2>/dev/null)" ]; }
+    is_builtin() { case "${1,,}" in api-ms-*|ext-ms-*) return 0 ;; esac; have_dll "$SYS32" "$1"; }
+    list_imports() { objdump -p "$1" 2>/dev/null | tr -d '\r' | sed -n 's/^[[:space:]]*DLL Name: //p'; }
+
+    for _ in $(seq 1 15); do
       copied=0
       while IFS= read -r bin; do
         while IFS= read -r dll; do
           [ -z "$dll" ] && continue
-          if [ ! -f "$stage/$dll" ] && [ -f "$UCRT/$dll" ]; then
-            cp "$UCRT/$dll" "$stage/" && echo "   + $dll" && copied=1
+          is_builtin "$dll" && continue
+          if ! have_dll "$stage" "$dll"; then
+            src="$(find "$UCRT" -maxdepth 1 -iname "$dll" -print -quit 2>/dev/null)"
+            [ -n "$src" ] && cp "$src" "$stage/" && echo "   + $(basename "$src")" && copied=1
           fi
-        done < <(objdump -p "$bin" 2>/dev/null | tr -d '\r' | sed -n 's/^[[:space:]]*DLL Name: //p')
+        done < <(list_imports "$bin")
       done < <(find "$stage" -type f \( -iname '*.exe' -o -iname '*.dll' \))
       [ "$copied" = 0 ] && break
     done
-    echo "--- final dependency report"
-    PATH="/c/Windows/System32" "$stage/openbc-depcheck.exe" "$stage/openbc.exe" || {
+
+    echo "--- final dependency report (everything must resolve inside the stage or System32)"
+    PATH="$SYS32" "$stage/openbc-depcheck.exe" "$stage/openbc.exe" || {
       echo "ERROR: the package would be missing the DLLs listed above." >&2; exit 2; }
+    unresolved=0
+    while IFS= read -r bin; do
+      while IFS= read -r dll; do
+        [ -z "$dll" ] && continue
+        is_builtin "$dll" && continue
+        have_dll "$stage" "$dll" || { echo "  MISSING $dll (needed by ${bin#$stage/})" >&2; unresolved=1; }
+      done < <(list_imports "$bin")
+    done < <(find "$stage" -type f \( -iname '*.exe' -o -iname '*.dll' \))
+    [ "$unresolved" = 0 ] || { echo "ERROR: unresolved DLL imports in plugins/libraries (see above)." >&2; exit 2; }
   fi
+
+  # ---- icon: used for Start-menu/Desktop shortcuts, Add/Remove Programs and context-menu entries ----
+  local ico="$ROOT/resources/icons/openbc.ico"
+  $DRY || [ -f "$ico" ] || { echo "missing $ico - run scripts/gen-icons.sh and commit the result" >&2; exit 2; }
+  winpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
 
   echo "--- WiX"
   $DRY || cat > "$wix/openbc.wxs" <<WXS
@@ -244,6 +290,8 @@ pkg_msi() {
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" Platform="x64" />
     <MediaTemplate EmbedCab="yes" />
     <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <Icon Id="openbc.ico" SourceFile="\$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="openbc.ico" />
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder"><Directory Id="INSTALLFOLDER" Name="OpenBC" /></Directory>
       <Directory Id="ProgramMenuFolder"><Directory Id="ApplicationProgramsFolder" Name="OpenBC"/></Directory>
@@ -251,14 +299,14 @@ pkg_msi() {
     </Directory>
     <DirectoryRef Id="ApplicationProgramsFolder">
       <Component Id="ApplicationShortcut" Guid="b2c3d4e5-f6a7-8901-bcde-f23456789012">
-        <Shortcut Id="ApplicationStartMenuShortcut" Name="OpenBC" Description="OpenBC File &amp; Folder Comparison" Target="[INSTALLFOLDER]openbc.exe" WorkingDirectory="INSTALLFOLDER"/>
+        <Shortcut Id="ApplicationStartMenuShortcut" Name="OpenBC" Description="OpenBC File &amp; Folder Comparison" Target="[INSTALLFOLDER]openbc.exe" WorkingDirectory="INSTALLFOLDER" Icon="openbc.ico"/>
         <RemoveFolder Id="CleanUpShortCut" On="uninstall"/>
         <RegistryValue Root="HKCU" Key="Software\OpenBC" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
       </Component>
     </DirectoryRef>
     <DirectoryRef Id="DesktopFolder">
       <Component Id="DesktopShortcut" Guid="c3d4e5f6-a7b8-9012-cdef-345678901234">
-        <Shortcut Id="ApplicationDesktopShortcut" Name="OpenBC" Description="OpenBC File &amp; Folder Comparison" Target="[INSTALLFOLDER]openbc.exe" WorkingDirectory="INSTALLFOLDER"/>
+        <Shortcut Id="ApplicationDesktopShortcut" Name="OpenBC" Description="OpenBC File &amp; Folder Comparison" Target="[INSTALLFOLDER]openbc.exe" WorkingDirectory="INSTALLFOLDER" Icon="openbc.ico"/>
         <RegistryValue Root="HKCU" Key="Software\OpenBC" Name="desktop_shortcut" Type="integer" Value="1" KeyPath="yes"/>
       </Component>
     </DirectoryRef>
@@ -266,30 +314,35 @@ pkg_msi() {
       <Component Id="OpenBCFolderSelectLeft" Guid="*">
         <RegistryKey Root="HKCR" Key="Directory\shell\OpenBC.SelectLeftFolder">
           <RegistryValue Name="MUIVerb" Type="string" Value="Select Left Folder" KeyPath="yes" />
+          <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]openbc.exe,0" />
           <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; --select-left-folder &quot;%1&quot;" /></RegistryKey>
         </RegistryKey>
       </Component>
       <Component Id="OpenBCFolderCompareToLeft" Guid="*">
         <RegistryKey Root="HKCR" Key="Directory\shell\OpenBC.CompareToLeftFolder">
           <RegistryValue Name="MUIVerb" Type="string" Value="Compare to Left Folder" KeyPath="yes" />
+          <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]openbc.exe,0" />
           <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; --compare-to-left-folder &quot;%1&quot;" /></RegistryKey>
         </RegistryKey>
       </Component>
       <Component Id="OpenBCFileSelectLeft" Guid="*">
         <RegistryKey Root="HKCR" Key="*\shell\OpenBC.SelectLeftFile">
           <RegistryValue Name="MUIVerb" Type="string" Value="Select Left File" KeyPath="yes" />
+          <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]openbc.exe,0" />
           <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; --select-left-file &quot;%1&quot;" /></RegistryKey>
         </RegistryKey>
       </Component>
       <Component Id="OpenBCFileCompareToLeft" Guid="*">
         <RegistryKey Root="HKCR" Key="*\shell\OpenBC.CompareToLeftFile">
           <RegistryValue Name="MUIVerb" Type="string" Value="Compare to Left File" KeyPath="yes" />
+          <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]openbc.exe,0" />
           <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; --compare-to-left-file &quot;%1&quot;" /></RegistryKey>
         </RegistryKey>
       </Component>
       <Component Id="OpenBCFolderCompareSelection" Guid="*">
         <RegistryKey Root="HKCR" Key="Directory\shell\OpenBC.Compare">
           <RegistryValue Name="MUIVerb" Type="string" Value="Compare" KeyPath="yes" />
+          <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]openbc.exe,0" />
           <RegistryValue Name="MultiSelectModel" Type="string" Value="Player" />
           <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; %*" /></RegistryKey>
         </RegistryKey>
@@ -297,6 +350,7 @@ pkg_msi() {
       <Component Id="OpenBCFileCompareSelection" Guid="*">
         <RegistryKey Root="HKCR" Key="*\shell\OpenBC.Compare">
           <RegistryValue Name="MUIVerb" Type="string" Value="Compare" KeyPath="yes" />
+          <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]openbc.exe,0" />
           <RegistryValue Name="MultiSelectModel" Type="string" Value="Player" />
           <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; %*" /></RegistryKey>
         </RegistryKey>
@@ -317,7 +371,7 @@ pkg_msi() {
 </Wix>
 WXS
   run heat dir "$stage" -cg AppFiles -dr INSTALLFOLDER -scom -sreg -sfrag -srd -gg -var var.StagingDir -out "$wix/files.wxs"
-  run candle -arch x64 -dStagingDir="$stage" -out "$wix/" "$wix/openbc.wxs" "$wix/files.wxs"
+  run candle -arch x64 -dStagingDir="$stage" -dIconFile="$(winpath "$ico")" -out "$wix/" "$wix/openbc.wxs" "$wix/files.wxs"
   run light -ext WixUIExtension -b "$stage" "$wix/openbc.wixobj" "$wix/files.wixobj" -o "$out"
 }
 

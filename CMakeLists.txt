@@ -167,8 +167,28 @@ elseif(UNIX AND NOT APPLE)
 endif()
 
 install(TARGETS openbc openbc-depcheck RUNTIME DESTINATION bin)
-install(FILES resources/io.openbc.OpenBC.desktop DESTINATION share/applications)
-# Install under standard icon theme sizes (e.g., 512x512) with the exact app name
-install(FILES resources/icons/fevicon.png DESTINATION share/icons/hicolor/512x512/apps RENAME io.openbc.OpenBC.png)
-install(FILES resources/icons/fevicon.png DESTINATION share/icons/hicolor/scalable/apps RENAME io.openbc.OpenBC.png)
+
+if(NOT WIN32)
+    install(FILES resources/io.openbc.OpenBC.desktop DESTINATION share/applications)
+    install(FILES resources/io.openbc.OpenBC.metainfo.xml DESTINATION share/metainfo)
+
+    # Launcher / AppStream icons. appstreamcli (flatpak-builder) and software centers want several
+    # hicolor sizes named exactly like the app-id; a lone 512x512 is what triggered
+    # "E: icon-not-found". Sizes are generated once by scripts/gen-icons.sh and committed.
+    set(OPENBC_ICON_NAME "io.openbc.OpenBC")
+    set(OPENBC_ICONS_INSTALLED FALSE)
+    foreach(sz 48 64 128 256 512)
+        set(_icon "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/hicolor/${sz}x${sz}/apps/${OPENBC_ICON_NAME}.png")
+        if(EXISTS "${_icon}")
+            install(FILES "${_icon}" DESTINATION share/icons/hicolor/${sz}x${sz}/apps)
+            set(OPENBC_ICONS_INSTALLED TRUE)
+        endif()
+    endforeach()
+    if(NOT OPENBC_ICONS_INSTALLED)
+        message(WARNING "resources/icons/hicolor/* missing - run scripts/gen-icons.sh. "
+                        "Falling back to a single 512x512 icon (AppStream may reject it).")
+        install(FILES resources/icons/fevicon.png
+                DESTINATION share/icons/hicolor/512x512/apps RENAME ${OPENBC_ICON_NAME}.png)
+    endif()
+endif()
 include(CPack)
