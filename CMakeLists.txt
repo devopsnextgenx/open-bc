@@ -147,11 +147,8 @@ if(WIN32)
             COMMENT "Deploying Qt runtime next to openbc.exe"
             VERBATIM
         )
-    else()
-        message(WARNING "windeployqt not found: build/win/openbc.exe will need the Qt bin folder on PATH")
     endif()
 endif()
-
 
 # --- Packaging Configuration ---
 set(CPACK_PACKAGE_NAME "OpenBC")
@@ -165,8 +162,13 @@ if(WIN32)
 elseif(UNIX AND NOT APPLE)
     set(CPACK_GENERATOR "DEB")
     set(CPACK_DEBIAN_PACKAGE_MAINTAINER "OpenBC Team")
-    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6widgets6, libqt6opengl6, zlib1g, liblzma5, libssl3")
+    # Added explicit multimedia package dependencies for DEB packaging
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6widgets6, libqt6opengl6, libqt6multimedia6, libqt6multimediawidgets6, zlib1g, liblzma5, libssl3")
 endif()
 
 install(TARGETS openbc openbc-depcheck RUNTIME DESTINATION bin)
+install(FILES resources/io.openbc.OpenBC.desktop DESTINATION share/applications)
+# Install under standard icon theme sizes (e.g., 512x512) with the exact app name
+install(FILES resources/icons/fevicon.png DESTINATION share/icons/hicolor/512x512/apps RENAME io.openbc.OpenBC.png)
+install(FILES resources/icons/fevicon.png DESTINATION share/icons/hicolor/scalable/apps RENAME io.openbc.OpenBC.png)
 include(CPack)

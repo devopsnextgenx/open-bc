@@ -125,15 +125,16 @@ pkg_deb() {
   run install -m 0755 scripts/nautilus/install-nautilus.sh "$stage/usr/bin/openbc-install-nautilus"
   run install -m 0644 scripts/nautilus/openbc_nautilus.py "$stage/usr/share/nautilus-python/extensions/openbc.py"
   run cp resources/io.openbc.OpenBC.desktop "$stage/usr/share/applications/"
-  run cp resources/icons/fevicon.png "$stage/usr/share/icons/hicolor/512x512/apps/openbc.png"
+  run cp resources/icons/fevicon.png "$stage/usr/share/icons/hicolor/512x512/apps/io.openbc.OpenBC.png"
+  
   $DRY || cat > "$stage/DEBIAN/control" <<CTRL
 Package: openbc
 Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: ${arch}
-Depends: libqt6widgets6 (>= 6.0), libqt6network6 (>= 6.0), libqt6opengl6 (>= 6.0), libqt6openglwidgets6 (>= 6.0), python3-nautilus, zlib1g, liblzma5, libssl3
-Maintainer: OpenBC Team <info@example.com>
+Depends: libqt6widgets6 (>= 6.0), libqt6network6 (>= 6.0), libqt6opengl6 (>= 6.0), libqt6openglwidgets6 (>= 6.0), libqt6multimedia6 (>= 6.0), libqt6multimediawidgets6 (>= 6.0), python3-nautilus, zlib1g, liblzma5, libssl3
+Maintainer: OpenBC Team <devopsnexegenx@gmail.com>
 Description: OpenBC File and Directory Comparison Tool
  OpenBC is an open-source comparison tool integrated with Rust backends and Qt6 GUI.
 CTRL
@@ -143,7 +144,7 @@ CTRL
 pkg_rpm() {
   local top="$ROOT/$BUILD_DIR/rpmbuild"
   echo "=== rpm -> $OUT_DIR"
-  $DRY || command -v rpmbuild >/dev/null 2>&1 || { echo "rpmbuild not found (install rpm-build)" >&2; return 1; }
+  $DRY || command -v rpmbuild >/dev/null 2>&1 || { echo "rpmbuild not found" >&2; return 1; }
   run rm -rf "$top"
   run mkdir -p "$top"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
   $DRY || cat > "$top/SPECS/openbc.spec" <<SPEC
@@ -153,7 +154,7 @@ Release:        1
 Summary:        OpenBC File and Directory Comparison Tool
 License:        Proprietary
 AutoReqProv:    yes
-Requires:       qt6-qtbase-gui, openssl-libs, zlib, xz-libs
+Requires:       qt6-qtbase-gui, openssl-libs, zlib, xz-libs, qt6-qtmultimedia
 
 %description
 OpenBC is a comparison tool with Rust backends and a Qt6 GUI.
@@ -162,15 +163,17 @@ OpenBC is a comparison tool with Rust backends and a Qt6 GUI.
 mkdir -p %{buildroot}/usr/bin
 install -m 0755 $ROOT/$BUILD_DIR/openbc %{buildroot}/usr/bin/openbc
 install -m 0755 $ROOT/$BUILD_DIR/openbc-depcheck %{buildroot}/usr/bin/openbc-depcheck
-mkdir -p %{buildroot}/usr/share/openbc/nautilus
-install -m 0755 $ROOT/scripts/nautilus/openbc-nautilus-action %{buildroot}/usr/share/openbc/nautilus/
-install -m 0755 $ROOT/scripts/nautilus/install-nautilus.sh %{buildroot}/usr/bin/openbc-install-nautilus
+mkdir -p %{buildroot}/usr/share/applications
+install -m 0644 $ROOT/resources/io.openbc.OpenBC.desktop %{buildroot}/usr/share/applications/
+mkdir -p %{buildroot}/usr/share/icons/hicolor/512x512/apps
+install -m 0644 $ROOT/resources/icons/fevicon.png %{buildroot}/usr/share/icons/hicolor/512x512/apps/openbc.png
 
 %files
 /usr/bin/openbc
 /usr/bin/openbc-depcheck
-/usr/bin/openbc-install-nautilus
-/usr/share/openbc/nautilus/openbc-nautilus-action
+/usr/share/applications/io.openbc.OpenBC.desktop
+/usr/share/icons/hicolor/512x512/apps/openbc.png
+/usr/share/icons/hicolor/512x512/apps/io.openbc.OpenBC.png
 SPEC
   run rpmbuild -bb --define "_topdir $top" "$top/SPECS/openbc.spec"
   $DRY || find "$top/RPMS" -name '*.rpm' -exec cp {} "$OUT_DIR/" \;
