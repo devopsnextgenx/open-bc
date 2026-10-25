@@ -5,8 +5,11 @@
 #
 # Local runners (see runners/runner.sh): run the Linux jobs on your own machine with
 #   gh workflow run release.yml -f runner=self-hosted
-# deb + flatpak run on the "openbc-debian" runner, rpm on "openbc-fedora". The MSI always builds on
-# GitHub-hosted Windows. Tag pushes always use GitHub-hosted runners.
+# deb + flatpak run on the "openbc-debian" runner, rpm on "openbc-fedora". The MSI builds on GitHub-hosted
+# Windows unless you also pass  -f windows_runner=self-hosted  (needs the "openbc-windows" container runner).
+
+
+# Tag pushes always use GitHub-hosted runners.
 #
 # UNTESTED scaffold: first run may need small tweaks (package names, WiX URL). Logs show which step.
 name: release
@@ -18,6 +21,11 @@ on:
         type: choice
         options: [github-hosted, self-hosted]
         default: github-hosted
+      windows_runner:
+        description: Where to run the MSI job (self-hosted falls back to GitHub-hosted if openbc-windows is offline)
+        type: choice
+        options: [github-hosted, self-hosted]
+        default: github-hosted
   push:
     tags: ['v*']
 
@@ -25,6 +33,39 @@ permissions:
   contents: read
 
 jobs:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   # ------------------------------------------------------------------ .deb + Flatpak (one runner, one checkout)
   linux:
     runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted","openbc-debian"]') || 'ubuntu-24.04' }}
@@ -71,10 +112,12 @@ jobs:
       - name: Generate offline Cargo sources
         run: |
           set -euo pipefail
-          v="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"
+
           rm -rf /tmp/open-bc-flatpak
           git clone --depth 1 --branch "v$v" \
             https://github.com/devopsnextgenx/open-bc.git /tmp/open-bc-flatpak
+            /tmp/open-bc-flatpak
+          # Prefer a copy committed to the repo (pinned); fall back to upstream.
           gen=scripts/packaging/flatpak-cargo-generator.py
           if [ ! -f "$gen" ]; then
             gen=/tmp/flatpak-cargo-generator.py
@@ -82,7 +125,9 @@ jobs:
               https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py \
               -o "$gen"
           fi
-          python3 "$gen" /tmp/open-bc-flatpak/Cargo.lock -o scripts/packaging/cargo-sources.json
+          python3 "$gen" \
+            /tmp/open-bc-flatpak/Cargo.lock \
+            -o scripts/packaging/cargo-sources.json
           test -s scripts/packaging/cargo-sources.json
 
       - name: Build Flatpak
@@ -107,13 +152,18 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: pkg-rpm, path: build/lin/packages/*.rpm }
 
-  # ------------------------------------------------------------------ Windows MSI (always GitHub-hosted)
+  # ------------------------------------------------------------------ Windows MSI
   msi:
-    runs-on: windows-2022
+    runs-on: ${{ inputs.windows_runner == 'self-hosted' && fromJSON('["self-hosted","openbc-windows"]') || 'windows-2022' }}
+
+
+
     steps:
       - uses: actions/checkout@v4
-      # release:false -> reuse the runner's preinstalled C:\msys64 (build.sh hardcodes /c/msys64)
+      # Hosted: release:false -> reuse the runner's preinstalled C:\msys64 (build.sh hardcodes /c/msys64).
+      # Self-hosted: runners/Dockerfile.windows already has MSYS2, the packages and WiX.
       - uses: msys2/setup-msys2@v2
+        if: needs.pick-runners.outputs.windows != 'self-hosted'
         with:
           msystem: UCRT64
           release: false
@@ -133,12 +183,25 @@ jobs:
             mingw-w64-ucrt-x86_64-xz
             mingw-w64-ucrt-x86_64-pkgconf
       - name: Install WiX 3.14 (heat/candle/light; build.sh looks in /c/msys64/opt/wix)
+        if: needs.pick-runners.outputs.windows != 'self-hosted'
         shell: pwsh
         run: |
           Invoke-WebRequest https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip -OutFile wix.zip
           Expand-Archive wix.zip -DestinationPath C:\msys64\opt\wix
       - name: Build MSI
+        if: needs.pick-runners.outputs.windows != 'self-hosted'
         shell: msys2 {0}
+        run: |
+          ./scripts/build.sh -c -p win
+          v="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"
+          mv build/win/packages/openbc-installer.msi "build/win/packages/openbc-${v}-windows-x64.msi"
+      # Same script, but run through the container's own MSYS2 (the "msys2" shell only exists after setup-msys2).
+      - name: Build MSI (self-hosted)
+        if: needs.pick-runners.outputs.windows == 'self-hosted'
+        shell: C:\msys64\usr\bin\bash.exe --login -eo pipefail {0}
+        env:
+          MSYSTEM: UCRT64
+          CHERE_INVOKING: '1'
         run: |
           ./scripts/build.sh -c -p win
           v="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"

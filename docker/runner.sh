@@ -2,6 +2,9 @@
 # runner.sh - build and run local GitHub Actions self-hosted runners in Docker.
 set -euo pipefail
 
+# Git Bash on Windows rewrites arguments that look like paths (-v name:/home/..., URLs); keep them as-is.
+export MSYS_NO_PATHCONV=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCKER="${DOCKER:-docker}"
 IMAGE_BASE="openbc-runner"
@@ -16,7 +19,7 @@ DO_BUILD=0
 RUNNER_VERSION="latest"
 
 usage() {
-    cat <<'EOF'
+    cat <<'USAGE'
 runner.sh - build and run local GitHub Actions runners (Docker)
 
 Usage:
@@ -26,20 +29,23 @@ Commands:
   build     Build the runner image(s)
   start     Start runner container(s) and register them with GitHub
             (builds the image automatically if it does not exist)
-  stop      Stop runner container(s); they deregister from GitHub on the way out
+  stop      Stop runner container(s)
   status    Show runner containers
   logs      Show runner logs (follows when a single runner is selected)
   help      Show this help
 
 Options:
-  -r, --runner <debian|fedora|all>   Which runner (default: all)
-                                       debian = .deb + Flatpak job
-                                       fedora = .rpm job
+  -r, --runner <list>                Comma-separated: debian, fedora, windows, all (default: all)
+                                       debian  = .deb + Flatpak job          (Linux container)
+                                       fedora  = .rpm job                    (Linux container)
+                                       windows = .msi job                    (Windows container)
+                                       all     = debian + fedora (windows must be requested explicitly)
+                                       e.g.  -r debian,fedora,windows
   -t, --token <TOKEN>                Registration token (start). Also read from $RUNNER_TOKEN.
-                                       Repo > Settings > Actions > Runners > New self-hosted runner.
-                                       Valid for ~1 hour; one token registers both runners.
+                                       Repo > Settings > Actions > Runners > New self-hosted runner,
+                                       or: gh api -X POST repos/OWNER/REPO/actions/runners/registration-token --jq .token
+                                       Valid ~1 hour; one token registers all runners.
   -u, --url <URL>                    Repository URL (start). Also read from $REPO_URL;
-                                       gh api -X POST repos/devopsnextgenx/open-bc/actions/runners/registration-token --jq .token
                                        defaults to this directory's git "origin" remote.
   -n, --name-prefix <PREFIX>         Container/runner name prefix (default: openbc-local)
   -b, --build                        With start: rebuild the image(s) first
@@ -47,28 +53,35 @@ Options:
       --runner-version <X.Y.Z>       With build: pin the Actions runner version (default: latest)
   -h, --help                         Show this help
 
-Runner labels:  self-hosted + openbc-debian / openbc-fedora
-The debian container runs --privileged (flatpak-builder needs namespaces) and keeps
-named volumes for the Flatpak runtimes and Cargo registry, so reruns are fast.
+Runner labels:  self-hosted + openbc-debian / openbc-fedora / openbc-windows
+
+Docker engines:
+  Linux runners use context "desktop-linux", the Windows runner uses "desktop-windows" when those
+  contexts exist (Docker Desktop). Override with LINUX_DOCKER_CONTEXT / WINDOWS_DOCKER_CONTEXT.
+  The Windows runner needs Docker Desktop's Windows containers enabled (tray icon > "Switch to
+  Windows containers", once). Tunables: WINDOWS_ISOLATION (default hyperv), WINDOWS_MEMORY (default 8g),
+  WINDOWS_CPUS (default: unset).
+  The debian container runs --privileged (flatpak-builder needs namespaces) and keeps named volumes
+  for Flatpak runtimes and the Cargo registry.
 
 Examples:
-  ./runner.sh build                              # build both images
-  ./runner.sh build -r fedora --no-cache
-  ./runner.sh start -t AAAA... -u https://github.com/me/openbc
+  ./runner.sh build                              # debian + fedora images
+  ./runner.sh build -r windows                   # slow first time (several GB)
+  ./runner.sh start -t AAAA... -u https://github.com/me/repo
+  ./runner.sh start -r debian,fedora,windows -t AAAA...
   ./runner.sh start -r debian -t AAAA... --build
-  ./runner.sh logs -r debian
-  ./runner.sh stop
+  ./runner.sh logs -r windows
+  ./runner.sh stop -r all
 
 Then trigger a build on these runners:
-  gh workflow run release.yml -f runner=self-hosted
-  (or GitHub > Actions > release > Run workflow > runner: self-hosted)
+  gh workflow run release.yml -f runner=self-hosted                         # deb, flatpak, rpm
+  gh workflow run release.yml -f runner=self-hosted -f windows_runner=self-hosted   # + msi
 
 Env: DOCKER=podman to use podman instead of docker.
-EOF
+USAGE
 }
 
 die() { echo "error: $*" >&2; exit 1; }
-
 need_val() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "option $1 needs a value"; }
 
 # ---- argument parsing -------------------------------------------------------
@@ -92,33 +105,53 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$COMMAND" ] || { usage; exit 1; }
-case "$TARGET" in
-    all)           TARGETS=(debian fedora) ;;
-    debian|fedora) TARGETS=("$TARGET") ;;
-    *) die "--runner must be debian, fedora or all (got '$TARGET')" ;;
-esac
+
+TARGETS=()
+IFS=',' read -ra REQUESTED <<< "$TARGET"
+for r in "${REQUESTED[@]}"; do
+    case "$r" in
+        all)                     TARGETS+=(debian fedora) ;;
+        debian|fedora|windows)   TARGETS+=("$r") ;;
+        *) die "--runner entries must be debian, fedora, windows or all (got '$r')" ;;
+    esac
+done
 command -v "$DOCKER" >/dev/null 2>&1 || die "'$DOCKER' not found in PATH"
 
 image_of()     { echo "${IMAGE_BASE}:$1"; }
 container_of() { echo "${PREFIX}-$1"; }
-exists()       { "$DOCKER" container inspect "$1" >/dev/null 2>&1; }
+
+# docker wrapper: picks the Linux or Windows engine (Docker Desktop contexts) for a target.
+# usage: dk <target> <docker args...>
+dk() {
+    local t="$1" ctx; shift
+    if [ "$t" = "windows" ]; then ctx="${WINDOWS_DOCKER_CONTEXT:-desktop-windows}"
+    else ctx="${LINUX_DOCKER_CONTEXT:-desktop-linux}"; fi
+    if "$DOCKER" context inspect "$ctx" >/dev/null 2>&1; then
+        "$DOCKER" --context "$ctx" "$@"
+    else
+        "$DOCKER" "$@"
+    fi
+}
+exists() { dk "$1" container inspect "$2" >/dev/null 2>&1; }
 
 # ---- commands ---------------------------------------------------------------
 build_one() {
     local t="$1" args
     [ -f "$SCRIPT_DIR/Dockerfile.$t" ] || die "missing $SCRIPT_DIR/Dockerfile.$t"
-    args=(build -f "$SCRIPT_DIR/Dockerfile.$t" -t "$(image_of "$t")" --build-arg "RUNNER_VERSION=$RUNNER_VERSION")
+    args=(build -f "Dockerfile.$t" -t "$(image_of "$t")" --build-arg "RUNNER_VERSION=$RUNNER_VERSION")
     if [ "$NO_CACHE" -eq 1 ]; then args+=(--no-cache); fi
+    if [ "$t" = "windows" ]; then args+=(--memory "${WINDOWS_MEMORY:-8g}"); fi
     echo "==> Building $(image_of "$t")"
-    "$DOCKER" "${args[@]}" "$SCRIPT_DIR"
+    # Build from the script dir with relative paths (avoids /d/... vs D:\... path issues in Git Bash).
+    (cd "$SCRIPT_DIR" && dk "$t" "${args[@]}" .)
 }
 
 stop_one() {
-    local name; name="$(container_of "$1")"
-    if exists "$name"; then
+    local t="$1" name; name="$(container_of "$t")"
+    if exists "$t" "$name"; then
         echo "==> Stopping $name"
-        "$DOCKER" stop -t 90 "$name" >/dev/null || true
-        "$DOCKER" rm -f "$name" >/dev/null
+        dk "$t" stop -t 90 "$name" >/dev/null || true
+        dk "$t" rm -f "$name" >/dev/null
     else
         echo "==> $name is not running"
     fi
@@ -128,28 +161,36 @@ start_one() {
     local t="$1" name image args
     name="$(container_of "$t")"; image="$(image_of "$t")"
 
-    if [ "$DO_BUILD" -eq 1 ] || ! "$DOCKER" image inspect "$image" >/dev/null 2>&1; then
+    if [ "$DO_BUILD" -eq 1 ] || ! dk "$t" image inspect "$image" >/dev/null 2>&1; then
         build_one "$t"
     fi
-    if exists "$name"; then stop_one "$t"; fi
+    if exists "$t" "$name"; then stop_one "$t"; fi
 
     # Token goes through the environment, not argv, so it stays out of `ps`.
     export REG_TOKEN="$TOKEN"
     args=(run -d --name "$name"
           -e REPO_URL="$REPO_URL" -e REG_TOKEN
           -e RUNNER_NAME="$name" -e RUNNER_LABELS="openbc-$t"
-          -v "${name}-cargo:/home/runner/.cargo/registry")
-    if [ "$t" = "debian" ]; then
-        args+=(--privileged -v "${name}-flatpak:/home/runner/.local/share/flatpak")
-    fi
+          -e ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1)
+    case "$t" in
+        debian)
+            args+=(--privileged
+                   -v "${name}-cargo:/home/runner/.cargo/registry"
+                   -v "${name}-flatpak:/home/runner/.local/share/flatpak") ;;
+        fedora)
+            args+=(-v "${name}-cargo:/home/runner/.cargo/registry") ;;
+        windows)
+            args+=(--isolation="${WINDOWS_ISOLATION:-hyperv}" --memory "${WINDOWS_MEMORY:-8g}")
+            if [ -n "${WINDOWS_CPUS:-}" ]; then args+=(--cpus "$WINDOWS_CPUS"); fi ;;
+    esac
     args+=("$image")
 
     echo "==> Starting $name (label: openbc-$t)"
-    "$DOCKER" "${args[@]}" >/dev/null
+    dk "$t" "${args[@]}" >/dev/null
     sleep 5
-    if [ "$("$DOCKER" inspect -f '{{.State.Running}}' "$name")" != "true" ]; then
+    if [ "$(dk "$t" inspect -f '{{.State.Running}}' "$name")" != "true" ]; then
         echo "---- $name exited early; logs:" >&2
-        "$DOCKER" logs --tail 30 "$name" >&2 || true
+        dk "$t" logs --tail 30 "$name" >&2 || true
         die "$name failed to start (expired token or wrong URL?)"
     fi
 }
@@ -165,22 +206,21 @@ case "$COMMAND" in
         fi
         [ -n "$REPO_URL" ] || die "start needs the repository URL (-u URL or \$REPO_URL)"
         for t in "${TARGETS[@]}"; do start_one "$t"; done
-        echo "==> Done. Runners should appear as Idle under Settings > Actions > Runners."
-        echo "    Run the workflow with:  gh workflow run release.yml -f runner=self-hosted" ;;
+        echo "==> Done. Runners should appear as Idle under Settings > Actions > Runners." ;;
     stop)
         for t in "${TARGETS[@]}"; do stop_one "$t"; done ;;
     status)
         for t in "${TARGETS[@]}"; do
-            "$DOCKER" ps -a --filter "name=^$(container_of "$t")$" \
+            dk "$t" ps -a --filter "name=^$(container_of "$t")$" \
                 --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
         done ;;
     logs)
         if [ "${#TARGETS[@]}" -eq 1 ]; then
-            "$DOCKER" logs -f "$(container_of "${TARGETS[0]}")"
+            dk "${TARGETS[0]}" logs -f "$(container_of "${TARGETS[0]}")"
         else
             for t in "${TARGETS[@]}"; do
                 echo "==== $(container_of "$t")"
-                "$DOCKER" logs --tail 50 "$(container_of "$t")" || true
+                dk "$t" logs --tail 50 "$(container_of "$t")" || true
             done
         fi ;;
 esac

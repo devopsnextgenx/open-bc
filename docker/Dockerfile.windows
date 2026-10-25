@@ -1,0 +1,50 @@
+# escape=`
+# Self-hosted GitHub Actions runner for the "msi" job (MSYS2 UCRT64 + WiX 3.14).
+# Needs Docker Desktop in *Windows containers* mode. Run with --isolation=hyperv on Windows 10/11 hosts.
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+
+SHELL ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+# --- MSYS2 at C:\msys64 (build.sh hardcodes /c/msys64) ---------------------------------------------
+RUN Invoke-WebRequest https://repo.msys2.org/distrib/msys2-x86_64-latest.exe -OutFile C:\msys2.exe; `
+    Start-Process C:\msys2.exe -ArgumentList 'in','--confirm-command','--accept-messages','--root','C:/msys64' -Wait; `
+    Remove-Item C:\msys2.exe
+
+# Core update may end the shell early, so run it twice.
+RUN & C:\msys64\usr\bin\bash.exe -lc 'pacman --noconfirm -Syuu'; `
+    & C:\msys64\usr\bin\bash.exe -lc 'pacman --noconfirm -Syuu'; `
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# Same package set as the hosted msi job.
+RUN & C:\msys64\usr\bin\bash.exe -lc 'pacman --noconfirm -S --needed git make `
+      mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja `
+      mingw-w64-ucrt-x86_64-rust mingw-w64-ucrt-x86_64-qt6-base mingw-w64-ucrt-x86_64-qt6-declarative `
+      mingw-w64-ucrt-x86_64-qt6-tools mingw-w64-ucrt-x86_64-qt6-multimedia mingw-w64-ucrt-x86_64-openssl `
+      mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-xz mingw-w64-ucrt-x86_64-pkgconf'; `
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# --- WiX 3.14 (build.sh looks in /c/msys64/opt/wix) ------------------------------------------------
+RUN Invoke-WebRequest https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip -OutFile C:\wix.zip; `
+    Expand-Archive C:\wix.zip -DestinationPath C:\msys64\opt\wix; `
+    Remove-Item C:\wix.zip
+
+# --- Git for Windows (MinGit) on the Windows PATH: actions/checkout needs it ------------------------
+RUN $a = (Invoke-RestMethod https://api.github.com/repos/git-for-windows/git/releases/latest).assets | `
+         Where-Object { $_.name -match '^MinGit-[\d.]+-64-bit\.zip$' } | Select-Object -First 1; `
+    Invoke-WebRequest $a.browser_download_url -OutFile C:\mingit.zip; `
+    Expand-Archive C:\mingit.zip -DestinationPath C:\git; `
+    Remove-Item C:\mingit.zip
+ENV PATH="C:\git\cmd;C:\git\mingw64\bin;C:\git\usr\bin;${PATH}"
+
+# --- GitHub Actions runner (RUNNER_VERSION=latest resolves the newest release) ------------------------
+ARG RUNNER_VERSION=latest
+RUN $v = $env:RUNNER_VERSION; `
+    if ($v -eq 'latest') { $v = (Invoke-RestMethod https://api.github.com/repos/actions/runner/releases/latest).tag_name.TrimStart('v') }; `
+    Invoke-WebRequest "https://github.com/actions/runner/releases/download/v$v/actions-runner-win-x64-$v.zip" -OutFile C:\runner.zip; `
+    Expand-Archive C:\runner.zip -DestinationPath C:\actions-runner; `
+    Remove-Item C:\runner.zip
+
+COPY entrypoint.ps1 C:/actions-runner/entrypoint.ps1
+
+WORKDIR C:\actions-runner
+ENTRYPOINT ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:/actions-runner/entrypoint.ps1"]
