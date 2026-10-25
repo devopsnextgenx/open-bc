@@ -30,10 +30,41 @@ on:
     tags: ['v*']
 
 permissions:
-  actions: read
   contents: read
 
 jobs:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   # ------------------------------------------------------------------ .deb + Flatpak (one runner, one checkout)
   linux:
@@ -82,11 +113,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Generate from the Cargo.lock checked out for this workflow run.
-
-
-
-
+          rm -rf /tmp/open-bc-flatpak
+          git clone --depth 1 --branch "v$v" \
+            https://github.com/devopsnextgenx/open-bc.git /tmp/open-bc-flatpak
+            /tmp/open-bc-flatpak
           # Prefer a copy committed to the repo (pinned); fall back to upstream.
           gen=scripts/packaging/flatpak-cargo-generator.py
           if [ ! -f "$gen" ]; then
@@ -133,7 +163,7 @@ jobs:
       # Hosted: release:false -> reuse the runner's preinstalled C:\msys64 (build.sh hardcodes /c/msys64).
       # Self-hosted: runners/Dockerfile.windows already has MSYS2, the packages and WiX.
       - uses: msys2/setup-msys2@v2
-        if: inputs.windows_runner != 'self-hosted'
+        if: needs.pick-runners.outputs.windows != 'self-hosted'
         with:
           msystem: UCRT64
           release: false
@@ -176,77 +206,8 @@ jobs:
           ./scripts/build.sh -c -p win
           v="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"
           mv build/win/packages/openbc-installer.msi "build/win/packages/openbc-${v}-windows-x64.msi"
-      # For a manual workflow run, keep the current behavior: upload the MSI
-
-      # as an unsigned build artifact. Public tag releases go through SignPath.
-
-      - name: Upload unsigned MSI (manual builds only)
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: pkg-msi
-          path: build/win/packages/*.msi
-          if-no-files-found: error
-          retention-days: 7
-
-      # SignPath Foundation signing is used only for tagged public releases.
-      # SignPath requires artifacts to originate from GitHub-hosted workflow jobs.
-      - name: Upload unsigned MSI for SignPath
-        if: startsWith(github.ref, 'refs/tags/v')
-        id: upload-unsigned-msi
-        uses: actions/upload-artifact@v4
-        with:
-          name: openbc-msi-unsigned
-          path: build/win/packages/*.msi
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Sign MSI with SignPath Foundation
-        if: startsWith(github.ref, 'refs/tags/v')
-        id: sign-msi
-        uses: signpath/github-action-submit-signing-request@v3
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
-          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ steps.upload-unsigned-msi.outputs.artifact-id }}
-          wait-for-completion: true
-          wait-for-completion-timeout-in-seconds: 3600
-          output-artifact-directory: signed-msi
-
-      - name: Verify signed MSI
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $msis = @(Get-ChildItem -Path 'signed-msi' -Filter '*.msi' -File -Recurse)
-          if ($msis.Count -ne 1) {
-            throw "Expected exactly one signed MSI in signed-msi; found $($msis.Count)."
-          }
-
-          $signature = Get-AuthenticodeSignature -FilePath $msis[0].FullName
-          if ($signature.Status -ne 'Valid') {
-            throw "MSI signature is not valid. Status: $($signature.Status); $($signature.StatusMessage)"
-          }
-
-          Write-Host "Verified signature on $($msis[0].Name)"
-          Write-Host "Signer: $($signature.SignerCertificate.Subject)"
-
-          # Normalize the signed MSI into a clean directory while preserving
-          # the versioned filename produced by the build step.
-          New-Item -ItemType Directory -Path 'release-msi' -Force | Out-Null
-          Copy-Item -LiteralPath $msis[0].FullName -Destination 'release-msi'
-
-      - name: Upload signed MSI for release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
-        with:
-          name: pkg-msi
-          path: release-msi/*.msi
-          if-no-files-found: error
-          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with: { name: pkg-msi, path: build/win/packages/*.msi }
 
   # ------------------------------------------------------------------ GitHub Release (tags only)
   release:
