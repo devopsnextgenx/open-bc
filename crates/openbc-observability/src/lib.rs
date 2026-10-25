@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -90,31 +90,46 @@ pub fn session_scope(session_id: &str) -> SessionScope {
     SessionScope { previous }
 }
 
+/// Open `path` for appending, creating its parent directory first.
+fn open_log_file(path: &Path) -> std::io::Result<File> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    OpenOptions::new().create(true).append(true).open(path)
+}
+
 /// Initialize the process-wide log sink and one YAML instrumentation session.
+///
+/// Log location is tried in order: the platform's preferred path, the per-user
+/// application directory, then the system temp directory. Failing to find a
+/// writable location is the only way this returns an error.
 pub fn init() -> Result<(), String> {
-    let username = env::var("USER").unwrap_or_else(|_| "unknown".to_string());
-    let log_path = PathBuf::from(format!("/var/log/open-bc-{username}.log"));
-    let (log_file, active_log_path) =
-        match OpenOptions::new().create(true).append(true).open(&log_path) {
-            Ok(file) => (file, log_path.clone()),
-            Err(_) => {
-                let fallback = home_dir().join(".config/open-bc");
-                fs::create_dir_all(&fallback)
-                    .map_err(|error| format!("cannot create {}: {error}", fallback.display()))?;
-                let fallback_path = fallback.join(format!("open-bc-{username}.log"));
-                let file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&fallback_path)
-                    .map_err(|error| {
-                        format!(
-                            "cannot open {} or its user fallback: {error}",
-                            log_path.display()
-                        )
-                    })?;
-                (file, fallback_path)
+    let username = username();
+    let file_name = format!("open-bc-{username}.log");
+
+    let candidates = [
+        preferred_log_path(),
+        app_data_dir().join(&file_name),
+        env::temp_dir().join("open-bc").join(&file_name),
+    ];
+    let mut last_error = String::new();
+    let mut opened: Option<(File, PathBuf)> = None;
+    for candidate in candidates {
+        match open_log_file(&candidate) {
+            Ok(file) => {
+                opened = Some((file, candidate));
+                break;
             }
-        };
+            Err(error) => {
+                last_error = format!("cannot open {}: {error}", candidate.display());
+            }
+        }
+    }
+    let (log_file, active_log_path) =
+        opened.ok_or_else(|| format!("no writable log location ({last_error})"))?;
+
     let (writer, guard) = tracing_appender::non_blocking(log_file);
     let subscriber = tracing_subscriber::fmt()
         .with_writer(writer)
@@ -132,9 +147,7 @@ pub fn init() -> Result<(), String> {
     let _ = LOG_GUARD.set(guard);
     let _ = ACTIVE_LOG_PATH.set(active_log_path.clone());
 
-    let instrumentation_dir = home_dir().join(".config/open-bc/instrumentation");
-    fs::create_dir_all(&instrumentation_dir)
-        .map_err(|error| format!("cannot create {}: {error}", instrumentation_dir.display()))?;
+    let instrumentation_dir = create_instrumentation_dir()?;
     SESSION
         .set(InstrumentationSession {
             directory: instrumentation_dir,
@@ -148,13 +161,30 @@ pub fn init() -> Result<(), String> {
     Ok(())
 }
 
+/// Create the instrumentation directory, falling back to the temp dir.
+fn create_instrumentation_dir() -> Result<PathBuf, String> {
+    let candidates = [
+        app_data_dir().join("instrumentation"),
+        env::temp_dir().join("open-bc").join("instrumentation"),
+    ];
+    let mut last_error = String::new();
+    for candidate in candidates {
+        match fs::create_dir_all(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) => {
+                last_error = format!("cannot create {}: {error}", candidate.display());
+            }
+        }
+    }
+    Err(last_error)
+}
+
 /// Return the current user's OpenBC log path.
 pub fn log_path() -> PathBuf {
-    if let Some(path) = ACTIVE_LOG_PATH.get() {
-        return path.clone();
-    }
-    let username = env::var("USER").unwrap_or_else(|_| "unknown".to_string());
-    PathBuf::from(format!("/var/log/open-bc-{username}.log"))
+    ACTIVE_LOG_PATH
+        .get()
+        .cloned()
+        .unwrap_or_else(preferred_log_path)
 }
 
 /// Return the most recently used tab's YAML report path.
@@ -368,10 +398,51 @@ pub fn log(module: &str, function: &str, level: &str, message: &str) {
     }
 }
 
+/// Current user's name: `USER` on Unix, `USERNAME` on Windows.
+fn username() -> String {
+    env::var("USER")
+        .or_else(|_| env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Home directory: `HOME` (Unix, Git Bash), else `USERPROFILE` (Windows).
+/// Never falls back to the current directory, which may be read-only
+/// (e.g. `C:\Program Files\OpenBC` when launched from a shortcut).
 fn home_dir() -> PathBuf {
     env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .or_else(|| env::var_os("USERPROFILE").filter(|value| !value.is_empty()))
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+        .unwrap_or_else(env::temp_dir)
+}
+
+/// Per-user writable application directory.
+/// Windows: `%LOCALAPPDATA%\OpenBC`. Unix: `~/.config/open-bc`.
+fn app_data_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        env::var_os("LOCALAPPDATA")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir().join("AppData").join("Local"))
+            .join("OpenBC")
+    }
+    #[cfg(not(windows))]
+    {
+        home_dir().join(".config/open-bc")
+    }
+}
+
+/// Preferred log file: `/var/log` on Unix, the per-user app dir on Windows.
+fn preferred_log_path() -> PathBuf {
+    #[cfg(windows)]
+    {
+        app_data_dir().join(format!("open-bc-{}.log", username()))
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(format!("/var/log/open-bc-{}.log", username()))
+    }
 }
 
 fn timestamp() -> String {
