@@ -71,11 +71,10 @@ jobs:
       - name: Generate offline Cargo sources
         run: |
           set -euo pipefail
+          v="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"
           rm -rf /tmp/open-bc-flatpak
-          git clone --depth 1 --branch v1.0.3 \
-            https://github.com/devopsnextgenx/open-bc.git \
-            /tmp/open-bc-flatpak
-          # Prefer a copy committed to the repo (pinned); fall back to upstream.
+          git clone --depth 1 --branch "v$v" \
+            https://github.com/devopsnextgenx/open-bc.git /tmp/open-bc-flatpak
           gen=scripts/packaging/flatpak-cargo-generator.py
           if [ ! -f "$gen" ]; then
             gen=/tmp/flatpak-cargo-generator.py
@@ -83,9 +82,7 @@ jobs:
               https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py \
               -o "$gen"
           fi
-          python3 "$gen" \
-            /tmp/open-bc-flatpak/Cargo.lock \
-            -o scripts/packaging/cargo-sources.json
+          python3 "$gen" /tmp/open-bc-flatpak/Cargo.lock -o scripts/packaging/cargo-sources.json
           test -s scripts/packaging/cargo-sources.json
 
       - name: Build Flatpak

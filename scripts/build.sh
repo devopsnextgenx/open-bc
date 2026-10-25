@@ -218,8 +218,30 @@ SPEC
 pkg_flatpak() {
   echo "=== flatpak -> $OUT_DIR"
   $DRY || command -v flatpak-builder >/dev/null 2>&1 || { echo "flatpak-builder not found" >&2; return 1; }
-  local manifest="scripts/packaging/io.openbc.OpenBC.yml"
-  [ -f "$manifest" ] || { echo "missing $manifest" >&2; return 1; }
+
+  local tmpl="scripts/packaging/io.openbc.OpenBC.yml.in"
+  # Rendered next to the template so relative sources (cargo-sources.json) still resolve.
+  local manifest="scripts/packaging/io.openbc.OpenBC.generated.yml"
+  [ -f "$tmpl" ] || { echo "missing $tmpl" >&2; return 1; }
+
+  # Peeled commit SHA for a tag. For annotated tags, ls-remote lists the tag object first and
+  # the real commit second (refs/tags/X^{}); tail -1 picks the commit in both cases.
+  tag_commit() {
+    git ls-remote "$1" "refs/tags/$2" "refs/tags/$2^{}" | tail -1 | cut -f1
+  }
+
+  local app_tag="${OPENBC_TAG:-v$VERSION}"
+  local app_commit corro_commit
+  app_commit="$(tag_commit https://github.com/devopsnextgenx/open-bc.git "$app_tag")"
+  corro_commit="$(tag_commit https://github.com/corrosion-rs/corrosion.git v0.6.1)"
+  [ -n "$app_commit" ]   || { echo "tag $app_tag not found on open-bc remote (push the tag first)" >&2; return 1; }
+  [ -n "$corro_commit" ] || { echo "corrosion v0.6.1 not found" >&2; return 1; }
+  echo "--- flatpak sources: open-bc $app_tag @ $app_commit, corrosion v0.6.1 @ $corro_commit"
+
+  $DRY || sed -e "s|@APP_TAG@|$app_tag|g" \
+               -e "s|@APP_COMMIT@|$app_commit|g" \
+               -e "s|@CORROSION_COMMIT@|$corro_commit|g" "$tmpl" > "$manifest"
+
   run flatpak-builder --force-clean --ccache --user --install-deps-from=flathub \
       --repo="$BUILD_DIR/flatpak-repo" "$BUILD_DIR/flatpak-build" "$manifest"
   run flatpak build-bundle "$BUILD_DIR/flatpak-repo" "$OUT_DIR/openbc-${VERSION}.flatpak" io.openbc.OpenBC

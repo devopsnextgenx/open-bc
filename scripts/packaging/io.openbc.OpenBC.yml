@@ -33,8 +33,8 @@ modules:
       # Replace the commit placeholder with the verified 40-character tag target SHA.
       - type: git
         url: https://github.com/devopsnextgenx/open-bc.git
-        tag: v1.0.11
-        commit: de9ba251876aac55853ddf40c17c103b2d243db5
+        tag: @APP_TAG@
+        commit: @APP_COMMIT@
 
       # 2. Offline Rust dependencies generated from this release's Cargo.lock.
       - cargo-sources.json
@@ -44,5 +44,5 @@ modules:
       - type: git
         url: https://github.com/corrosion-rs/corrosion.git
         tag: v0.6.1
-        commit: 2522f7abad9eaa88b05d07fd492841c529ca2bf1
+        commit: @CORROSION_COMMIT@
         dest: corrosion-src
