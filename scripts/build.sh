@@ -320,13 +320,19 @@ pkg_appimage() {
     export APPIMAGE_EXTRACT_AND_RUN=1
     export ARCH="$arch" QMAKE="${qmake:-qmake6}"
     export PATH="$tools:$PATH"
-    export DEPLOY_PLATFORM_THEMES=1                      # bundle platform themes (GTK/KDE look)
+    # NOTE: do NOT set DEPLOY_PLATFORM_THEMES. It makes linuxdeploy-plugin-qt bundle the GTK3 theme plugin
+    # and with it libgtk-3 / libgio / libglib. That old glib then shadows the host's glib and breaks the
+    # host's own modules (e.g. gvfs: "undefined symbol: g_variant_builder_init_static").
+
     # Bundle the Wayland platform plugins only when this Qt actually has them (Ubuntu: qt6-wayland,
     # Fedora: qt6-qtwayland). Asking for a missing one makes the Qt plugin abort the whole deploy.
-    local pdir="" wl="" p
-    [ -n "$qmake" ] && pdir="$("$qmake" -query QT_INSTALL_PLUGINS 2>/dev/null || true)/platforms"
+    local pdir="" qtplug="" wl="" p
+    if [ -n "$qmake" ]; then
+      qtplug="$("$qmake" -query QT_INSTALL_PLUGINS 2>/dev/null || true)"
+      pdir="$qtplug/platforms"
+    fi
     for p in libqwayland-generic.so libqwayland-egl.so; do
-      [ -f "$pdir/$p" ] && wl="${wl:+$wl;}$p"
+      if [ -f "$pdir/$p" ]; then wl="${wl:+$wl;}$p"; fi
     done
     if [ -n "$wl" ]; then
       export EXTRA_PLATFORM_PLUGINS="$wl"
@@ -335,12 +341,69 @@ pkg_appimage() {
     fi
     export LINUXDEPLOY_OUTPUT_VERSION="$VERSION"
     # Optional delta updates: export LDAI_UPDATE_INFORMATION="gh-releases-zsync|devopsnextgenx|open-bc|latest|openbc-*-$arch.AppImage.zsync"
+
+    # ---- Step 1: DEPLOY only. Collects Qt + dependent libs into the AppDir, but does not build the AppImage yet.
     run "$tools/linuxdeploy-$arch.AppImage" \
       --appdir "$appdir" \
       --executable "$appdir/usr/bin/openbc" \
       --desktop-file "$appdir/usr/share/applications/io.github.devopsnextgenx.open-bc.desktop" \
       --icon-file "$appdir/usr/share/icons/hicolor/512x512/apps/io.github.devopsnextgenx.open-bc.png" \
-      --plugin qt \
+      --plugin qt
+
+    # ---- Step 2: FIX UP the AppDir (this is why deploy and packaging are separate invocations).
+    if ! $DRY; then
+      # 2a. linuxdeploy-plugin-qt only pulls the Wayland *platform* plugin. Qt's Wayland client also needs
+      #     these plugin directories, otherwise: 'Failed to load client buffer integration "wayland-egl"'
+      #     and every QOpenGLWidget fails to create a context on Wayland sessions.
+      local d
+      for d in wayland-graphics-integration-client wayland-decoration-client wayland-shell-integration; do
+        if [ -d "$qtplug/$d" ] && [ ! -d "$appdir/usr/plugins/$d" ]; then
+          echo "--- adding Qt plugin directory $d"
+          cp -a "$qtplug/$d" "$appdir/usr/plugins/"
+        fi
+      done
+
+      # 2b. Remove libraries that must come from the host system, never from the bundle.
+      #     glib/gio/gobject: host modules (gvfs, dconf, GL/EGL drivers' helpers) are built against the host's
+      #     newer glib; a bundled older glib shadows it and they fail to load.
+      #     gtk/gdk/pango/cairo/atk: only needed by the GTK3 platform theme, which is removed below.
+      echo "--- pruning host-provided libraries from the AppDir"
+      local pat
+      for pat in \
+        'libglib-2.0.so*' 'libgobject-2.0.so*' 'libgio-2.0.so*' 'libgmodule-2.0.so*' 'libgthread-2.0.so*' \
+        'libgtk-3.so*' 'libgdk-3.so*' 'libgdk_pixbuf-2.0.so*' 'libpango*.so*' 'libcairo*.so*' \
+        'libatk*.so*' 'libatk-bridge*.so*' 'libat-spi*.so*' \
+        'libEGL*.so*' 'libGL.so*' 'libGLX*.so*' 'libGLdispatch*.so*' 'libOpenGL.so*' 'libgbm.so*' 'libdrm*.so*'
+      do
+        find "$appdir/usr" \( -type f -o -type l \) -name "$pat" -print -delete
+      done
+      # Only the GTK3 theme is dropped; the xdg-desktop-portal theme (GNOME/KDE look via portals) stays.
+      rm -fv "$appdir"/usr/plugins/platformthemes/libqgtk3.so
+
+      # 2c. Sanity checks: fail the build here instead of shipping a broken AppImage.
+      local bad
+      bad="$(find "$appdir/usr" \( -name 'libglib-2.0.so*' -o -name 'libgio-2.0.so*' -o -name 'libgtk-3.so*' \) -print)"
+      if [ -n "$bad" ]; then
+        echo "ERROR: host-only libraries are still in the AppDir:" >&2; echo "$bad" >&2; exit 1
+      fi
+      if [ -n "$wl" ]; then
+        if [ ! -d "$appdir/usr/plugins/wayland-graphics-integration-client" ]; then
+          echo "ERROR: wayland-graphics-integration-client plugin missing from the AppDir (install qt6-wayland)" >&2; exit 1
+        fi
+        local so missing=0
+        while IFS= read -r so; do
+          if LD_LIBRARY_PATH="$appdir/usr/lib" ldd "$so" 2>/dev/null | grep 'not found'; then
+            echo "ERROR: $so has unresolved dependencies (listed above)" >&2; missing=1
+          fi
+        done < <(find "$appdir/usr/plugins/wayland-graphics-integration-client" "$appdir/usr/plugins/platforms" \
+                   -name '*wayland*.so' -type f)
+        [ "$missing" = 0 ] || exit 1
+      fi
+    fi
+
+    # ---- Step 3: PACKAGE only. No --executable / --plugin here: that would re-deploy and bring glib/gtk back.
+    run "$tools/linuxdeploy-$arch.AppImage" \
+      --appdir "$appdir" \
       --output appimage
   )
 
@@ -352,7 +415,8 @@ pkg_appimage() {
     chmod +x "$out"
     find "$work" -maxdepth 1 -name '*.AppImage.zsync' -exec mv {} "$OUT_DIR/" \; || true
 
-    # Smoke test: every shared library of the bundled binary must resolve (system libs or the AppDir).
+    # Smoke test: every shared library of the bundled binary must resolve (host system libs or the AppDir).
+    # glib/GL are intentionally resolved from the host, so this passes on the build machine.
     echo "--- ldd check"
     if LD_LIBRARY_PATH="$appdir/usr/lib" ldd "$appdir/usr/bin/openbc" | grep 'not found'; then
       echo "ERROR: AppImage would be missing the libraries listed above." >&2
