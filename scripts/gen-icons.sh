@@ -13,11 +13,15 @@ if   command -v magick  >/dev/null 2>&1; then IM=(magick)
 elif command -v convert >/dev/null 2>&1; then IM=(convert)
 else echo "ImageMagick not found (apt install imagemagick / pacman -S mingw-w64-ucrt-x86_64-imagemagick)" >&2; exit 1; fi
 
-for s in 48 64 128 256 512; do
+for s in 16 32 48 64 128 256 512; do
   d="$ROOT/resources/icons/hicolor/${s}x${s}/apps"; mkdir -p "$d"
   "${IM[@]}" "$SRC" -background none -resize "${s}x${s}" -gravity center -extent "${s}x${s}" "PNG32:$d/$NAME.png"
   echo "  $d/$NAME.png"
 done
+d="$ROOT/resources/icons/hicolor/scalable/apps"; mkdir -p "$d"
+"${IM[@]}" "$SRC" -background none -resize "${s}x${s}" -gravity center -extent "256x256" "PNG32:$d/$NAME.png"
+  echo "  $d/$NAME.png"
+
 "${IM[@]}" "$SRC" -background none -resize 256x256 -gravity center -extent 256x256 \
   -define icon:auto-resize=256,128,64,48,32,24,16 "$ROOT/resources/icons/openbc.ico"
 echo "  $ROOT/resources/icons/openbc.ico"
