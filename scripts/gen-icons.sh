@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # gen-icons.sh - one-off: derive every icon the packages need from a single square-ish PNG.
-#   Linux : resources/icons/hicolor/<N>x<N>/apps/io.openbc.OpenBC.png  (48,64,128,256,512)
+#   Linux : resources/icons/hicolor/<N>x<N>/apps/io.github.devopsnextgenx.open-bc.png  (48,64,128,256,512)
 #   Windows: resources/icons/openbc.ico (16..256, used by the .rc, the MSI shortcuts and Add/Remove Programs)
 # Usage: scripts/gen-icons.sh [source.png]     (default: resources/icons/fevicon.png; best if >= 512px)
 # Requires ImageMagick (magick or convert). Commit the generated files.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${1:-$ROOT/resources/icons/fevicon.png}"
-NAME="io.openbc.OpenBC"
+NAME="io.github.devopsnextgenx.open-bc"
 [ -f "$SRC" ] || { echo "source icon not found: $SRC" >&2; exit 1; }
 if   command -v magick  >/dev/null 2>&1; then IM=(magick)
 elif command -v convert >/dev/null 2>&1; then IM=(convert)

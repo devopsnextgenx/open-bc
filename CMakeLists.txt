@@ -169,13 +169,13 @@ endif()
 install(TARGETS openbc openbc-depcheck RUNTIME DESTINATION bin)
 
 if(NOT WIN32)
-    install(FILES resources/io.openbc.OpenBC.desktop DESTINATION share/applications)
-    install(FILES resources/io.openbc.OpenBC.metainfo.xml DESTINATION share/metainfo)
+    install(FILES resources/io.github.devopsnextgenx.open-bc.desktop DESTINATION share/applications)
+    install(FILES resources/io.github.devopsnextgenx.open-bc.metainfo.xml DESTINATION share/metainfo)
 
     # Launcher / AppStream icons. appstreamcli (flatpak-builder) and software centers want several
     # hicolor sizes named exactly like the app-id; a lone 512x512 is what triggered
     # "E: icon-not-found". Sizes are generated once by scripts/gen-icons.sh and committed.
-    set(OPENBC_ICON_NAME "io.openbc.OpenBC")
+    set(OPENBC_ICON_NAME "io.github.devopsnextgenx.open-bc")
     set(OPENBC_ICONS_INSTALLED FALSE)
     foreach(sz 48 64 128 256 512)
         set(_icon "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/hicolor/${sz}x${sz}/apps/${OPENBC_ICON_NAME}.png")

@@ -1,0 +1,48 @@
+# Flatpak manifest used by `scripts/build.sh -p lin -s flatpak`.
+# For Flathub/offline builds, generate cargo-sources.json from the pinned
+# open-bc Cargo.lock with flatpak-cargo-generator before building.
+app-id: io.github.devopsnextgenx.open-bc
+runtime: org.kde.Platform
+runtime-version: '6.10'
+sdk: org.kde.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: openbc
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri          # 3D compare uses OpenGL
+  - --share=network       # SFTP / FTP remote browsing
+  - --filesystem=host     # comparing arbitrary folders is the point of the app
+  - --socket=pulseaudio   # media compare playback
+modules:
+  - name: openbc
+    buildsystem: cmake-ninja
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/openbc/cargo
+        CARGO_NET_OFFLINE: 'true'
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+      - -DFETCHCONTENT_SOURCE_DIR_CORROSION=/run/build/openbc/corrosion-src
+    sources:
+      # 1. App source pinned to the v1.0.3 release.
+      # Replace the commit placeholder with the verified 40-character tag target SHA.
+      - type: git
+        url: https://github.com/devopsnextgenx/open-bc.git
+        tag: @APP_TAG@
+        commit: @APP_COMMIT@
+
+      # 2. Offline Rust dependencies generated from this release's Cargo.lock.
+      - cargo-sources.json
+
+      # 3. Local Corrosion checkout prevents FetchContent from cloning at build time.
+      # Replace the commit placeholder with the verified 40-character tag target SHA.
+      - type: git
+        url: https://github.com/corrosion-rs/corrosion.git
+        tag: v0.6.1
+        commit: @CORROSION_COMMIT@
+        dest: corrosion-src

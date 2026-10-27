@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # verify-launcher.sh - checks that the installed launcher, binary and icon line up.
-# Usage: scripts/verify-launcher.sh [app-id] [prefix]     (defaults: io.openbc.OpenBC, /usr)
-# For a Flatpak install use: PREFIX=/var/lib/flatpak/app/io.openbc.OpenBC/current/active/files  (or ~/.local/share/flatpak/...)
-ID="${1:-io.openbc.OpenBC}"; PREFIX="${2:-${PREFIX:-/usr}}"
+# Usage: scripts/verify-launcher.sh [app-id] [prefix]     (defaults: io.github.devopsnextgenx.open-bc, /usr)
+# For a Flatpak install use: PREFIX=/var/lib/flatpak/app/io.github.devopsnextgenx.open-bc/current/active/files  (or ~/.local/share/flatpak/...)
+ID="${1:-io.github.devopsnextgenx.open-bc}"; PREFIX="${2:-${PREFIX:-/usr}}"
 DESK="$PREFIX/share/applications/$ID.desktop"
 ok(){ echo "  [ OK ] $*"; }; bad(){ echo "  [FAIL] $*"; FAILED=1; }; FAILED=0
 

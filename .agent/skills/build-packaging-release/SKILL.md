@@ -32,7 +32,7 @@ open-bc/
   scripts/
     build.sh              # Main orchestrator: -c (clean), -p (win|lin), -s (deb|rpm|flatpak)
     packaging/
-      io.openbc.OpenBC.yml  # Flatpak manifest (KDE/Qt6 runtime)
+      io.github.devopsnextgenx.open-bc.yml  # Flatpak manifest (KDE/Qt6 runtime)
   CMakeLists.txt          # Version, CPack, Qt/Rust integration
   Cargo.toml              # Workspace root
   Cargo.lock
@@ -233,9 +233,9 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6core6, libqt6multimedia6, ...")
 set(CPACK_RPM_PACKAGE_REQUIRES "qt6-qtbase, qt6-qtmultimedia, ...")
 
 # Desktop integration:
-install(FILES resources/io.openbc.OpenBC.desktop DESTINATION share/applications)
-install(FILES resources/io.openbc.OpenBC.metainfo.xml DESTINATION share/metainfo)
-install(FILES resources/icons/io.openbc.OpenBC.png DESTINATION share/icons/hicolor/256x256/apps)
+install(FILES resources/io.github.devopsnextgenx.open-bc.desktop DESTINATION share/applications)
+install(FILES resources/io.github.devopsnextgenx.open-bc.metainfo.xml DESTINATION share/metainfo)
+install(FILES resources/icons/io.github.devopsnextgenx.open-bc.png DESTINATION share/icons/hicolor/256x256/apps)
 ```
 
 When adding a new runtime library dependency:
@@ -245,11 +245,11 @@ When adding a new runtime library dependency:
 
 ---
 
-## Flatpak Manifest -- `scripts/packaging/io.openbc.OpenBC.yml`
+## Flatpak Manifest -- `scripts/packaging/io.github.devopsnextgenx.open-bc.yml`
 
 Key conventions:
 - Base runtime: `org.kde.Platform` + matching SDK (track the Qt6 version used)
-- App ID must match: `io.openbc.OpenBC` (also must match `.desktop` file `StartupWMClass` and `QGuiApplication::setDesktopFileName`)
+- App ID must match: `io.github.devopsnextgenx.open-bc` (also must match `.desktop` file `StartupWMClass` and `QGuiApplication::setDesktopFileName`)
 - `finish-args` must include display/audio/filesystem permissions for features used
 - New native libraries should be added as `modules` entries; prefer shared-modules where possible
 

@@ -38,4 +38,4 @@ build-win.log
 
 crates/**/*.zip
 
-scripts/packaging/io.openbc.OpenBC.generated.yml
+scripts/packaging/io.github.devopsnextgenx.open-bc.generated.yml

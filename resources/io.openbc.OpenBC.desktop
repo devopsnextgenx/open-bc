@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=OpenBC
-Comment=File and directory comparison tool
-Exec=openbc
-Icon=io.openbc.OpenBC
-Terminal=false
-Categories=Utility;
-StartupNotify=false

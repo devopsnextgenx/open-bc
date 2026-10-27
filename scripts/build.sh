@@ -208,9 +208,9 @@ update-desktop-database -q %{_datadir}/applications >/dev/null 2>&1 || :
 %files
 /usr/bin/openbc
 /usr/bin/openbc-depcheck
-/usr/share/applications/io.openbc.OpenBC.desktop
-/usr/share/metainfo/io.openbc.OpenBC.metainfo.xml
-/usr/share/icons/hicolor/*/apps/io.openbc.OpenBC.png
+/usr/share/applications/io.github.devopsnextgenx.open-bc.desktop
+/usr/share/metainfo/io.github.devopsnextgenx.open-bc.metainfo.xml
+/usr/share/icons/hicolor/*/apps/io.github.devopsnextgenx.open-bc.png
 SPEC
   run rpmbuild -bb --define "_topdir $top" "$top/SPECS/openbc.spec"
   $DRY || find "$top/RPMS" -name '*.rpm' -exec cp {} "$OUT_DIR/" \;
@@ -220,9 +220,9 @@ pkg_flatpak() {
   echo "=== flatpak -> $OUT_DIR"
   $DRY || command -v flatpak-builder >/dev/null 2>&1 || { echo "flatpak-builder not found" >&2; return 1; }
 
-  local tmpl="scripts/packaging/io.openbc.OpenBC.yml.in"
+  local tmpl="scripts/packaging/io.github.devopsnextgenx.open-bc.yml.in"
   # Rendered next to the template so relative sources (cargo-sources.json) still resolve.
-  local manifest="scripts/packaging/io.openbc.OpenBC.generated.yml"
+  local manifest="scripts/packaging/io.github.devopsnextgenx.open-bc.generated.yml"
   [ -f "$tmpl" ] || { echo "missing $tmpl" >&2; return 1; }
 
   # Peeled commit SHA for a tag. For annotated tags, ls-remote lists the tag object first and
@@ -271,7 +271,7 @@ pkg_flatpak() {
 
   run flatpak-builder --force-clean --ccache --user --install-deps-from=flathub \
       --repo="$BUILD_DIR/flatpak-repo" "$BUILD_DIR/flatpak-build" "$manifest"
-  run flatpak build-bundle "$BUILD_DIR/flatpak-repo" "$OUT_DIR/openbc-${VERSION}.flatpak" io.openbc.OpenBC
+  run flatpak build-bundle "$BUILD_DIR/flatpak-repo" "$OUT_DIR/openbc-${VERSION}.flatpak" io.github.devopsnextgenx.open-bc
 }
 
 pkg_appimage() {
@@ -338,8 +338,8 @@ pkg_appimage() {
     run "$tools/linuxdeploy-$arch.AppImage" \
       --appdir "$appdir" \
       --executable "$appdir/usr/bin/openbc" \
-      --desktop-file "$appdir/usr/share/applications/io.openbc.OpenBC.desktop" \
-      --icon-file "$appdir/usr/share/icons/hicolor/512x512/apps/io.openbc.OpenBC.png" \
+      --desktop-file "$appdir/usr/share/applications/io.github.devopsnextgenx.open-bc.desktop" \
+      --icon-file "$appdir/usr/share/icons/hicolor/512x512/apps/io.github.devopsnextgenx.open-bc.png" \
       --plugin qt \
       --output appimage
   )

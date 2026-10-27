@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OpenBC
+Comment=File and directory comparison tool
+Exec=openbc
+Icon=io.github.devopsnextgenx.open-bc
+Terminal=false
+Categories=Utility;
+StartupNotify=false
