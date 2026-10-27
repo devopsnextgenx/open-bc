@@ -1,10 +1,10 @@
-# Self-hosted GitHub Actions runner for the "linux" job (.deb + Flatpak).
+# Self-hosted GitHub Actions runner for the "linux" job (.deb + AppImage + Flatpak).
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Build tools, Qt6, Flatpak, and Python deps for flatpak-cargo-generator.py
-# (aiohttp + tomlkit + yaml are what the generator imports).
+# Build tools, Qt6, Flatpak, AppImage deps (qmake6 + qt6-wayland for linuxdeploy-plugin-qt, file, desktop-file-utils),
+# and Python deps for flatpak-cargo-generator.py (aiohttp + tomlkit + yaml are what the generator imports).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
@@ -24,6 +24,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     flatpak-builder \
     bubblewrap \
     appstream \
+    qmake6 \
+    qt6-wayland \
+    file \
+    desktop-file-utils \
     python3 \
     python3-aiohttp \
     python3-tomlkit \
@@ -62,6 +66,7 @@ ENV PATH="/home/runner/.cargo/bin:${PATH}"
 
 # Pre-create cache mount points so named volumes inherit runner ownership.
 RUN mkdir -p /home/runner/.local/share/flatpak /home/runner/.cargo/registry \
+    /home/runner/.cache/openbc/appimage-tools \
     && sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
 
 ENTRYPOINT ["/home/runner/actions-runner/entrypoint.sh"]
