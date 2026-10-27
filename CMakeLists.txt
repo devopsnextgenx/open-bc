@@ -152,7 +152,7 @@ endif()
 
 # --- Packaging Configuration ---
 set(CPACK_PACKAGE_NAME "OpenBC")
-set(CPACK_PACKAGE_VERSION "1.0.17")
+set(CPACK_PACKAGE_VERSION "1.0.18")
 set(CPACK_PACKAGE_VENDOR "OpenBC")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenBC File & Directory Comparison Tool")
 
