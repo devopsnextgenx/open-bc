@@ -45,6 +45,7 @@ modules:
         CARGO_NET_OFFLINE: 'true'
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
+      - -DCPACK_PACKAGE_VERSION=@APP_VERSION@
       - -DFETCHCONTENT_FULLY_DISCONNECTED=ON
       - -DFETCHCONTENT_SOURCE_DIR_CORROSION=/run/build/openbc/corrosion-src
     sources:

@@ -272,6 +272,7 @@ pkg_flatpak() {
 
   $DRY || sed "${sed_args[@]}" \
                -e "s|@APP_TAG@|$app_tag|g" \
+               -e "s|@APP_VERSION@|$VERSION|g" \
                -e "s|@APP_COMMIT@|$app_commit|g" \
                -e "s|@CORROSION_COMMIT@|$corro_commit|g" "$tmpl" > "$manifest"
 
