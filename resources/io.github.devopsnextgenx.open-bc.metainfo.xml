@@ -2,21 +2,31 @@
 <component type="desktop-application">
   <id>io.github.devopsnextgenx.open-bc</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>Proprietary</project_license>
+  <project_license>MIT OR Apache-2.0</project_license>
   <name>OpenBC</name>
-  <summary>OpenBC File and Directory Comparison Tool</summary>
+  <summary>File and directory comparison tool</summary>
+  <developer id="io.github.devopsnextgenx">
+    <name>Amit Kshirsagar</name>
+  </developer>
   <description>
-    <p>OpenBC is a high-performance open-source file and directory comparison tool integrated with Rust backends and a modern Qt6 GUI.</p>
+    <p>OpenBC is a high-performance open-source file and directory comparison tool built with a Rust backend and a modern Qt6 GUI.</p>
+    <p>Compare folders, text, images, 3D models, media files, hex data, tables and registry files side by side, including files on remote SFTP and FTP locations.</p>
   </description>
   <launchable type="desktop-id">io.github.devopsnextgenx.open-bc.desktop</launchable>
-  
-  <!-- Add the explicit icon declaration here -->
-  <icon type="cached">io.github.devopsnextgenx.open-bc.png</icon>
-
+  <url type="homepage">https://github.com/devopsnextgenx/open-bc</url>
+  <url type="bugtracker">https://github.com/devopsnextgenx/open-bc/issues</url>
+  <url type="vcs-browser">https://github.com/devopsnextgenx/open-bc</url>
   <screenshots>
     <screenshot type="default">
-      <caption>Main Application Window</caption>
+      <caption>Main application window</caption>
+      <image type="source">https://raw.githubusercontent.com/devopsnextgenx/open-bc/v1.0.21/docs/screenshots/main-window.png</image>
     </screenshot>
   </screenshots>
+  <releases>
+    <release version="1.0.21" date="2026-10-28"/>
+  </releases>
   <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>openbc</binary>
+  </provides>
 </component>

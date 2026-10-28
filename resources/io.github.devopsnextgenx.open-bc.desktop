@@ -5,5 +5,6 @@ Comment=File and directory comparison tool
 Exec=openbc
 Icon=io.github.devopsnextgenx.open-bc
 Terminal=false
-Categories=Utility;
+Categories=Utility;FileTools;
+Keywords=compare;diff;merge;folder;file;
 StartupNotify=false
