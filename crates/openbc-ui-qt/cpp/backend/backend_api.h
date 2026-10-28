@@ -14,6 +14,19 @@ void openbc_register_instrumentation_session(const std::uint8_t*, std::size_t,
                                              const std::uint8_t*, std::size_t);
 char* openbc_instrumentation_session_report(const std::uint8_t*, std::size_t, std::size_t*);
 void openbc_instrumentation_report_destroy(char*);
+
+// Anonymous usage tracking + first-run popup (all best effort and silent).
+void openbc_usage_start(const std::uint8_t* version, std::size_t versionLength);
+void openbc_usage_shutdown();
+void openbc_usage_register_tab(const std::uint8_t* id, std::size_t idLength,
+                               const std::uint8_t* kind, std::size_t kindLength);
+void openbc_usage_close_tab(const std::uint8_t* id, std::size_t idLength);
+int openbc_first_run_prompt_pending();
+void openbc_first_run_prompt_mark_shown();
+// Both return a masked address (free with openbc_instrumentation_report_destroy) or nullptr if invalid.
+char* openbc_mask_email(const std::uint8_t* email, std::size_t emailLength, std::size_t* maskedLength);
+char* openbc_first_run_submit_email(const std::uint8_t* email, std::size_t emailLength,
+                                    std::size_t* maskedLength);
 OpenBcDiff* openbc_compare_buffers(const std::uint8_t*, std::size_t, const std::uint8_t*,
                                    std::size_t, std::uint8_t, std::uint8_t, std::uint8_t,
                                    double, const std::uint8_t*, std::size_t, const std::uint8_t*,

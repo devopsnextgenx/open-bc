@@ -62,6 +62,9 @@
 #include "app/app_options.h"
 #include "app/options_dialog.h"
 #include "app/single_instance.h"
+#include "app/app_info.h"
+#include "app/about_dialog.h"
+#include "app/first_run_dialog.h"
 
 namespace openbc::app {
 
@@ -126,7 +129,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         return 0;
     }
     if (launch.showVersion) {
-        printToConsole("openbc 1.0.20\n");
+        printToConsole("openbc " + appVersion() + "\n");
         return 0;
     }
     if (launch.dependencyCheck) {
@@ -151,6 +154,13 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     SingleInstance singleInstance(launch);
     if (!singleInstance.isPrimary()) {
         return singleInstance.wasForwarded() ? 0 : 1;
+    }
+    // Anonymous usage tracking (install id + per-launch session summary). Silent: if the
+    // network is down nothing is shown anywhere and the data is queued for later.
+    {
+        const QByteArray version = appVersion().toUtf8();
+        openbc_usage_start(reinterpret_cast<const std::uint8_t*>(version.constData()),
+                           static_cast<std::size_t>(version.size()));
     }
     // Prefer the installed theme icon (same one the launcher uses); fall back to the embedded PNG
     // when running straight from the build tree.
@@ -189,36 +199,8 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     auto* viewMenu = window.menuBar()->addMenu("&View");
     auto* toolsMenu = window.menuBar()->addMenu("&Tools");
     auto* helpMenu = window.menuBar()->addMenu("&Help");
-    auto* downloadLog = helpMenu->addAction("Download Log...");
-    auto* downloadInstrumentation = helpMenu->addAction("Download Instrumentation Report...");
-
-    auto copyReport = [&](const QString& source, const QString& title, const QString& filter) {
-        const QString destination = QFileDialog::getSaveFileName(&window, title, QDir::homePath(), filter);
-        if (destination.isEmpty()) {
-            return;
-        }
-        QFile::remove(destination);
-        if (!QFile::copy(source, destination)) {
-            openbc_log_message(reinterpret_cast<const std::uint8_t*>("report download failed"), 23);
-        } else {
-            openbc_log_message(reinterpret_cast<const std::uint8_t*>("report downloaded"), 17);
-        }
-    };
-    QObject::connect(downloadLog, &QAction::triggered, [&]() {
-        const QString username = qEnvironmentVariable("USER", qEnvironmentVariable("USERNAME", "unknown"))   /* USERNAME on Windows */;
-        QString logPath = "/var/log/open-bc-" + username + ".log";
-        if (!QFile::exists(logPath)) {
-            logPath = QDir::homePath() + "/.config/open-bc/open-bc-" + username + ".log";
-        }
-        copyReport(logPath, "Download OpenBC log", "Log files (*.log)");
-    });
-    QObject::connect(downloadInstrumentation, &QAction::triggered, [&]() {
-        const QString directory = QDir::homePath() + "/.config/open-bc/instrumentation";
-        const QStringList reports = QDir(directory).entryList({"*.yml"}, QDir::Files, QDir::Time);
-        if (!reports.isEmpty()) {
-            copyReport(directory + "/" + reports.constFirst(), "Download instrumentation report", "YAML files (*.yml)");
-        }
-    });
+    auto* aboutAction = helpMenu->addAction("About");
+    QObject::connect(aboutAction, &QAction::triggered, &window, [&]() { showAboutDialog(&window); });
     openbc_log_message(reinterpret_cast<const std::uint8_t*>("Qt GUI initialized"), 18);
 
     auto* tabs = new QTabWidget(&window);
@@ -240,6 +222,25 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         openbc_register_instrumentation_session(
             reinterpret_cast<const std::uint8_t*>(idBytes.constData()), idBytes.size(),
             reinterpret_cast<const std::uint8_t*>(labelBytes.constData()), labelBytes.size());
+    };
+    // Usage tracking: only the viewer kind ("folder", "text", "picture", ...) and an opaque id leave
+    // this layer - never the tab title, paths or file names. Folder/text tabs reuse their
+    // instrumentation id so the operations they record are attributed to the same tracked tab.
+    quint64 nextTrackedTabId = 0;
+    auto trackTabOpened = [&](QWidget* view, const QString& kind, const QString& existingId = QString()) {
+        const QString id = existingId.isEmpty() ? QStringLiteral("tab-%1").arg(++nextTrackedTabId) : existingId;
+        view->setProperty("openbcTrackId", id);
+        const QByteArray idBytes = id.toUtf8();
+        const QByteArray kindBytes = kind.toUtf8();
+        openbc_usage_register_tab(
+            reinterpret_cast<const std::uint8_t*>(idBytes.constData()), static_cast<std::size_t>(idBytes.size()),
+            reinterpret_cast<const std::uint8_t*>(kindBytes.constData()), static_cast<std::size_t>(kindBytes.size()));
+    };
+    auto trackTabClosed = [](QWidget* view) {
+        const QByteArray idBytes = view->property("openbcTrackId").toString().toUtf8();
+        if (idBytes.isEmpty()) return;
+        openbc_usage_close_tab(reinterpret_cast<const std::uint8_t*>(idBytes.constData()),
+                               static_cast<std::size_t>(idBytes.size()));
     };
     auto* darkThemeAction = new QAction("Dark Theme", &window);
     darkThemeAction->setCheckable(true);
@@ -382,6 +383,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     // Home/Sessions hooks, and the session-history record (full session kind, e.g.
     // "table-compare"). Both paths empty (a tile opened with nothing chosen) is not recorded.
     auto addViewerTab = [&](auto* view, const QString& sessionKind) {
+        trackTabOpened(view, QString(sessionKind).remove(QStringLiteral("-compare")));
         const int index = tabs->addTab(view, sessionTypeIcon(sessionKind), view->title());
         tabs->setTabToolTip(index, view->detailedTitle());
         attachCloseButton(index, view);
@@ -405,6 +407,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         auto* session = new FolderCompareViewer(&preferences);
         session->setPaths(left, right);
         registerInstrumentationSession(session->instrumentationSessionId(), session->title());
+        trackTabOpened(session, QStringLiteral("folder"), session->instrumentationSessionId());
         session->onComparisonRequested = [&](const QString& requestedLeft, const QString& requestedRight) {
             SessionHistory::record("folder", requestedLeft, requestedRight);
             home->refreshHistory();
@@ -456,6 +459,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
                       const QString& rightText, FolderCompareViewer* origin) {
         auto* textView = new TextCompareViewer(leftPath, rightPath, leftText, rightText);
         registerInstrumentationSession(textView->instrumentationSessionId(), textView->title());
+        trackTabOpened(textView, QStringLiteral("text"), textView->instrumentationSessionId());
         const int textIndex = tabs->addTab(
             textView, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Compare),
             textView->title());
@@ -480,6 +484,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
 
     addPictureView = [&](const QString& left, const QString& right, bool run) {
         auto* view = new PictureCompareViewer(&preferences);
+        trackTabOpened(view, QStringLiteral("picture"));
         view->setPaths(left, right);
         const int pictureIndex = tabs->addTab(view, sessionTypeIcon("picture-compare"), view->title());
         tabs->setTabToolTip(pictureIndex, view->detailedTitle());
@@ -501,6 +506,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
 
     addModel3dView = [&](const QString& left, const QString& right, bool run) {
         auto* view = new Model3dCompareViewer(&preferences);
+        trackTabOpened(view, QStringLiteral("model3d"));
         view->setPaths(left, right);
         const int index = tabs->addTab(view, sessionTypeIcon("model3d-compare"), view->title());
         tabs->setTabToolTip(index, view->detailedTitle());
@@ -558,6 +564,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         if (!mayClose) {
             return;
         }
+        trackTabClosed(widget);
         tabs->removeTab(index);
         widget->deleteLater();
         home->refreshHistory();
@@ -913,8 +920,14 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     window.show();
     QTimer::singleShot(0, &window, [&, launch]() { handleLaunch(launch); });
     singleInstance.setLaunchHandler(handleLaunch);
+    // First-run "help improve OpenBC" popup (email is optional). Shown once per installation, after
+    // the main window is up so it never delays startup; maybeShowFirstRunPrompt() records that it
+    // was shown before opening, so it cannot come back.
+    QTimer::singleShot(400, &window, [&]() { maybeShowFirstRunPrompt(&window); });
 
-    return application.exec();
+    const int exitCode = application.exec();
+    openbc_usage_shutdown();  // closes the session record; uploads briefly, silently keeps it if offline
+    return exitCode;
 }
 
 }  // namespace openbc::app

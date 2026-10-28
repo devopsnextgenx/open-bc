@@ -77,6 +77,22 @@ done
 
 run() { echo "+ $*"; $DRY || "$@"; }
 
+# ---- usage-tracking endpoint/key (embedded at COMPILE time, never read at run time) ------------
+# crates/openbc-observability/build.rs reads OPENBC_TRACKING_URL / OPENBC_TRACKING_KEY from the build
+# environment (or from a git-ignored tracking.env in the repo root) and bakes them, XOR-masked, into
+# the binary. Export them before running this script:
+#   export OPENBC_TRACKING_URL=https://<ingest>/track
+#   export OPENBC_TRACKING_KEY=<key>
+# Values are never printed. Missing URL = this build has usage tracking OFF.
+if [ -n "${OPENBC_TRACKING_URL:-}" ]; then
+  echo "=== Usage tracking: endpoint will be embedded${OPENBC_TRACKING_KEY:+ (with key)}"
+  [ -n "${OPENBC_TRACKING_KEY:-}" ] || echo "--- WARNING: OPENBC_TRACKING_KEY is not set: uploads will be sent without an x-api-key" >&2
+elif [ -f tracking.env ]; then
+  echo "=== Usage tracking: endpoint/key will be embedded from tracking.env"
+else
+  echo "--- WARNING: OPENBC_TRACKING_URL is not set and there is no tracking.env: usage tracking will be OFF in this build" >&2
+fi
+
 # ---- environment ------------------------------------------------------------------------------
 if [ "$PLATFORM" = win ]; then
   export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:/c/msys64/opt/wix:$PATH"
@@ -263,6 +279,22 @@ pkg_flatpak() {
     echo "missing scripts/packaging/cargo-sources.json - generate it first:" >&2
     echo "  python3 scripts/packaging/flatpak-cargo-generator.py Cargo.lock -o scripts/packaging/cargo-sources.json" >&2
     return 1; }
+
+  # The flatpak-builder sandbox does not inherit this shell's environment, and anything written into the
+  # manifest is copied into the shipped bundle (/app/manifest.json). So the tracking values travel in a
+  # git-ignored FILE source: the manifest only names the path, never the contents. build.rs finds the
+  # file (tracking.env in the module's source root) and embeds the values into the binary.
+  local trk_file="scripts/packaging/tracking.env"
+  if [ -n "${OPENBC_TRACKING_URL:-}${OPENBC_TRACKING_KEY:-}" ] && ! grep -q 'tracking\.env' "$tmpl"; then
+    echo "$tmpl has no 'tracking.env' file source, so the tracking values would not reach the build." >&2
+    echo "Add to the app module's sources (after the git source):  - type: file / path: tracking.env / dest-filename: tracking.env" >&2
+    return 1
+  fi
+  if ! $DRY; then
+    ( umask 077; printf 'OPENBC_TRACKING_URL=%s\nOPENBC_TRACKING_KEY=%s\n' \
+        "${OPENBC_TRACKING_URL:-}" "${OPENBC_TRACKING_KEY:-}" > "$ROOT/$trk_file" )
+    trap 'rm -f "$ROOT/scripts/packaging/tracking.env"' EXIT   # do not leave the secret on disk
+  fi
 
   $DRY || sed "${sed_args[@]}" \
                -e "s|@APP_TAG@|$app_tag|g" \

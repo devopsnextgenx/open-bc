@@ -462,14 +462,20 @@ fn preferred_log_path() -> PathBuf {
 // Uploads are idempotent (keyed by `app_session_id`) so retries never double count.
 // ---------------------------------------------------------------------------
 
-/// Ingest endpoint, e.g. `https://dxxxx.cloudfront.net/track`. Set at build time
-/// with `OPENBC_TRACKING_URL=... cargo build`, or override at runtime with the
-/// environment variable of the same name. No URL means tracking is fully off.
-const TRACKING_URL: Option<&str> = option_env!("OPENBC_TRACKING_URL");
-/// Shared ingest key (spam protection only; it ships inside the binary).
-const TRACKING_KEY: Option<&str> = option_env!("OPENBC_TRACKING_KEY");
+// Ingest endpoint (e.g. `https://dxxxx.cloudfront.net/track`) and shared ingest key. Both are read
+// by build.rs at BUILD time (`OPENBC_TRACKING_URL` / `OPENBC_TRACKING_KEY` or a git-ignored
+// `tracking.env`) and embedded XOR-masked, so they are not in the binary as plain text. They are
+// NOT read from the environment at run time: nothing a user sets can redirect or expose them.
+// No URL embedded means tracking is fully off.
+include!(concat!(env!("OUT_DIR"), "/tracking_embedded.rs"));
 const USAGE_FILE_NAME: &str = "session.data.yml";
 const OPT_OUT_MARKER: &str = "telemetry.disabled";
+/// Plain-text file holding the installation id. Deliberately separate from
+/// `session.data.yml` so a corrupt/removed usage queue never changes the id.
+const INSTALL_ID_FILE: &str = "install.id";
+/// First-run consent state (popup already shown? masked email, if shared).
+const CONSENT_FILE: &str = "consent.yml";
+const MAX_EMAIL_LEN: usize = 254;
 const MAX_PENDING_RECORDS: usize = 500;
 const MAX_COMPARE_DETAILS: usize = 100;
 const BATCH_SIZE: usize = 25;
@@ -517,6 +523,10 @@ struct UsageRecord {
     /// Total compare sessions opened (may exceed `compare_sessions.len()`).
     compare_count: u32,
     compare_sessions: Vec<CompareSessionUsage>,
+    /// Masked email the user chose to share on first run (see `mask_email`).
+    /// Absent when the user declined; the raw address is never stored or sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    email_masked: Option<String>,
 }
 
 /// Contents of `session.data.yml`.
@@ -601,11 +611,31 @@ fn infer_kind(operation: &str) -> Option<&'static str> {
     }
 }
 
-fn tracking_url() -> Option<String> {
-    env::var("OPENBC_TRACKING_URL")
+fn sanitize_version(version: &str) -> String {
+    version
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'))
+        .take(32)
+        .collect()
+}
+
+/// Undo the build-time XOR mask. Empty / blank / not valid UTF-8 = value absent.
+fn unmask(data: &[u8]) -> Option<String> {
+    let bytes: Vec<u8> = data.iter().enumerate().map(|(i, byte)| byte ^ tracking_pad(i)).collect();
+    String::from_utf8(bytes)
         .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| TRACKING_URL.map(str::to_owned))
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
+}
+
+fn tracking_key() -> Option<String> {
+    unmask(TRACKING_KEY_MASKED)
+}
+
+/// The ingest endpoint embedded at build time (`None` = tracking off in this build).
+fn tracking_url() -> Option<String> {
+    unmask(TRACKING_URL_MASKED)
 }
 
 /// Tracking is on unless the user opted out (env var or marker file).
@@ -629,6 +659,10 @@ pub fn set_usage_tracking_enabled(enabled: bool) {
         let _ = fs::create_dir_all(&dir);
         let _ = fs::write(marker, b"usage tracking disabled by user\n");
         let _ = fs::remove_file(dir.join(USAGE_FILE_NAME));
+        let mut consent = load_consent(&dir);
+        if consent.email_masked.take().is_some() {
+            write_consent(&dir, &consent);
+        }
         if let Some(state) = USAGE.get() {
             let mut state = lock_usage(state);
             state.file.current = None;
@@ -643,10 +677,186 @@ fn load_usage_file(path: &Path) -> UsageFile {
         .ok()
         .and_then(|text| serde_yaml::from_str::<UsageFile>(&text).ok())
         .unwrap_or_default();
-    if file.install_id.is_empty() {
-        file.install_id = uuid::Uuid::new_v4().to_string();
-    }
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    file.install_id = resolve_install_id(dir, &file.install_id);
     file
+}
+
+fn valid_install_id(value: &str) -> Option<String> {
+    uuid::Uuid::parse_str(value.trim()).ok().map(|id| id.to_string())
+}
+
+/// Return this installation's id, creating it on first use.
+///
+/// Order: `install.id` -> (migration) the id of an older `session.data.yml`
+/// -> a fresh random UUID. The result is always written back to `install.id`,
+/// so the id survives a deleted or corrupt usage queue and opt-out/opt-in.
+fn resolve_install_id(dir: &Path, legacy: &str) -> String {
+    let path = dir.join(INSTALL_ID_FILE);
+    if let Some(id) = fs::read_to_string(&path).ok().as_deref().and_then(valid_install_id) {
+        return id;
+    }
+    let id = valid_install_id(legacy).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let _ = fs::create_dir_all(dir);
+    let tmp = path.with_extension("id.tmp");
+    if fs::write(&tmp, format!("{id}\n")).is_ok() && fs::rename(&tmp, &path).is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    id
+}
+
+/// The anonymous, random id of this installation (stable across launches).
+pub fn install_id() -> String {
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| {
+        let dir = app_data_dir();
+        let legacy = fs::read_to_string(dir.join(USAGE_FILE_NAME))
+            .ok()
+            .and_then(|text| serde_yaml::from_str::<UsageFile>(&text).ok())
+            .map(|file| file.install_id)
+            .unwrap_or_default();
+        resolve_install_id(&dir, &legacy)
+    })
+    .clone()
+}
+
+// ---------------------------------------------------------------------------
+// First-run consent popup + optional (masked) email
+// ---------------------------------------------------------------------------
+
+/// What the user decided on the first-run popup. Lives in `consent.yml`.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ConsentFile {
+    /// Set the moment the popup is shown, so it can never appear twice, even
+    /// if the app is killed while the popup is open.
+    #[serde(default)]
+    email_prompt_shown: bool,
+    #[serde(default)]
+    prompt_shown_at: u64,
+    /// Only the masked form is ever stored. `None` = user opted out / skipped.
+    #[serde(default)]
+    email_masked: Option<String>,
+}
+
+fn load_consent(dir: &Path) -> ConsentFile {
+    fs::read_to_string(dir.join(CONSENT_FILE))
+        .ok()
+        .and_then(|text| serde_yaml::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_consent(dir: &Path, consent: &ConsentFile) {
+    let Ok(text) = serde_yaml::to_string(consent) else { return };
+    let _ = fs::create_dir_all(dir);
+    let path = dir.join(CONSENT_FILE);
+    let tmp = path.with_extension("yml.tmp");
+    if fs::write(&tmp, text).is_ok() && fs::rename(&tmp, &path).is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+}
+
+/// Mask an email address before it is stored or sent.
+///
+/// The first 4 and last 4 characters of the part before `@` are kept, every
+/// character in between becomes `x`, and the domain after `@` is kept as is:
+/// `jonathan.smith@example.com` -> `jonaxxxxxxxxmith@example.com`.
+///
+/// Local parts of 8 characters or fewer would be shown in full by that rule,
+/// which defeats the masking, so they keep only their first and last character
+/// (and a 1-2 character local part is masked completely).
+///
+/// Returns `None` if `email` is not a plausible address.
+pub fn mask_email(email: &str) -> Option<String> {
+    let email = email.trim();
+    if email.is_empty() || email.chars().count() > MAX_EMAIL_LEN {
+        return None;
+    }
+    let (local, domain) = email.rsplit_once('@')?;
+    let bad = |c: char| c.is_whitespace() || c.is_control();
+    if local.is_empty()
+        || local.contains('@')
+        || local.chars().any(bad)
+        || domain.chars().any(bad)
+        || !domain.contains('.')
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+        || domain.contains("..")
+    {
+        return None;
+    }
+    let chars: Vec<char> = local.chars().collect();
+    let n = chars.len();
+    let masked: String = if n > 8 {
+        chars[..4]
+            .iter()
+            .copied()
+            .chain(std::iter::repeat('x').take(n - 8))
+            .chain(chars[n - 4..].iter().copied())
+            .collect()
+    } else if n >= 3 {
+        std::iter::once(chars[0])
+            .chain(std::iter::repeat('x').take(n - 2))
+            .chain(std::iter::once(chars[n - 1]))
+            .collect()
+    } else {
+        "x".repeat(n)
+    };
+    Some(format!("{masked}@{domain}"))
+}
+
+/// True when the first-run popup should be shown now: tracking is active
+/// (not opted out, ingest URL configured) and the popup was never shown on
+/// this installation.
+pub fn first_run_prompt_pending() -> bool {
+    usage_tracking_enabled()
+        && tracking_url().is_some()
+        && !load_consent(&app_data_dir()).email_prompt_shown
+}
+
+/// Record that the popup is being shown. Call this *before* showing it; the
+/// popup will not be offered again on this installation.
+pub fn first_run_prompt_mark_shown() {
+    let dir = app_data_dir();
+    let mut consent = load_consent(&dir);
+    if !consent.email_prompt_shown {
+        consent.email_prompt_shown = true;
+        consent.prompt_shown_at = now_secs();
+        write_consent(&dir, &consent);
+    }
+}
+
+/// Store the masked form of `email` and attach it to the running session.
+/// Returns the masked address, or `None` (nothing stored) if `email` is invalid.
+pub fn first_run_submit_email(email: &str) -> Option<String> {
+    let masked = mask_email(email)?;
+    let dir = app_data_dir();
+    let mut consent = load_consent(&dir);
+    consent.email_prompt_shown = true;
+    if consent.prompt_shown_at == 0 {
+        consent.prompt_shown_at = now_secs();
+    }
+    consent.email_masked = Some(masked.clone());
+    write_consent(&dir, &consent);
+
+    if let Some(mutex) = USAGE.get() {
+        let (url, snapshot) = {
+            let mut state = lock_usage(mutex);
+            let Some(current) = state.file.current.as_mut() else {
+                return Some(masked);
+            };
+            current.email_masked = Some(masked.clone());
+            let snapshot = current.clone();
+            write_usage_file(&state.path, &state.file);
+            (state.url.clone(), snapshot)
+        };
+        // Best effort and silent: if offline, the next heartbeat/final record carries it.
+        let _ = thread::Builder::new()
+            .name("usage-email".to_owned())
+            .spawn(move || {
+                let _ = post_records(&url, std::slice::from_ref(&snapshot), HTTP_TIMEOUT);
+            });
+    }
+    Some(masked)
 }
 
 /// Write atomically so a crash mid-write never corrupts the queue.
@@ -675,6 +885,7 @@ fn new_usage_record(install_id: &str, now: u64) -> UsageRecord {
         duration_s: 0,
         compare_count: 0,
         compare_sessions: Vec::new(),
+        email_masked: None,
     }
 }
 
@@ -729,10 +940,13 @@ fn close_compare(record: &mut UsageRecord, session_id: &str, now: u64) {
 
 /// Start tracking this launch. Cheap and non-blocking: all network work runs on
 /// background threads. Call once right after `init()`.
-pub fn usage_start() {
+pub fn usage_start(app_version: &str) {
     if USAGE.get().is_some() || !usage_tracking_enabled() {
         return;
     }
+    // Generate (once) and persist the installation id even if no ingest URL is
+    // configured, so every later launch reports under the same id.
+    let _ = install_id();
     let Some(url) = tracking_url() else { return };
     let path = app_data_dir().join(USAGE_FILE_NAME);
     let mut file = load_usage_file(&path);
@@ -750,7 +964,12 @@ pub fn usage_start() {
         file.pending.drain(..excess);
     }
 
-    let record = new_usage_record(&file.install_id, now);
+    let mut record = new_usage_record(&file.install_id, now);
+    let version = sanitize_version(app_version);
+    if !version.is_empty() {
+        record.app_version = version;
+    }
+    record.email_masked = load_consent(&app_data_dir()).email_masked;
     file.current = Some(record.clone());
     write_usage_file(&path, &file);
 
@@ -881,8 +1100,8 @@ fn post_records(url: &str, records: &[UsageRecord], timeout: Duration) -> SendOu
     let mut request = ureq::post(url)
         .timeout(timeout)
         .set("content-type", "application/json");
-    if let Some(key) = TRACKING_KEY {
-        request = request.set("x-api-key", key);
+    if let Some(key) = tracking_key() {
+        request = request.set("x-api-key", &key);
     }
     match request.send_json(UploadBody { records }) {
         Ok(_) => SendOutcome::Sent,
@@ -898,6 +1117,12 @@ fn post_records(url: &str, records: &[UsageRecord], timeout: Duration) -> SendOu
 /// Register a compare tab together with its type (`file`, `folder`, `image`, ...).
 pub fn register_compare_session(session_id: &str, label: &str, kind: &str) {
     register_session(session_id, label);
+    usage_register_tab(session_id, kind);
+}
+
+/// Count a tab for usage tracking only: no instrumentation file is created and
+/// no label (which may contain file names) is involved. Only the tab type is kept.
+pub fn usage_register_tab(session_id: &str, kind: &str) {
     let Some(mutex) = USAGE.get() else { return };
     let mut state = lock_usage(mutex);
     let now = now_secs();
@@ -950,10 +1175,17 @@ fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_event, close_compare, create_tab_file, finalize_usage_record, infer_kind,
-        load_usage_file, new_usage_record, open_compare, sanitize_kind, session_scope,
-        write_usage_file, InstrumentationEvent, MAX_COMPARE_DETAILS, SESSION_CONTEXT,
+        append_event, close_compare, create_tab_file, finalize_usage_record, flush_pending,
+        infer_kind, load_consent, load_usage_file, lock_usage, mask_email, new_usage_record,
+        open_compare, post_records, resolve_install_id, sanitize_kind, sanitize_version,
+        session_scope, write_consent, write_usage_file, ConsentFile, InstrumentationEvent,
+        SendOutcome, UsageState, BATCH_SIZE, INSTALL_ID_FILE, MAX_COMPARE_DETAILS,
+        SESSION_CONTEXT, USAGE,
     };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use std::collections::HashSet;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1080,6 +1312,212 @@ mod tests {
         assert_eq!(sanitize_kind("***"), "unknown");
         assert_eq!(infer_kind("folder_compare"), Some("folder"));
         assert_eq!(infer_kind("syntax_highlighting"), None);
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "openbc-{tag}-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn email_masking_keeps_first_four_last_four_and_domain() {
+        // 14-char local part: 4 kept + 6 masked + 4 kept.
+        assert_eq!(
+            mask_email("jonathan.smith@example.com").as_deref(),
+            Some("jonaxxxxxxmith@example.com")
+        );
+        // 9 chars: exactly one masked character.
+        assert_eq!(mask_email("abcdefghi@x.org").as_deref(), Some("abcdxfghi@x.org"));
+        // Case and domain are preserved as typed; surrounding spaces are trimmed.
+        assert_eq!(
+            mask_email("  Amit.Kshirsagar@Mail.Example.COM ").as_deref(),
+            Some("Amitxxxxxxxagar@Mail.Example.COM")
+        );
+    }
+
+    #[test]
+    fn short_local_parts_are_never_shown_in_full() {
+        assert_eq!(mask_email("john@example.com").as_deref(), Some("jxxn@example.com"));
+        assert_eq!(mask_email("12345678@example.com").as_deref(), Some("1xxxxxx8@example.com"));
+        assert_eq!(mask_email("ab@example.com").as_deref(), Some("xx@example.com"));
+        assert_eq!(mask_email("a@example.com").as_deref(), Some("x@example.com"));
+    }
+
+    #[test]
+    fn invalid_emails_are_rejected() {
+        for bad in ["", "   ", "plain", "@example.com", "me@", "me@localhost", "a b@x.com",
+                    "me@@x.com", "me@x..com", "me@.com", "me@x.com.", "a@b@c.com"] {
+            assert_eq!(mask_email(bad), None, "{bad:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn masked_email_never_contains_the_middle_of_the_local_part() {
+        let masked = mask_email("jonathan.smith@example.com").unwrap();
+        assert!(!masked.contains("athan.s"));
+        assert_eq!(masked.len(), "jonathan.smith@example.com".len());
+    }
+
+    #[test]
+    fn install_id_is_generated_once_and_reused() {
+        let dir = temp_dir("id");
+        let first = resolve_install_id(&dir, "");
+        assert!(uuid::Uuid::parse_str(&first).is_ok());
+        assert_eq!(resolve_install_id(&dir, ""), first);
+        // A different "legacy" value never overrides the stored id.
+        assert_eq!(resolve_install_id(&dir, "11111111-1111-4111-8111-111111111111"), first);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn install_id_survives_a_corrupt_or_deleted_usage_file() {
+        let dir = temp_dir("id-corrupt");
+        let path = dir.join("session.data.yml");
+        let id = load_usage_file(&path).install_id;
+        fs::write(&path, "{{{ not yaml").unwrap();
+        assert_eq!(load_usage_file(&path).install_id, id);
+        fs::remove_file(&path).unwrap();
+        assert_eq!(load_usage_file(&path).install_id, id);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn install_id_migrates_from_an_older_usage_file_and_ignores_garbage() {
+        let dir = temp_dir("id-migrate");
+        let legacy = "22222222-2222-4222-8222-222222222222";
+        assert_eq!(resolve_install_id(&dir, legacy), legacy);
+        assert_eq!(resolve_install_id(&dir, ""), legacy);
+        fs::write(dir.join(INSTALL_ID_FILE), "garbage").unwrap();
+        let fresh = resolve_install_id(&dir, "also-garbage");
+        assert!(uuid::Uuid::parse_str(&fresh).is_ok());
+        assert_ne!(fresh, legacy);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn consent_round_trips_and_defaults_to_not_shown() {
+        let dir = temp_dir("consent");
+        assert!(!load_consent(&dir).email_prompt_shown);
+        write_consent(&dir, &ConsentFile {
+            email_prompt_shown: true,
+            prompt_shown_at: 7,
+            email_masked: Some("jxxn@example.com".into()),
+        });
+        let loaded = load_consent(&dir);
+        assert!(loaded.email_prompt_shown);
+        assert_eq!(loaded.email_masked.as_deref(), Some("jxxn@example.com"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn masked_values_round_trip_and_blank_means_absent() {
+        let plain = "https://abc.example/track?a=1&b=2";
+        let masked: Vec<u8> = plain.bytes().enumerate().map(|(i, b)| b ^ super::tracking_pad(i)).collect();
+        assert_ne!(masked.as_slice(), plain.as_bytes(), "must not be stored as plain text");
+        assert_eq!(super::unmask(&masked).as_deref(), Some(plain));
+        assert_eq!(super::unmask(&[]), None);
+        let blank: Vec<u8> = "   ".bytes().enumerate().map(|(i, b)| b ^ super::tracking_pad(i)).collect();
+        assert_eq!(super::unmask(&blank), None);
+    }
+
+    #[test]
+    fn version_string_is_sanitized() {
+        assert_eq!(sanitize_version(" 1.0.20 "), "1.0.20");
+        assert_eq!(sanitize_version("1.0/../x y"), "1.0..xy");
+    }
+
+    #[test]
+    fn offline_upload_is_silent_and_keeps_data() {
+        // Port 1 on loopback: connection refused, like having no network.
+        let record = new_usage_record("install-1", 1);
+        let outcome = post_records("http://127.0.0.1:1/track", &[record], Duration::from_millis(500));
+        assert!(matches!(outcome, SendOutcome::Retry));
+    }
+
+    /// Minimal HTTP server: answers 200 and remembers each request body.
+    fn serve(bodies: Arc<Mutex<Vec<String>>>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/track", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut data = Vec::new();
+                let mut buf = [0u8; 4096];
+                let (mut header_end, mut length) = (None, 0usize);
+                loop {
+                    let Ok(n) = stream.read(&mut buf) else { break };
+                    if n == 0 { break; }
+                    data.extend_from_slice(&buf[..n]);
+                    if header_end.is_none() {
+                        if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                            header_end = Some(pos + 4);
+                            let head = String::from_utf8_lossy(&data[..pos]).to_ascii_lowercase();
+                            length = head.lines()
+                                .find_map(|l| l.strip_prefix("content-length:"))
+                                .and_then(|v| v.trim().parse().ok())
+                                .unwrap_or(0);
+                        }
+                    }
+                    if let Some(end) = header_end {
+                        if data.len() >= end + length { break; }
+                    }
+                }
+                let end = header_end.unwrap_or(data.len());
+                bodies.lock().unwrap().push(String::from_utf8_lossy(&data[end..]).into_owned());
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn queued_records_are_kept_while_offline_then_sent_in_order_and_pruned() {
+        let dir = temp_dir("flush");
+        let path = dir.join("session.data.yml");
+        let mut file = load_usage_file(&path);
+        let total = BATCH_SIZE + 5;
+        for i in 0..total {
+            let mut record = new_usage_record(&file.install_id, i as u64);
+            record.app_session_id = format!("session-{i:03}");
+            record.email_masked = Some("jxxn@example.com".into());
+            finalize_usage_record(&mut record, i as u64 + 1, "ended");
+            file.pending.push(record);
+        }
+        write_usage_file(&path, &file);
+        USAGE
+            .set(Mutex::new(UsageState {
+                path: path.clone(),
+                url: "http://127.0.0.1:1/track".into(), // offline
+                file,
+                seen: HashSet::new(),
+            }))
+            .ok()
+            .expect("USAGE is only initialised by this test");
+        let state = USAGE.get().unwrap();
+
+        // 1. Offline: nothing is lost and nothing panics.
+        flush_pending(None);
+        assert_eq!(lock_usage(state).file.pending.len(), total);
+        assert_eq!(load_usage_file(&path).pending.len(), total);
+
+        // 2. Network is back: everything is sent, oldest first, then pruned.
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        lock_usage(state).url = serve(bodies.clone());
+        flush_pending(None);
+        assert!(lock_usage(state).file.pending.is_empty());
+        assert!(load_usage_file(&path).pending.is_empty(), "pruned on disk too");
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "25 + 5 records = two sequential batches");
+        assert!(bodies[0].contains("session-000") && bodies[0].contains("session-024"));
+        assert!(!bodies[0].contains("session-025"));
+        assert!(bodies[1].contains("session-025") && bodies[1].contains("session-029"));
+        assert!(bodies[0].contains("jxxn@example.com"));
+        let _ = fs::remove_dir_all(dir);
     }
 
     fn event(operation: &str) -> InstrumentationEvent {

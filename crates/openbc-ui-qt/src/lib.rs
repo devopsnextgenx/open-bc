@@ -91,6 +91,93 @@ pub unsafe extern "C" fn openbc_instrumentation_report_destroy(report: *mut std:
     }
 }
 
+// ---- Anonymous usage tracking + first-run popup -------------------------------------------
+// Everything below is best effort and silent: no call here ever reports a failure to the UI.
+
+/// Start tracking this launch (anonymous install id + per-launch session summary).
+#[no_mangle]
+pub extern "C" fn openbc_usage_start(version: *const u8, version_length: usize) {
+    let version = unsafe { input_text(version, version_length) };
+    openbc_observability::usage_start(&version);
+}
+
+/// Finish this launch and try to upload it; an offline failure keeps the data for later.
+#[no_mangle]
+pub extern "C" fn openbc_usage_shutdown() {
+    openbc_observability::usage_shutdown();
+}
+
+/// A tab was opened. Only its kind (`folder`, `text`, `picture`, ...) is tracked, never its label.
+#[no_mangle]
+pub extern "C" fn openbc_usage_register_tab(
+    session_id: *const u8,
+    session_id_length: usize,
+    kind: *const u8,
+    kind_length: usize,
+) {
+    let session_id = unsafe { input_text(session_id, session_id_length) };
+    let kind = unsafe { input_text(kind, kind_length) };
+    openbc_observability::usage_register_tab(&session_id, &kind);
+}
+
+#[no_mangle]
+pub extern "C" fn openbc_usage_close_tab(session_id: *const u8, session_id_length: usize) {
+    let session_id = unsafe { input_text(session_id, session_id_length) };
+    openbc_observability::close_session(&session_id);
+}
+
+/// 1 if the first-run popup should be shown now (never true twice on one installation).
+#[no_mangle]
+pub extern "C" fn openbc_first_run_prompt_pending() -> i32 {
+    i32::from(openbc_observability::first_run_prompt_pending())
+}
+
+/// Call right before showing the popup so it can never be shown again.
+#[no_mangle]
+pub extern "C" fn openbc_first_run_prompt_mark_shown() {
+    openbc_observability::first_run_prompt_mark_shown();
+}
+
+/// Masked form of `email` for the popup preview, or null if it is not a valid address.
+/// Free the result with `openbc_instrumentation_report_destroy`.
+#[no_mangle]
+pub extern "C" fn openbc_mask_email(
+    email: *const u8,
+    email_length: usize,
+    masked_length: *mut usize,
+) -> *mut std::ffi::c_char {
+    let email = unsafe { input_text(email, email_length) };
+    masked_to_c(openbc_observability::mask_email(&email), masked_length)
+}
+
+/// Store and attach the masked email. Returns the masked address, or null (nothing stored)
+/// if `email` is invalid. Free the result with `openbc_instrumentation_report_destroy`.
+#[no_mangle]
+pub extern "C" fn openbc_first_run_submit_email(
+    email: *const u8,
+    email_length: usize,
+    masked_length: *mut usize,
+) -> *mut std::ffi::c_char {
+    let email = unsafe { input_text(email, email_length) };
+    masked_to_c(openbc_observability::first_run_submit_email(&email), masked_length)
+}
+
+fn masked_to_c(masked: Option<String>, length: *mut usize) -> *mut std::ffi::c_char {
+    if !length.is_null() {
+        unsafe { *length = 0 };
+    }
+    let Some(masked) = masked else {
+        return std::ptr::null_mut();
+    };
+    let Ok(masked) = std::ffi::CString::new(masked) else {
+        return std::ptr::null_mut();
+    };
+    if !length.is_null() {
+        unsafe { *length = masked.as_bytes().len() };
+    }
+    masked.into_raw()
+}
+
 unsafe fn input_text(pointer: *const u8, length: usize) -> String {
     if pointer.is_null() || length == 0 {
         return String::new();
