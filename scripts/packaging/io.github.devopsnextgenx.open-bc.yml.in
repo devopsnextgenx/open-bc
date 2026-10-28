@@ -49,7 +49,7 @@ modules:
       - -DFETCHCONTENT_FULLY_DISCONNECTED=ON
       - -DFETCHCONTENT_SOURCE_DIR_CORROSION=/run/build/openbc/corrosion-src
     sources:
-      # 1. App source pinned to the v1.0.3 release.
+      # 1. App source the tag rendered into @APP_TAG@.
       # Replace the commit placeholder with the verified 40-character tag target SHA.
       - type: git
         url: https://github.com/devopsnextgenx/open-bc.git
