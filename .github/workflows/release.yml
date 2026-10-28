@@ -32,6 +32,12 @@ on:
 permissions:
   contents: read
 
+# Single source of truth for the version on tag builds: scripts/build.sh reads OPENBC_TAG, strips the
+# leading "v" and passes -DCPACK_PACKAGE_VERSION to CMake (-> app_info.h, deb/rpm/msi/AppImage names).
+# Empty on manual runs, where build.sh falls back to `git describe`.
+env:
+  OPENBC_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+
 jobs:
   # ------------------------------------------------------------------ .deb + AppImage + Flatpak (one runner, one checkout)
   linux:
@@ -43,11 +49,12 @@ jobs:
         if: inputs.runner != 'self-hosted'
         run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
       - uses: actions/checkout@v4
-      - name: Tag must match CMake version
+        with: { fetch-depth: 0 }
+      - name: Validate tag format
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          v="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"
-          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != CMake version v$v"; exit 1; }
+          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::tag ${GITHUB_REF_NAME} must look like vMAJOR.MINOR.PATCH (MSI needs a numeric version)"; exit 1; }
       # Local image (runners/Dockerfile.debian) already ships Rust, Qt, flatpak and the generator's Python deps.
       - uses: dtolnay/rust-toolchain@stable
         if: inputs.runner != 'self-hosted'
@@ -121,6 +128,7 @@ jobs:
             qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel mesa-libGL-devel libxkbcommon-devel \
             openssl-devel zlib-devel xz-devel
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - run: ./scripts/build.sh -c -p lin -s rpm
       - uses: actions/upload-artifact@v4
         with: { name: pkg-rpm, path: build/lin/packages/*.rpm }
@@ -133,6 +141,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       # Hosted: release:false -> reuse the runner's preinstalled C:\msys64 (build.sh hardcodes /c/msys64).
       # Self-hosted: runners/Dockerfile.windows already has MSYS2, the packages and WiX.
       - uses: msys2/setup-msys2@v2
@@ -166,8 +175,6 @@ jobs:
         shell: msys2 {0}
         run: |
           ./scripts/build.sh -c -p win
-          v="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"
-          mv build/win/packages/openbc-installer.msi "build/win/packages/openbc-${v}-windows-x64.msi"
       # Same script, but run through the container's own MSYS2 (the "msys2" shell only exists after setup-msys2).
       - name: Build MSI (self-hosted)
         if: inputs.windows_runner == 'self-hosted'
@@ -177,8 +184,6 @@ jobs:
           CHERE_INVOKING: '1'
         run: |
           ./scripts/build.sh -c -p win
-          v="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"
-          mv build/win/packages/openbc-installer.msi "build/win/packages/openbc-${v}-windows-x64.msi"
       - uses: actions/upload-artifact@v4
         with: { name: pkg-msi, path: build/win/packages/*.msi }
 

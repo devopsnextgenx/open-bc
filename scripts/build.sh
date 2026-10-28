@@ -428,7 +428,8 @@ pkg_appimage() {
 }
 
 pkg_msi() {
-  local stage="$BUILD_DIR/staging" wix="$BUILD_DIR/wix" out="$OUT_DIR/openbc-installer.msi"
+  # local stage="$BUILD_DIR/staging" wix="$BUILD_DIR/wix" out="$OUT_DIR/openbc-installer.msi"
+  local stage="$BUILD_DIR/staging" wix="$BUILD_DIR/wix" out="$OUT_DIR/openbc-${VERSION}-windows-x64.msi"
   echo "=== msi -> $out"
   run rm -rf "$stage" "$wix"
   run mkdir -p "$stage" "$wix"
