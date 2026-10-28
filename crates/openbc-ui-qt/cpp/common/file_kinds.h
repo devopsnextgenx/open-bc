@@ -15,11 +15,12 @@
 #include <QSet>
 #include <QString>
 
+#include "common/viewer_kind.h"
 #include "viewers/picture/picture_extensions.h"
 
 namespace openbc::app {
 
-enum class ViewerKind { Text, Picture, Model3d, Table, Media, Registry, Version, Hex };
+// ViewerKind lives in viewer_kind.h (Qt-free, shared with the drop router).
 
 namespace detail {
 

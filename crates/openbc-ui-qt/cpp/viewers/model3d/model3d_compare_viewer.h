@@ -67,6 +67,7 @@
 #include "style/qt_style.h"
 #include "common/path_selector.h"
 #include "common/remote_selector.h"
+#include "common/file_change_controller.h"
 
 namespace openbc::app {
 
@@ -157,7 +158,6 @@ public:
     std::function<void(const QString& left, const QString& right)> onComparisonRequested;
 
     explicit Model3dCompareViewer(QSettings* preferences, QWidget* parent = nullptr) : QWidget(parent), prefs_(preferences) {
-        setAcceptDrops(true);
         setFocusPolicy(Qt::StrongFocus);
         loadPreferences();
 
@@ -172,6 +172,7 @@ public:
         wireViewports();
         syncControlsFromOptions();
         refreshViews();
+        changes_ = std::make_unique<FileChangeController>(this, [this](std::uint8_t) { reloadLatest(); }, /*wholeTab=*/true);
 
         const Openbc3dOptions native = nativeOptions();
         handle_ = openbc_model3d_create(&Model3dCompareViewer::onNativeEvent, this, &native);
@@ -197,6 +198,10 @@ public:
     void compare() {
         const QString left = leftSelector_->text().trimmed(), right = rightSelector_->text().trimmed();
         if (left.isEmpty() || right.isEmpty() || !handle_) return;
+        if (changes_) {  // baseline BEFORE the (possibly remote) read
+            changes_->track(0, left);
+            changes_->track(1, right);
+        }
         const Openbc3dOptions native = nativeOptions();
         openbc_model3d_set_options(handle_, &native);
         QString leftLocal, rightLocal, resolveError;
@@ -217,6 +222,12 @@ public:
 
     QString leftText() const { return leftSelector_->text(); }
     QString rightText() const { return rightSelector_->text(); }
+
+    // Drop target entry point (common/drop_router.h): an empty argument leaves that side untouched.
+    void applyDroppedPaths(const QString& left, const QString& right) {
+        setPaths(left.isEmpty() ? leftSelector_->text() : left, right.isEmpty() ? rightSelector_->text() : right);
+        compare();  // no-op until both sides are set
+    }
     QString title() const {
         const QString l = QFileInfo(leftSelector_->text()).fileName(), r = QFileInfo(rightSelector_->text()).fileName();
         if (l.isEmpty() && r.isEmpty()) return "3D Compare";
@@ -235,20 +246,23 @@ public:
         return v;
     }
 
-protected:
-    void dragEnterEvent(QDragEnterEvent* e) override { if (e->mimeData()->hasUrls()) e->acceptProposedAction(); }
-    void dropEvent(QDropEvent* e) override {
-        QStringList files;
-        for (const QUrl& url : e->mimeData()->urls()) if (url.isLocalFile()) files << url.toLocalFile();
-        if (files.isEmpty()) return;
-        if (files.size() >= 2) setPaths(files[0], files[1]);
-        else if (leftSelector_->text().isEmpty() || !rightSelector_->text().isEmpty()) setPaths(files[0], rightSelector_->text());
-        else setPaths(leftSelector_->text(), files[0]);
-        compare();
-        e->acceptProposedAction();
+private:
+    // "Reload Latest" after an external change: both models are read again (remote copies downloaded again).
+    void reloadLatest() {
+        const QString left = leftSelector_->text().trimmed(), right = rightSelector_->text().trimmed();
+        if (left.isEmpty() || right.isEmpty() || !handle_) return;
+        QString leftLocal, rightLocal, error;
+        if (!openbc_remote::resolveLocalPath(left, &leftLocal, &error, /*refresh=*/true) ||
+            !openbc_remote::resolveLocalPath(right, &rightLocal, &error, /*refresh=*/true)) {
+            QMessageBox::warning(this, "3D Compare", error);
+            return;
+        }
+        const QByteArray l = leftLocal.toUtf8(), r = rightLocal.toUtf8();
+        fitPending_ = false;
+        openbc_model3d_open(handle_, reinterpret_cast<const std::uint8_t*>(l.constData()), std::size_t(l.size()),
+                            reinterpret_cast<const std::uint8_t*>(r.constData()), std::size_t(r.size()));
     }
 
-private:
     // ===== native event plumbing ===========================================================
     struct ViewInfo {
         QString path, format;
@@ -1034,6 +1048,7 @@ private:
     static constexpr float kRanges[4] = {0.25f, 0.5f, 1.0f, 5.0f};
 
     QSettings* prefs_ = nullptr;
+    std::unique_ptr<FileChangeController> changes_;  // external-change notice + reload (common/file_change_controller.h)
     Openbc3dCompare* handle_ = nullptr;
     QString gpuName_;
     Model3dOptions options_;

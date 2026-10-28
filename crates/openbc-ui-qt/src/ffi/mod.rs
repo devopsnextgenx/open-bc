@@ -8,6 +8,7 @@
 pub(crate) mod common;
 pub(crate) mod model3d_compare;
 pub(crate) mod picture_compare;
+pub(crate) mod resource_watch;
 pub(crate) mod vfs_bridge;
 
 pub mod hex_compare;

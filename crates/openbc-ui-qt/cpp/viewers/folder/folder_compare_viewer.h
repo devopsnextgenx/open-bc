@@ -61,6 +61,7 @@
 #include "common/compare_extensions.h"
 #include "common/file_kinds.h"
 #include "common/path_selector.h"
+#include "common/file_change_controller.h"
 #include "remote/remote_profile_store.h"
 #include "remote/remote_vfs_bridge.h"
 #include "style/qt_style.h"
@@ -816,6 +817,9 @@ public:
     createActions();
     buildUi();
     connectSignals();
+    // A changed folder level (entries added / removed / resized) marks the listing outdated;
+    // Reload Latest simply refreshes the comparison.
+    changes_ = std::make_unique<FileChangeController>(this, [this](std::uint8_t) { refresh(); }, /*wholeTab=*/true);
     for (auto *action : findChildren<QAction *>()) {
       action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
       addAction(action);
@@ -846,6 +850,13 @@ public:
   // ---- state
   QString leftText() const { return pathText(leftPath_); }
   QString rightText() const { return pathText(rightPath_); }
+
+  // Drop target entry point (common/drop_router.h): an empty argument leaves that side untouched,
+  // so one dropped folder never fills both sides. A lone side is simply listed (see refresh()).
+  void applyDroppedPaths(const QString &left, const QString &right) {
+    setPaths(left.isEmpty() ? leftText() : left, right.isEmpty() ? rightText() : right);
+    refresh();
+  }
 
   void setPaths(const QString &left, const QString &right) {
     setPath(leftPath_, left);
@@ -903,6 +914,14 @@ public:
     const QString right = rightText();
     remember(leftPath_, left);
     remember(rightPath_, right);
+    if (changes_) { // watch the listed level of each side (remote levels are polled)
+      auto isFolder = [](const QString &p) {
+        RemoteProfile profile;
+        return !p.isEmpty() && (RemoteProfileStore::findProfileForPath(p, &profile) || QFileInfo(p).isDir());
+      };
+      changes_->track(0, isFolder(left) ? left : QString(), /*isDirectory=*/true);
+      changes_->track(1, isFolder(right) ? right : QString(), /*isDirectory=*/true);
+    }
     remember(filterCombo_, filterCombo_->currentText().trimmed());
     updateTitle();
     updateFooter();
@@ -2887,6 +2906,7 @@ private:
   QPlainTextEdit *console_ = nullptr;
   QSplitter *splitter_ = nullptr;
   QSettings *preferences_ = nullptr;
+  std::unique_ptr<FileChangeController> changes_;  // external-change notice + reload (common/file_change_controller.h)
   QSet<QString> expandedPaths_;
   QString instrumentationSessionId_ =
       QUuid::createUuid().toString(QUuid::WithoutBraces);

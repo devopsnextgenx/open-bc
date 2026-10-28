@@ -12,6 +12,7 @@
 //! | [`meta_compare`]   | Generic property-table comparison                               |
 //! | [`table_compare`]  | CSV / spreadsheet row alignment, cell diff and copy edits       |
 //! | [`registry_compare`] | Windows `.reg` parsing, diff, copy edits and writing          |
+//! | [`resource_version`] | Resource version / change-assessment types for reload tracking |
 //!
 //! Everything here is pure: no I/O, no threads. Compute backends live elsewhere.
 
@@ -25,6 +26,8 @@ pub mod meta_compare;
 pub mod model3d;
 /// Windows registry export (`.reg`) parsing, comparison, copy edits and writing.
 pub mod registry_compare;
+/// Version identity and change assessment for loaded files / directory levels.
+pub mod resource_version;
 /// Table (CSV / spreadsheet) comparison; CSV text handling is in [`table_compare::csv`].
 pub mod table_compare;
 /// Pure text and log comparison algorithms.

@@ -87,8 +87,11 @@ if command -v sccache >/dev/null 2>&1; then export RUSTC_WRAPPER=sccache; fi
 
 BUILD_DIR="build/$PLATFORM"      # separate dirs: a Linux and a Windows tree can share a checkout
 OUT_DIR="$BUILD_DIR/packages"
-VERSION="$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CPACK_PACKAGE_VERSION "\(.*\)")/\1/p' | head -1)"
-VERSION="${VERSION:-1.0.0}"
+
+# ---- Dynamic Git Tag Version Resolution -------------------------------------------------------
+RAW_TAG="${OPENBC_TAG:-$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")}"
+VERSION="${RAW_TAG#v}"
+echo "=== Building OpenBC Version: $VERSION (Tag: $RAW_TAG)"
 
 # ---- clean + build --------------------------------------------------------------------------
 if $CLEAN; then echo "=== Cleaning $BUILD_DIR"; run rm -rf "$BUILD_DIR"; fi
@@ -107,7 +110,10 @@ if $NEED_HOST_BUILD; then
   echo "=== Building openbc ($PLATFORM, Release)"
   if [ ! -f "$BUILD_DIR/build.ninja" ] && [ ! -f "$BUILD_DIR/Makefile" ]; then
     if command -v ninja >/dev/null 2>&1; then GEN=(-G Ninja); else GEN=(); fi
-    run cmake -B "$BUILD_DIR" "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release
+    run cmake -B "$BUILD_DIR" "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release -DCPACK_PACKAGE_VERSION="$VERSION"
+  else
+    # Re-run configuration if version/tag changes on subsequent local builds
+    run cmake -B "$BUILD_DIR" -DCPACK_PACKAGE_VERSION="$VERSION"
   fi
   run cmake --build "$BUILD_DIR" --target openbc openbc-depcheck
 else
@@ -323,7 +329,7 @@ pkg_appimage() {
     # NOTE: do NOT set DEPLOY_PLATFORM_THEMES. It makes linuxdeploy-plugin-qt bundle the GTK3 theme plugin
     # and with it libgtk-3 / libgio / libglib. That old glib then shadows the host's glib and breaks the
     # host's own modules (e.g. gvfs: "undefined symbol: g_variant_builder_init_static").
-
+    
     # Bundle the Wayland platform plugins only when this Qt actually has them (Ubuntu: qt6-wayland,
     # Fedora: qt6-qtwayland). Asking for a missing one makes the Qt plugin abort the whole deploy.
     local pdir="" qtplug="" wl="" p
@@ -352,10 +358,6 @@ pkg_appimage() {
 
     # ---- Step 2: FIX UP the AppDir (this is why deploy and packaging are separate invocations).
     if ! $DRY; then
-      # 2a. linuxdeploy-plugin-qt only pulls the Wayland *platform* plugin. Qt's Wayland client also needs
-      #     these plugin directories, otherwise: 'Failed to load client buffer integration "wayland-egl"'
-      #     and every QOpenGLWidget fails to create a context on Wayland sessions.
-      local d
       for d in wayland-graphics-integration-client wayland-decoration-client wayland-shell-integration; do
         if [ -d "$qtplug/$d" ] && [ ! -d "$appdir/usr/plugins/$d" ]; then
           echo "--- adding Qt plugin directory $d"
@@ -443,7 +445,6 @@ pkg_msi() {
   echo "--- copying remaining MinGW/UCRT DLLs (scans openbc.exe AND every Qt plugin / DLL in the stage)"
   if ! $DRY; then
     local UCRT=/c/msys64/ucrt64/bin SYS32=/c/Windows/System32
-    # case-insensitive "is this DLL available in dir?" (PE import names and file names often differ in case)
     have_dll() { [ -n "$(find "$1" -maxdepth 1 -iname "$2" -print -quit 2>/dev/null)" ]; }
     is_builtin() { case "${1,,}" in api-ms-*|ext-ms-*) return 0 ;; esac; have_dll "$SYS32" "$1"; }
     list_imports() { objdump -p "$1" 2>/dev/null | tr -d '\r' | sed -n 's/^[[:space:]]*DLL Name: //p'; }

@@ -65,6 +65,7 @@
 #include "common/path_selector.h"
 #include "common/remote_selector.h"
 #include "common/unsaved_changes_dialog.h"
+#include "common/file_change_controller.h"
 
 namespace openbc::app {
 
@@ -180,6 +181,8 @@ public:
                    [this](const BackendChannel::Event& event) { onEvent(event); }) {
         setObjectName("tableCompareView");
         buildUi();
+        changes_ = std::make_unique<FileChangeController>(this, [this](std::uint8_t) { reloadLatest(); }, /*wholeTab=*/true,
+                                                          [this]() { return confirmDiscard(); });
         startSession();
     }
 
@@ -193,6 +196,16 @@ public:
     QString detailedTitle() const { return leftPath_ + "  <->  " + rightPath_; }
     QString leftText() const { return leftPath_; }
     QString rightText() const { return rightPath_; }
+
+    // Drop target entry point (common/drop_router.h): an empty argument leaves that side untouched.
+    void applyDroppedPaths(const QString& left, const QString& right) {
+        const QString wanted[2] = {cleanPathInput(left), cleanPathInput(right)};
+        for (std::uint8_t side = 0; side < 2; ++side) {
+            if (wanted[side].isEmpty()) continue;
+            commitPath(side, wanted[side]);
+            if ((side == 0 ? leftPath_ : rightPath_) != wanted[side]) return;  // refused or cancelled: stop
+        }
+    }
 
     std::function<void()> onHomeRequested;
     std::function<void()> onSessionsRequested;
@@ -216,12 +229,23 @@ private:
 
     void startSession() {
         stopSession();
+        if (changes_) { changes_->track(0, leftPath_); changes_->track(1, rightPath_); }
         view_.reset();
         const QByteArray left = openbc_remote::localCopy(leftPath_).toUtf8();
         const QByteArray right = openbc_remote::localCopy(rightPath_).toUtf8();
         session_ = openbc_table_session_create(left.constData(), right.constData(), BackendChannel::callback(), channel_.user());
         status_->setText("Loading...");
         if (onTitleChanged) onTitleChanged();
+    }
+
+    // "Reload Latest" after an external change: remote files are downloaded again, then everything is re-read.
+    void reloadLatest() {
+        QString local, error;
+        for (const QString& path : {leftPath_, rightPath_}) {
+            if (path.isEmpty()) continue;
+            if (!openbc_remote::resolveLocalPath(path, &local, &error, /*refresh=*/true)) { status_->setText(error); return; }
+        }
+        startSession();
     }
 
     void stopSession() {
@@ -846,6 +870,7 @@ private:
     QLineEdit* keysEdit_ = nullptr;
     QTimer* optionsTimer_ = nullptr;
     SidePane sides_[2];
+    std::unique_ptr<FileChangeController> changes_;  // external-change notice + reload (common/file_change_controller.h)
     TableDiffModel* models_[2] = {nullptr, nullptr};
     QTableView* grids_[2] = {nullptr, nullptr};
     diffgrid::CopyGutter* gutter_ = nullptr;

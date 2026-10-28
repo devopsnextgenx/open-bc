@@ -38,6 +38,7 @@
 #include "style/qt_style.h"
 #include "common/path_selector.h"
 #include "common/remote_selector.h"
+#include "common/file_change_controller.h"
 
 namespace openbc::app {
 
@@ -174,6 +175,7 @@ public:
           channel_(this, &HexCompareViewer::destroyHandle, [this](const BackendChannel::Event& event) { onEvent(event); }) {
         setObjectName("hexCompareView");
         buildUi();
+        changes_ = std::make_unique<FileChangeController>(this, [this](std::uint8_t) { reloadLatest(); }, /*wholeTab=*/true);
         startSession();
     }
 
@@ -186,6 +188,16 @@ public:
     QString detailedTitle() const { return leftPath_ + "  <->  " + rightPath_; }
     QString leftText() const { return leftPath_; }
     QString rightText() const { return rightPath_; }
+
+    // Drop target entry point (common/drop_router.h): an empty argument leaves that side untouched.
+    void applyDroppedPaths(const QString& left, const QString& right) {
+        const QString wanted[2] = {cleanPathInput(left), cleanPathInput(right)};
+        for (std::uint8_t side = 0; side < 2; ++side) {
+            if (wanted[side].isEmpty()) continue;
+            commitPath(side, wanted[side]);
+            if ((side == 0 ? leftPath_ : rightPath_) != wanted[side]) return;  // refused or cancelled: stop
+        }
+    }
 
     std::function<void()> onHomeRequested;
     std::function<void()> onSessionsRequested;
@@ -204,6 +216,7 @@ private:
 
     void startSession() {
         stopSession();
+        if (changes_) { changes_->track(0, leftPath_); changes_->track(1, rightPath_); }
         shared_.summary.reset();
         shared_.window[0].clear();
         shared_.window[1].clear();
@@ -237,6 +250,16 @@ private:
         }
         current = path;
         if (!path.isEmpty()) selector->remember(path);
+        startSession();
+    }
+
+    // "Reload Latest" after an external change: remote files are downloaded again, then everything is re-read.
+    void reloadLatest() {
+        QString local, error;
+        for (const QString& path : {leftPath_, rightPath_}) {
+            if (path.isEmpty()) continue;
+            if (!openbc_remote::resolveLocalPath(path, &local, &error, /*refresh=*/true)) { status_->setText(error); return; }
+        }
         startSession();
     }
 
@@ -467,6 +490,7 @@ private:
     HexPane* panes_[2] = {nullptr, nullptr};
     DifferenceOverview* miniMap_ = nullptr;
     PathSelector* selectors_[2] = {nullptr, nullptr};
+    std::unique_ptr<FileChangeController> changes_;  // external-change notice + reload (common/file_change_controller.h)
     QLabel* status_ = nullptr;
     QProgressBar* progress_ = nullptr;
     QTimer* requestTimer_ = nullptr;

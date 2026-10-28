@@ -56,6 +56,7 @@
 #include "common/minimap.h"
 #include "common/path_selector.h"
 #include "common/unsaved_changes_dialog.h"
+#include "common/file_change_controller.h"
 #include "style/qt_style.h"
 #include "remote/remote_profile_store.h"
 #include "remote/remote_vfs_bridge.h"
@@ -73,6 +74,17 @@ public:
                     leftRaw_(leftText), rightRaw_(rightText) {
         setObjectName("textCompareView");
         buildUi();
+        // Per side: re-read just that file. The text was handed in by the caller, so the baseline for
+        // the initial load is taken here (a change between that read and this line is not seen).
+        changes_ = std::make_unique<FileChangeController>(
+            this,
+            [this](std::uint8_t side) {
+                const QString& path = side == 0 ? leftPath_ : rightPath_;
+                if (!path.isEmpty()) loadSide(side == 0, path);
+            },
+            /*wholeTab=*/false, [this]() { return confirmDiscard(); });
+        changes_->track(0, leftPath_);
+        changes_->track(1, rightPath_);
         connectSignals();
         showRawText();
         beginAsyncRebuild();
@@ -85,6 +97,17 @@ public:
     }
 
     QString instrumentationSessionId() const { return instrumentationSessionId_; }
+
+    QString leftText() const { return leftPath_; }
+    QString rightText() const { return rightPath_; }
+
+    // Drop target entry point (common/drop_router.h): an empty argument leaves that side untouched.
+    void applyDroppedPaths(const QString& left, const QString& right) {
+        if (left.isEmpty() && right.isEmpty()) return;
+        if (!confirmDiscard()) return;  // shared unsaved-changes dialog; true when nothing is dirty
+        if (!left.isEmpty()) { leftSelector_->remember(left); leftSelector_->setText(left); loadSide(true, left); }
+        if (!right.isEmpty()) { rightSelector_->remember(right); rightSelector_->setText(right); loadSide(false, right); }
+    }
 
     // For the tab host: call before closing the tab. confirmClose() shows the shared two-sided
     // UnsavedChangesDialog (same one table / registry / media use) and returns false if the user cancels.
@@ -1634,6 +1657,7 @@ private:
     }
 
     void loadSide(bool left, const QString& path) {
+        if (changes_) changes_->track(left ? 0 : 1, path);  // baseline BEFORE the read below
         const QPointer<TextCompareViewer> view(this);
         progress_->show();
         status_->setText("Loading " + QFileInfo(path).fileName() + "...");
@@ -1807,6 +1831,7 @@ private:
     QAction* reloadAction_ = nullptr;
 
     PathSelector* leftSelector_ = nullptr;
+    std::unique_ptr<FileChangeController> changes_;  // external-change notice + reload (common/file_change_controller.h)
     PathSelector* rightSelector_ = nullptr;
     QLabel* leftAttrsLabel_ = nullptr;
     QLabel* rightAttrsLabel_ = nullptr;

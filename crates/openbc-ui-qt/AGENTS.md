@@ -101,3 +101,7 @@ add new kinds there, never in `main_window.h`.
 * Every `#include` resolves from `cpp/`; no leftover old names (`CompareSession`, `*_compare_view.h`).
 * Windows and Linux both considered; no new global state in headers (single-TU ODR still applies).
 * Update the savepoint file when you complete a tracked item.
+
+## 9. Drag-and-drop and reload
+
+Viewers never parse drops or watch files themselves. A viewer exposes `applyDroppedPaths(left, right)` (empty = leave that side) and, for reload, creates a `FileChangeController` (`common/file_change_controller.h`) and calls `track()` right before loading. Routing policy: `common/drop_router.h`; details and limits: `docs/DROP_AND_RELOAD.md`. Unit tests for the policy: `cpp/tools/drop_router_test` (see its header for the g++ line).

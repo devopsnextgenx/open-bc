@@ -81,6 +81,7 @@
 #include "common/path_selector.h"
 #include "common/remote_selector.h"
 #include "common/unsaved_changes_dialog.h"
+#include "common/file_change_controller.h"
 #include "style/qt_style.h"
 
 namespace openbc::app {
@@ -123,6 +124,8 @@ public:
           channel_(this, &MediaCompareViewer::destroyHandle, [this](const BackendChannel::Event& event) { onEvent(event); }) {
         setObjectName("mediaCompareView");
         buildUi();
+        changes_ = std::make_unique<FileChangeController>(this, [this](std::uint8_t) { reloadLatest(); }, /*wholeTab=*/true,
+                                                          [this]() { return confirmDiscard(); });
         if (!leftPath_.isEmpty() || !rightPath_.isEmpty()) startSession();
         else showEmptyState();
     }
@@ -141,6 +144,16 @@ public:
     QString detailedTitle() const { return leftPath_ + "  <->  " + rightPath_; }
     QString leftText() const { return leftPath_; }
     QString rightText() const { return rightPath_; }
+
+    // Drop target entry point (common/drop_router.h): an empty argument leaves that side untouched.
+    void applyDroppedPaths(const QString& left, const QString& right) {
+        const QString wanted[2] = {cleanInput(left), cleanInput(right)};
+        for (std::uint8_t side = 0; side < 2; ++side) {
+            if (wanted[side].isEmpty()) continue;
+            commitPath(side, wanted[side]);
+            if ((side == 0 ? leftPath_ : rightPath_) != wanted[side]) return;  // refused or cancelled: stop
+        }
+    }
 
     // For the tab host: call before closing the tab. confirmClose() shows the two-sided
     // dialog when there are unsaved edits and returns false if the user cancels.
@@ -186,6 +199,7 @@ private:
 
     void startSession() {
         stopSession();
+        if (changes_) { changes_->track(0, leftPath_); changes_->track(1, rightPath_); }
         view_.reset();
         audioVisualizer_->hide();
         audioStatus_->hide();
@@ -269,6 +283,19 @@ private:
         playRightAction_->setToolTip("Playback requires Qt Multimedia");
         playBothAction_->setToolTip("Playback requires Qt Multimedia");
 #endif
+    }
+
+    // "Reload Latest" after an external change: remote copies are downloaded again and both panes re-pointed.
+    void reloadLatest() {
+        QString local, error;
+        for (std::uint8_t side = 0; side < 2; ++side) {
+            const QString& path = side == 0 ? leftPath_ : rightPath_;
+            if (path.isEmpty()) continue;
+            if (!openbc_remote::resolveLocalPath(path, &local, &error, /*refresh=*/true)) { summary_->setText(error); return; }
+            pane(side)->setPath(local);
+        }
+        updatePlaybackActions();
+        startSession();
     }
 
     void commitPath(std::uint8_t side, const QString& raw) {
@@ -1049,6 +1076,7 @@ private:
     QAction* reloadAction_ = nullptr;
     QToolButton* saveBtn_[2] = {nullptr, nullptr};
     PathSelector* leftSelector_ = nullptr;
+    std::unique_ptr<FileChangeController> changes_;  // external-change notice + reload (common/file_change_controller.h)
     PathSelector* rightSelector_ = nullptr;
     MediaPlayerPane* leftPane_ = nullptr;
     MediaPlayerPane* rightPane_ = nullptr;

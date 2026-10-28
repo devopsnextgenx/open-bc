@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+pub mod observe;
 #[cfg(feature = "sftp")]
 pub mod sftp;
 #[cfg(feature = "ftp")]

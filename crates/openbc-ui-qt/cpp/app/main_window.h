@@ -41,6 +41,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <functional>
+#include <optional>
 #include <QOpenGLWidget>
 #include <QSurfaceFormat>
 #include "viewers/model3d/model3d_viewport.h"
@@ -54,6 +55,9 @@
 #include "viewers/folder/folder_compare_viewer.h"
 #include "viewers/text/text_compare_viewer.h"
 #include "backend/backend_api.h"
+#include "common/drop_filter.h"
+#include "common/drop_payload.h"
+#include "common/drop_router.h"
 #include "home/home_view.h"
 #include "style/qt_style.h"
 #include "home/session_history.h"
@@ -64,7 +68,6 @@
 #include "app/single_instance.h"
 #include "app/app_info.h"
 #include "app/about_dialog.h"
-
 namespace openbc::app {
 
 class PersistedMainWindow : public QMainWindow {
@@ -369,6 +372,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     std::function<void(const QString&, const QString&)> addHexView;
     std::function<void(const QString&, const QString&)> addMediaView;
     std::function<void(int)> closeTab;
+    std::function<void(QWidget*)> installDropRouting;  // defined with the drop coordinator below
 
     // One place builds the tab's close button so every tab looks and behaves the same.
     auto attachCloseButton = [&](int index, QWidget* view) {
@@ -380,6 +384,8 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         close->setAutoRaise(true);
         tabs->tabBar()->setTabButton(index, QTabBar::RightSide, close);
         QObject::connect(close, &QToolButton::clicked, view, [&, view]() { closeTab(tabs->indexOf(view)); });
+        // Every tab goes through here exactly once, so every tab gets the shared drop routing.
+        if (installDropRouting) installDropRouting(view);
     };
 
     // Shared by the table / registry / hex / media viewers: tab + close button, title and
@@ -665,6 +671,123 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         }
         closeTab(tabs->currentIndex());
     });
+
+    // ------------------------------------------------------------------------------------------
+    // Drag-and-drop. ONE policy (common/drop_router.h) decides for Home and every compare tab;
+    // the tabs themselves no longer parse drops. This block only translates between the router's
+    // answer and the existing tab lambdas (addSession / addPictureView / ...).
+    //   ApplyToTab       -> the tab's own applyDroppedPaths() (keeps its validation + discard prompt)
+    //   ReplaceEmptyTab  -> a fresh viewer takes the empty tab's slot; the empty one is closed
+    //   OpenNewTab       -> a new tab; the existing tab is left exactly as it was
+    // ------------------------------------------------------------------------------------------
+    auto dropContextFor = [&](QWidget* w) {
+        drop::TabContext ctx;
+        QString left, right;
+        bool dirty = false;
+        if (w == home) {
+            ctx.tab = drop::TabKind::Home;
+            return ctx;
+        }
+        if (auto* v = dynamic_cast<FolderCompareViewer*>(w)) { ctx.tab = drop::TabKind::Folder; left = v->leftText(); right = v->rightText(); }
+        else if (auto* v = dynamic_cast<TextCompareViewer*>(w)) { ctx.tab = drop::TabKind::Text; left = v->leftText(); right = v->rightText(); dirty = v->hasUnsavedChanges(); }
+        else if (auto* v = dynamic_cast<PictureCompareViewer*>(w)) { ctx.tab = drop::TabKind::Picture; left = v->leftText(); right = v->rightText(); }
+        else if (auto* v = dynamic_cast<Model3dCompareViewer*>(w)) { ctx.tab = drop::TabKind::Model3d; left = v->leftText(); right = v->rightText(); }
+        else if (auto* v = dynamic_cast<TableCompareViewer*>(w)) { ctx.tab = drop::TabKind::Table; left = v->leftText(); right = v->rightText(); dirty = v->hasUnsavedChanges(); }
+        else if (auto* v = dynamic_cast<RegistryCompareViewer*>(w)) { ctx.tab = drop::TabKind::Registry; left = v->leftText(); right = v->rightText(); dirty = v->hasUnsavedChanges(); }
+        else if (auto* v = dynamic_cast<HexCompareViewer*>(w)) { ctx.tab = drop::TabKind::Hex; left = v->leftText(); right = v->rightText(); }
+        else if (auto* v = dynamic_cast<MediaCompareViewer*>(w)) { ctx.tab = drop::TabKind::Media; left = v->leftText(); right = v->rightText(); dirty = v->hasUnsavedChanges(); }
+        ctx.leftSet = !left.isEmpty();
+        ctx.rightSet = !right.isEmpty();
+        ctx.occupancy = dirty ? drop::Occupancy::Dirty
+                              : (ctx.leftSet || ctx.rightSet ? drop::Occupancy::Populated : drop::Occupancy::Empty);
+        return ctx;
+    };
+    // Empty string = leave that side as it is.
+    auto applyDroppedPaths = [&](QWidget* w, const QString& left, const QString& right) {
+        if (auto* v = dynamic_cast<FolderCompareViewer*>(w)) v->applyDroppedPaths(left, right);
+        else if (auto* v = dynamic_cast<TextCompareViewer*>(w)) v->applyDroppedPaths(left, right);
+        else if (auto* v = dynamic_cast<PictureCompareViewer*>(w)) v->applyDroppedPaths(left, right);
+        else if (auto* v = dynamic_cast<Model3dCompareViewer*>(w)) v->applyDroppedPaths(left, right);
+        else if (auto* v = dynamic_cast<TableCompareViewer*>(w)) v->applyDroppedPaths(left, right);
+        else if (auto* v = dynamic_cast<RegistryCompareViewer*>(w)) v->applyDroppedPaths(left, right);
+        else if (auto* v = dynamic_cast<HexCompareViewer*>(w)) v->applyDroppedPaths(left, right);
+        else if (auto* v = dynamic_cast<MediaCompareViewer*>(w)) v->applyDroppedPaths(left, right);
+    };
+    // Opens a new tab of `kind` (every add*View makes its tab current) and returns it.
+    auto openKindTab = [&](drop::TabKind kind, const QString& left, const QString& right) -> QWidget* {
+        const bool both = !left.isEmpty() && !right.isEmpty();
+        switch (kind) {
+        case drop::TabKind::Folder: addSession(left, right, !left.isEmpty() || !right.isEmpty()); break;  // a lone side is listed
+        case drop::TabKind::Picture: addPictureView(left, right, both); break;
+        case drop::TabKind::Model3d: addModel3dView(left, right, both); break;
+        case drop::TabKind::Table: addTableView(left, right); break;
+        case drop::TabKind::Registry: addRegistryView(left, right); break;
+        case drop::TabKind::Hex: addHexView(left, right); break;
+        case drop::TabKind::Media: addMediaView(left, right); break;
+        case drop::TabKind::Text:
+            // Text files are read by the viewer itself (async, remote-aware), not here on the GUI thread.
+            addTextView(QString(), QString(), QString(), QString(), nullptr);
+            if (auto* v = dynamic_cast<TextCompareViewer*>(tabs->currentWidget())) {
+                v->applyDroppedPaths(left, right);
+                if (!left.isEmpty() || !right.isEmpty()) {
+                    SessionHistory::record("text", left, right);
+                    home->refreshHistory();
+                }
+            }
+            break;
+        case drop::TabKind::Home: break;
+        }
+        return tabs->currentWidget();
+    };
+    auto handleDrop = [&](QWidget* destination, const DropParse& parsed, std::optional<drop::Side> sideHint) {
+        const QString problems = parsed.problems.join("  |  ");
+        auto say = [&](const QString& text) { if (!text.isEmpty()) window.statusBar()->showMessage(text, 12000); };
+        drop::TabContext ctx = dropContextFor(destination);
+        ctx.sideHint = sideHint;
+        const drop::Decision decision = drop::route(ctx, toRouterItems(parsed.items));
+        if (decision.action == drop::Action::Reject) {
+            // Nothing is opened or changed; say why (invalid entries first, they are usually the reason).
+            say(parsed.items.isEmpty() && !problems.isEmpty() ? problems : QString::fromStdString(decision.message));
+            return;
+        }
+        const QString left = fromRouterPath(decision.left);
+        const QString right = fromRouterPath(decision.right);
+        switch (decision.action) {
+        case drop::Action::ApplyToTab:
+            tabs->setCurrentWidget(destination);
+            applyDroppedPaths(destination, left, right);  // asks before discarding unsaved edits
+            break;
+        case drop::Action::ReplaceEmptyTab: {
+            const int slot = tabs->indexOf(destination);
+            QWidget* fresh = openKindTab(decision.target, left, right);
+            const int from = tabs->indexOf(fresh);
+            if (fresh && slot >= 0 && from >= 0) tabs->tabBar()->moveTab(from, slot);  // fresh viewer takes the slot
+            closeTab(tabs->indexOf(destination));  // nothing to confirm: the tab was empty
+            if (fresh) tabs->setCurrentWidget(fresh);
+            break;
+        }
+        case drop::Action::OpenNewTab:
+            openKindTab(decision.target, left, right);
+            break;
+        case drop::Action::Reject: break;
+        }
+        QStringList notes;
+        if (!decision.message.empty()) notes << QString::fromStdString(decision.message);
+        if (!problems.isEmpty()) notes << "Ignored: " + problems;
+        say(notes.join("  "));
+    };
+    installDropRouting = [&, handleDrop](QWidget* tab) {
+        std::function<bool(QObject*)> skip;
+        // Home's per-type tiles keep their explicit "open exactly this kind" behaviour.
+        if (tab == home) skip = [](QObject* o) { return dynamic_cast<SessionTile*>(o) != nullptr; };
+        auto* filter = new DropRouteFilter(tab, skip);
+        const QPointer<QWidget> guard(tab);
+        filter->onDrop = [guard, handleDrop](const DropParse& parsed, std::optional<drop::Side> side) {
+            if (guard) handleDrop(guard, parsed, side);  // the tab may have been closed meanwhile
+        };
+        filter->onHint = [&](const QString& text) { window.statusBar()->showMessage(text, 6000); };
+    };
+    installDropRouting(home);
 
     home->onNewFolderCompare = [&]() { addSession(QString(), QString(), false); };
     home->onNewTextCompare = [&]() {

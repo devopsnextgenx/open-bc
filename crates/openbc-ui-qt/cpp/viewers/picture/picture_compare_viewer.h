@@ -69,6 +69,7 @@
 
 #include "common/path_selector.h"
 #include "common/remote_selector.h"
+#include "common/file_change_controller.h"
 #include "style/qt_style.h"
 #include "viewers/picture/picture_compare_api.h"
 #include "viewers/picture/picture_extensions.h"
@@ -431,7 +432,6 @@ public:
   explicit PictureCompareViewer(QSettings *preferences,
                                 QWidget *parent = nullptr)
       : QWidget(parent), prefs_(preferences) {
-    setAcceptDrops(true);
     setFocusPolicy(Qt::StrongFocus);
     loadPreferences();
 
@@ -445,6 +445,7 @@ public:
     root->addWidget(buildStatusRow());
     syncControlsFromOptions();
     wirePanes();
+    changes_ = std::make_unique<FileChangeController>(this, [this](std::uint8_t) { reloadLatest(); }, /*wholeTab=*/true);
 
     const OpenbcImageCompareOptions native = nativeOptions();
     handle_ = openbc_image_compare_create(&PictureCompareViewer::onNativeEvent,
@@ -472,6 +473,10 @@ public:
     const QString right = rightSelector_->text().trimmed();
     if (left.isEmpty() || right.isEmpty() || !handle_)
       return;
+    if (changes_) { // baseline BEFORE the (possibly remote) read
+      changes_->track(0, left);
+      changes_->track(1, right);
+    }
     QString leftLocal, rightLocal, resolveError;
     if (!openbc_remote::resolveLocalPath(left, &leftLocal, &resolveError) ||
         !openbc_remote::resolveLocalPath(right, &rightLocal, &resolveError)) {
@@ -498,6 +503,13 @@ public:
   QString leftText() const { return leftSelector_->text(); }
   QString rightText() const { return rightSelector_->text(); }
 
+  // Drop target entry point (common/drop_router.h): an empty argument leaves that side untouched.
+  void applyDroppedPaths(const QString &left, const QString &right) {
+    setPaths(left.isEmpty() ? leftSelector_->text() : left,
+             right.isEmpty() ? rightSelector_->text() : right);
+    compare(); // no-op until both sides are set
+  }
+
   QString title() const {
     const QString l = QFileInfo(leftSelector_->text()).fileName();
     const QString r = QFileInfo(rightSelector_->text()).fileName();
@@ -522,31 +534,6 @@ public:
   }
 
 protected:
-  void dragEnterEvent(QDragEnterEvent *e) override {
-    if (e->mimeData()->hasUrls())
-      e->acceptProposedAction();
-  }
-
-  void dropEvent(QDropEvent *e) override {
-    QStringList files;
-    for (const QUrl &url : e->mimeData()->urls()) {
-      if (url.isLocalFile())
-        files << url.toLocalFile();
-    }
-    if (files.isEmpty())
-      return;
-    if (files.size() >= 2) {
-      setPaths(files[0], files[1]);
-    } else if (leftSelector_->text().isEmpty() ||
-               !rightSelector_->text().isEmpty()) {
-      setPaths(files[0], rightSelector_->text());
-    } else {
-      setPaths(leftSelector_->text(), files[0]);
-    }
-    compare();
-    e->acceptProposedAction();
-  }
-
   // Arrow keys nudge the right image (Shift = 10px), like dragging in the
   // result pane.
   void keyPressEvent(QKeyEvent *e) override {
@@ -1082,6 +1069,27 @@ private:
       onTitleChanged();
   }
 
+  // "Reload Latest" after an external change: both inputs are read again (remote copies downloaded again).
+  void reloadLatest() {
+    const QString left = leftSelector_->text().trimmed();
+    const QString right = rightSelector_->text().trimmed();
+    if (left.isEmpty() || right.isEmpty() || !handle_)
+      return;
+    QString leftLocal, rightLocal, error;
+    if (!openbc_remote::resolveLocalPath(left, &leftLocal, &error, /*refresh=*/true) ||
+        !openbc_remote::resolveLocalPath(right, &rightLocal, &error, /*refresh=*/true)) {
+      QMessageBox::warning(this, "Picture Compare", error);
+      return;
+    }
+    const QByteArray l = leftLocal.toUtf8();
+    const QByteArray r = rightLocal.toUtf8();
+    openbc_image_compare_open(
+        handle_, reinterpret_cast<const std::uint8_t *>(l.constData()),
+        std::size_t(l.size()),
+        reinterpret_cast<const std::uint8_t *>(r.constData()),
+        std::size_t(r.size()));
+  }
+
   void reload() {
     if (handle_)
       openbc_image_compare_reload(handle_);
@@ -1450,6 +1458,7 @@ private:
 
   // ===== state ==============================================================
   QSettings *prefs_ = nullptr;
+  std::unique_ptr<FileChangeController> changes_;  // external-change notice + reload (common/file_change_controller.h)
   OpenbcImageCompare *handle_ = nullptr;
   PictureOptions options_;
   PictureViewState view_;

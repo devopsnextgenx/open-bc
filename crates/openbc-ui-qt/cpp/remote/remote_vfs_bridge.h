@@ -540,6 +540,10 @@ public:
         return true;
     }
 
+    // Id of the already-open session for `profile`, or -1. Never connects, never blocks on the
+    // network: used by file-change tracking, which must only reuse connections viewers opened.
+    int32_t connectedSessionId(const RemoteProfile& profile) { return sessionIdFor(profile); }
+
 private:
     struct Session {
         int32_t id;

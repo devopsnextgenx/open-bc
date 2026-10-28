@@ -7,6 +7,7 @@
 //!   [`registry_compare`], [`hex_compare`], [`media_compare`], [`image_compare`] and
 //!   [`model3d_compare`]. The table/registry/media actors share the loop in
 //!   [`common::BatchedActor`]; all of them use the channel and I/O plumbing in [`common`].
+//! * Reload tracking: [`resource_watch`] (per-tab stale detection on top of `openbc-vfs::observe`).
 
 #[macro_use]
 mod metrics;
@@ -17,6 +18,7 @@ pub mod image_compare;
 pub mod media_compare;
 pub mod model3d_compare;
 pub mod registry_compare;
+pub mod resource_watch;
 pub mod table_compare;
 pub mod text_runner;
 

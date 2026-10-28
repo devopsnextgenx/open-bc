@@ -10,6 +10,31 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
+# --- Dynamic Version Resolution from Git / Build script ---
+if(NOT DEFINED CPACK_PACKAGE_VERSION)
+    execute_process(
+        COMMAND git describe --tags --abbrev=0
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_TAG
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE GIT_RESULT
+    )
+    if(GIT_RESULT EQUAL 0 AND NOT "${GIT_TAG}" STREQUAL "")
+        string(REGEX REPLACE "^v" "" CPACK_PACKAGE_VERSION "${GIT_TAG}")
+    else()
+        set(CPACK_PACKAGE_VERSION "1.0.0")
+    endif()
+endif()
+
+message(STATUS "Building OpenBC Version: ${CPACK_PACKAGE_VERSION}")
+
+# Configure app_info.h directly inside the source tree so Cargo/rustc finds it natively
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/crates/openbc-ui-qt/cpp/app/app_info.h.in"
+    "${CMAKE_CURRENT_SOURCE_DIR}/crates/openbc-ui-qt/cpp/app/app_info.h"
+    @ONLY
+)
+
 # Corrosion cannot use rustup's proxy when it probes the compiler version.
 find_program(RUSTUP_EXECUTABLE rustup)
 set(RUSTUP_RESULT 1)
@@ -41,7 +66,6 @@ find_package(Qt6 REQUIRED
 # C++ link needs zlib named explicitly - otherwise `ld` reports undefined
 # references to symbols like `inflateEnd` even though libz.so is present.
 find_package(ZLIB REQUIRED)
-
 find_package(LibLZMA REQUIRED)
 
 # suppaftp's `tokio-async-native-tls` feature pulls in `native-tls`, which
@@ -111,7 +135,6 @@ target_link_libraries(openbc PRIVATE
 
 target_compile_definitions(openbc PRIVATE OPENBC_BUILD_EXECUTABLE)
 
-# Media playback (optional). OPENBC_HAVE_QT_MULTIMEDIA is defined only when both modules were found.
 if(TARGET Qt6::Multimedia AND TARGET Qt6::MultimediaWidgets)
     message(STATUS "Qt Multimedia found: media playback enabled")
     target_link_libraries(openbc PRIVATE Qt6::Multimedia Qt6::MultimediaWidgets)
@@ -152,7 +175,7 @@ endif()
 
 # --- Packaging Configuration ---
 set(CPACK_PACKAGE_NAME "OpenBC")
-set(CPACK_PACKAGE_VERSION "1.0.20")
+set(CPACK_PACKAGE_VERSION "${CPACK_PACKAGE_VERSION}")
 set(CPACK_PACKAGE_VENDOR "OpenBC")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenBC File & Directory Comparison Tool")
 

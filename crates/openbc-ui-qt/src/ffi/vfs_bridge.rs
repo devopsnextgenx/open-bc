@@ -268,6 +268,13 @@ fn session_handle(session_id: i32) -> Result<(Arc<dyn AsyncVfs>, bool), String> 
     Ok((Arc::clone(&session.vfs), session.network_rooted))
 }
 
+/// Provider + provider-relative path for a session id and the path string the UI shows, so
+/// `ffi::resource_watch` can observe a remote file through the SAME session the viewers use.
+pub(crate) fn watch_target(session_id: i32, raw_path: &str) -> Result<(Arc<dyn AsyncVfs>, EntryPath), String> {
+    let (vfs, network_rooted) = session_handle(session_id)?;
+    Ok((vfs, listing_path(raw_path, network_rooted)))
+}
+
 /// Drop a session created by [`openbc_vfs_connect`].
 #[no_mangle]
 pub extern "C" fn openbc_vfs_disconnect(session_id: i32) {
