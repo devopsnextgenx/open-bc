@@ -38,6 +38,7 @@ build-win.log
 
 scripts/packaging/io.github.devopsnextgenx.open-bc.generated.yml
 
+crates/openbc-ui-qt/cpp/app/app_info.h
 crates/**/*.zip
 crates.7z
 cratesx/
