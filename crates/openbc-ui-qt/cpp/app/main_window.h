@@ -62,6 +62,8 @@
 #include "app/app_options.h"
 #include "app/options_dialog.h"
 #include "app/single_instance.h"
+#include "app/app_info.h"
+#include "app/about_dialog.h"
 
 namespace openbc::app {
 
@@ -126,7 +128,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         return 0;
     }
     if (launch.showVersion) {
-        printToConsole("openbc 1.0.20\n");
+        printToConsole("openbc " + appVersion() + "\n");
         return 0;
     }
     if (launch.dependencyCheck) {
@@ -189,36 +191,38 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     auto* viewMenu = window.menuBar()->addMenu("&View");
     auto* toolsMenu = window.menuBar()->addMenu("&Tools");
     auto* helpMenu = window.menuBar()->addMenu("&Help");
-    auto* downloadLog = helpMenu->addAction("Download Log...");
-    auto* downloadInstrumentation = helpMenu->addAction("Download Instrumentation Report...");
+    auto* aboutAction = helpMenu->addAction("About");
+    QObject::connect(aboutAction, &QAction::triggered, &window, [&]() { showAboutDialog(&window); });
+    // auto* downloadLog = helpMenu->addAction("Download Log...");
+    // auto* downloadInstrumentation = helpMenu->addAction("Download Instrumentation Report...");
 
-    auto copyReport = [&](const QString& source, const QString& title, const QString& filter) {
-        const QString destination = QFileDialog::getSaveFileName(&window, title, QDir::homePath(), filter);
-        if (destination.isEmpty()) {
-            return;
-        }
-        QFile::remove(destination);
-        if (!QFile::copy(source, destination)) {
-            openbc_log_message(reinterpret_cast<const std::uint8_t*>("report download failed"), 23);
-        } else {
-            openbc_log_message(reinterpret_cast<const std::uint8_t*>("report downloaded"), 17);
-        }
-    };
-    QObject::connect(downloadLog, &QAction::triggered, [&]() {
-        const QString username = qEnvironmentVariable("USER", qEnvironmentVariable("USERNAME", "unknown"))   /* USERNAME on Windows */;
-        QString logPath = "/var/log/open-bc-" + username + ".log";
-        if (!QFile::exists(logPath)) {
-            logPath = QDir::homePath() + "/.config/open-bc/open-bc-" + username + ".log";
-        }
-        copyReport(logPath, "Download OpenBC log", "Log files (*.log)");
-    });
-    QObject::connect(downloadInstrumentation, &QAction::triggered, [&]() {
-        const QString directory = QDir::homePath() + "/.config/open-bc/instrumentation";
-        const QStringList reports = QDir(directory).entryList({"*.yml"}, QDir::Files, QDir::Time);
-        if (!reports.isEmpty()) {
-            copyReport(directory + "/" + reports.constFirst(), "Download instrumentation report", "YAML files (*.yml)");
-        }
-    });
+    // auto copyReport = [&](const QString& source, const QString& title, const QString& filter) {
+    //     const QString destination = QFileDialog::getSaveFileName(&window, title, QDir::homePath(), filter);
+    //     if (destination.isEmpty()) {
+    //         return;
+    //     }
+    //     QFile::remove(destination);
+    //     if (!QFile::copy(source, destination)) {
+    //         openbc_log_message(reinterpret_cast<const std::uint8_t*>("report download failed"), 23);
+    //     } else {
+    //         openbc_log_message(reinterpret_cast<const std::uint8_t*>("report downloaded"), 17);
+    //     }
+    // };
+    // QObject::connect(downloadLog, &QAction::triggered, [&]() {
+    //     const QString username = qEnvironmentVariable("USER", qEnvironmentVariable("USERNAME", "unknown"))   /* USERNAME on Windows */;
+    //     QString logPath = "/var/log/open-bc-" + username + ".log";
+    //     if (!QFile::exists(logPath)) {
+    //         logPath = QDir::homePath() + "/.config/open-bc/open-bc-" + username + ".log";
+    //     }
+    //     copyReport(logPath, "Download OpenBC log", "Log files (*.log)");
+    // });
+    // QObject::connect(downloadInstrumentation, &QAction::triggered, [&]() {
+    //     const QString directory = QDir::homePath() + "/.config/open-bc/instrumentation";
+    //     const QStringList reports = QDir(directory).entryList({"*.yml"}, QDir::Files, QDir::Time);
+    //     if (!reports.isEmpty()) {
+    //         copyReport(directory + "/" + reports.constFirst(), "Download instrumentation report", "YAML files (*.yml)");
+    //     }
+    // });
     openbc_log_message(reinterpret_cast<const std::uint8_t*>("Qt GUI initialized"), 18);
 
     auto* tabs = new QTabWidget(&window);

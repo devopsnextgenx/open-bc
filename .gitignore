@@ -36,6 +36,9 @@ files.wixobj
 
 build-win.log
 
-crates/**/*.zip
-
 scripts/packaging/io.github.devopsnextgenx.open-bc.generated.yml
+
+crates/**/*.zip
+crates.7z
+cratesx/
+tracking.env
