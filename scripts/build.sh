@@ -415,6 +415,9 @@ pkg_appimage() {
       # (1) AppImage tooling (AppMan `am`, appimaged, AppImageLauncher, `--appimage-extract`) expects a REAL
       #     .desktop file and icon at the AppDir root. Copy them (not symlinks): `am` does
       #     `mv squashfs-root/*.desktop ...`, which breaks on a missing file and moves symlinks as dangling ones.
+      #     linuxdeploy already puts SYMLINKS with these names at the AppDir root (into usr/share/...), and
+      #     `cp -f` onto a symlink to the source fails with "are the same file": remove them first.
+      rm -f "$appdir/$id.desktop" "$appdir/$id.png" "$appdir/.DirIcon"
       cp -f "$appdir/usr/share/applications/$id.desktop" "$appdir/$id.desktop"
       cp -f "$appdir/usr/share/icons/hicolor/512x512/apps/$id.png" "$appdir/$id.png"
       cp -f "$appdir/usr/share/icons/hicolor/512x512/apps/$id.png" "$appdir/.DirIcon"
