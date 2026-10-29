@@ -7,7 +7,6 @@ use openbc_compute::ComputeDispatcher;
 use openbc_core::{DirectoryEntry, EntryPath};
 use openbc_vfs::{read_small_file, AsyncVfs, VfsError};
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
 use crate::metrics::depth_of;
@@ -114,16 +113,19 @@ pub async fn compare_file_content_by_hash(
     right_vfs: &dyn AsyncVfs,
     right_path: &EntryPath,
 ) -> Result<bool, ScanError> {
-    let (left_bytes, right_bytes) = tokio::try_join!(
-        read_small_file(left_vfs, left_path),
-        read_small_file(right_vfs, right_path),
-    )?;
-    let result = tokio::task::spawn_blocking(move || {
-        let compute = shared_dispatcher();
-        compute.hash_bytes(&left_bytes).digest == compute.hash_bytes(&right_bytes).digest
-    })
-    .await?;
-    Ok(result)
+    // One file in memory at a time: read + hash the left side and free it before the right side
+    // is read (both at once doubled the peak, up to 2 x the in-memory limit). Remote providers
+    // serialize on one connection anyway, so nothing is lost by not downloading in parallel.
+    let left_digest = digest_of(left_vfs, left_path).await?;
+    let right_digest = digest_of(right_vfs, right_path).await?;
+    Ok(left_digest == right_digest)
+}
+
+/// Reads one file (bounded by [`read_small_file`]), hashes it on the compute pool and frees the
+/// bytes there; only the digest comes back.
+async fn digest_of(vfs: &dyn AsyncVfs, path: &EntryPath) -> Result<Vec<u8>, ScanError> {
+    let bytes = read_small_file(vfs, path).await?;
+    Ok(tokio::task::spawn_blocking(move || shared_dispatcher().hash_bytes(&bytes).digest.to_vec()).await?)
 }
 
 fn shared_dispatcher() -> &'static ComputeDispatcher {
@@ -139,13 +141,9 @@ async fn hash_entry(
     entry: DirectoryEntry,
 ) -> Result<Vec<u8>, ScanError> {
     let started = Instant::now();
-    let mut reader = vfs.open_file(&entry.path).await?;
-    let mut bytes = Vec::with_capacity(entry.metadata.size as usize);
-    reader.read_to_end(&mut bytes).await.map_err(|source| VfsError::Io {
-        operation: "read_file",
-        path: entry.path.0.clone(),
-        source,
-    })?;
+    // Bounded read straight into one buffer. The old path went through `open_file` (a second
+    // full copy inside the provider) and pre-allocated the size the SERVER reported.
+    let bytes = read_small_file(vfs.as_ref(), &entry.path).await?;
     let byte_count = bytes.len();
     let result = tokio::task::spawn_blocking(move || compute.hash_bytes(&bytes)).await?;
     record_op!(

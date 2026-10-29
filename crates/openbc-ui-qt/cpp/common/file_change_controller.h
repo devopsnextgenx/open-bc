@@ -103,8 +103,11 @@ private:
         const QString& path = paths_[side];
         const bool isDirectory = directory_[side];
         RemoteProfile profile;
-        const bool remote = RemoteProfileStore::findProfileForPath(path, &profile) &&
-                            profile.protocol != RemoteProtocol::NetworkDrive;  // mounted drives are plain paths
+        const bool hasProfile = RemoteProfileStore::findProfileForPath(path, &profile);
+        // Mounted network drives are remote too: watching them as local paths would poll the share
+        // over the network every few seconds. No change detection for any remote side.
+        if (hasProfile && profile.protocol == RemoteProtocol::NetworkDrive) return;
+        const bool remote = hasProfile;
         if (!remote) {
             watching_[side] = openbc_watch_set_local(session_, side, path.toUtf8().constData(), isDirectory ? 1 : 0) != 0;
             return;

@@ -17,7 +17,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use async_trait::async_trait;
 use openbc_core::{DirectoryEntry, EntryMetadata, EntryPath};
 use ssh2::Session;
-use tokio::io::{AsyncRead, AsyncWriteExt};
+use tokio::io::AsyncRead;
 
 use crate::{AsyncVfs, VfsError};
 
@@ -189,12 +189,9 @@ fn authenticate_password(
 /// Hands already-downloaded bytes out as an `AsyncRead` (ssh2's file handle is blocking and
 /// borrows the session, so the whole file is read inside the blocking task first).
 fn stream_bytes(bytes: Vec<u8>) -> Box<dyn AsyncRead + Unpin + Send> {
-    let (mut writer, reader) = tokio::io::duplex(64 * 1024);
-    tokio::spawn(async move {
-        // Ends early (and frees `bytes`) when the reader is dropped before reading everything.
-        let _ = writer.write_all(&bytes).await;
-    });
-    Box::new(reader)
+    // The reader owns the bytes: no helper task and no pipe buffer, and everything is freed
+    // when the reader is dropped (a spawned writer task kept the whole file alive until read).
+    Box::new(std::io::Cursor::new(bytes))
 }
 
 fn join_error(err: tokio::task::JoinError) -> VfsError {
@@ -268,9 +265,12 @@ impl AsyncVfs for SftpVfs {
         tokio::task::spawn_blocking(move || {
             let session = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &resolved, &err))?;
-            let file = sftp.open(&resolved).map_err(|err| ssh_err("open_file", &resolved, &err))?;
-            // Never trust the server-reported size: stop reading one byte past the limit.
-            let mut bytes = Vec::new();
+            let mut file = sftp.open(&resolved).map_err(|err| ssh_err("open_file", &resolved, &err))?;
+            // Size the buffer once (growing by doubling peaks at ~2x the file and fragments the
+            // heap). The server-reported size is only a capacity hint, capped by the limit; the
+            // read below still stops one byte past the limit whatever the server claims.
+            let hint = file.stat().ok().and_then(|stat| stat.size).unwrap_or(0).min(limit);
+            let mut bytes = Vec::with_capacity(usize::try_from(hint.saturating_add(1)).unwrap_or(0));
             file.take(limit.saturating_add(1)).read_to_end(&mut bytes).map_err(|source| VfsError::Io {
                 operation: "read_file",
                 path: resolved.clone(),

@@ -38,7 +38,7 @@ use suppaftp::tokio::{
     AsyncFtpStream, AsyncRustlsConnector, AsyncRustlsFtpStream,
 };
 use suppaftp::tokio_rustls::TlsConnector;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{AsyncVfs, VfsError};
 
@@ -278,15 +278,27 @@ impl AsyncVfs for FtpVfs {
             })
     }
 
-    async fn open_file(&self, path: &EntryPath) -> Result<Box<dyn AsyncRead + Unpin + Send>, VfsError> {
-        let remote_path = self.resolve(path);
-        let bytes = self.retr_to_buffer(&remote_path).await?;
+    /// A RETR cannot be stopped half way without aborting the transfer, so a file is refused up
+    /// front when its listed size is over the limit (before any byte is downloaded).
+    async fn read_file_limited(&self, path: &EntryPath, limit: u64) -> Result<Option<Vec<u8>>, VfsError> {
+        if self.stat(path).await?.size > limit {
+            return Ok(None);
+        }
+        let bytes = self.retr_to_buffer(&self.resolve(path)).await?;
+        Ok((bytes.len() as u64 <= limit).then_some(bytes))
+    }
 
-        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
-        tokio::spawn(async move {
-            let _ = writer.write_all(&bytes).await;
-        });
-        Ok(Box::new(reader))
+    async fn open_file(&self, path: &EntryPath) -> Result<Box<dyn AsyncRead + Unpin + Send>, VfsError> {
+        // Bounded like every other in-memory read (this used to download without any limit).
+        match self.read_file_limited(path, crate::MAX_SMALL_FILE_BYTES).await? {
+            // The reader owns the bytes: no helper task, freed when the reader is dropped.
+            Some(bytes) => Ok(Box::new(std::io::Cursor::new(bytes))),
+            None => Err(VfsError::Io {
+                operation: "open_file",
+                path: PathBuf::from(&path.0),
+                source: std::io::Error::new(std::io::ErrorKind::InvalidData, "file is too large to open in memory"),
+            }),
+        }
     }
 
     async fn write_file(&self, path: &EntryPath, bytes: &[u8]) -> Result<(), VfsError> {

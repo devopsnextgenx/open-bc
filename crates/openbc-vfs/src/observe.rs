@@ -13,9 +13,12 @@
 //! cannot be set up, the same loop simply polls.
 //!
 //! Limits, stated plainly:
-//! * Remote providers here (SFTP / FTP / mounted shares) expose size + mtime through
-//!   [`AsyncVfs::stat`]; none of them gives an ETag or revision id, so remote detection is
-//!   polling of size+mtime every few seconds, never a download. It is not push-based.
+//! * Remote providers (SFTP / FTP / mounted shares) are NOT watched at all. Every poll costs a
+//!   round trip on the one shared connection (FTP `stat` even lists the parent folder), a
+//!   timed-out probe cannot cancel the blocking SFTP call behind it, and the watcher keeps the
+//!   provider session alive. [`WatchHub::watch_vfs`] therefore returns an inert
+//!   [`Subscription`]: no task, no probe, no reference to the provider, `changed()` never fires.
+//!   [`VfsProbe`] stays available for explicit one-shot checks made by the caller.
 //! * `Unavailable` (permissions, network down) is reported as such and never as a change.
 //! * Two spellings of one local path (symlink alias) are two watchers.
 
@@ -383,7 +386,7 @@ pub struct WatchConfig {
     pub local_poll: Duration,
     /// Safety-net poll period for local paths that do have native notifications.
     pub local_poll_with_native: Duration,
-    /// Poll period for remote providers.
+    /// Unused: remote providers are no longer polled (kept so existing constructors compile).
     pub remote_poll: Duration,
     /// Upper bound of the exponential back-off while a resource is `Unavailable`.
     pub max_backoff: Duration,
@@ -418,8 +421,10 @@ impl Drop for Entry {
 
 /// A subscriber's view of one watched resource. Dropping it releases its share of the watcher.
 pub struct Subscription {
-    entry: Arc<Entry>,
-    rx: watch::Receiver<Observation>,
+    /// `None` for an inert subscription (remote resources): nothing is watched.
+    entry: Option<Arc<Entry>>,
+    /// `None` for an inert subscription: no channel is allocated.
+    rx: Option<watch::Receiver<Observation>>,
 }
 
 impl Subscription {
@@ -428,23 +433,51 @@ impl Subscription {
         // Start "caught up": `changed()` must only fire for states published AFTER subscribing,
         // otherwise an older published value could be compared against a fresher baseline.
         drop(rx.borrow_and_update());
-        Self { entry, rx }
+        Self { entry: Some(entry), rx: Some(rx) }
+    }
+
+    /// A pure no-op: no task, no timer, no channel, no reference to a provider.
+    const fn inert() -> Self {
+        Self { entry: None, rx: None }
+    }
+
+    fn disabled_state() -> Observed {
+        Observed::Unavailable("change detection is disabled for remote connections".into())
+    }
+
+    /// True when nothing is watched behind this subscription (remote resources).
+    #[must_use]
+    pub fn is_inert(&self) -> bool {
+        self.entry.is_none()
     }
 
     /// Latest published observation.
     #[must_use]
     pub fn current(&self) -> Observation {
-        self.rx.borrow().clone()
+        match &self.rx {
+            Some(rx) => rx.borrow().clone(),
+            None => Observation { seq: 0, state: Self::disabled_state() },
+        }
     }
 
-    /// Waits for the next published change; `false` when the watcher is gone.
+    /// Waits for the next published change; `false` when the watcher is gone. An inert
+    /// subscription has no watcher, so it returns `false` at once: a `while sub.changed().await`
+    /// loop (or a task around it) ends immediately and releases everything it captured instead
+    /// of waiting forever.
     pub async fn changed(&mut self) -> bool {
-        self.rx.changed().await.is_ok()
+        match &mut self.rx {
+            Some(rx) => rx.changed().await.is_ok(),
+            None => false,
+        }
     }
 
     /// Probes right now (bypassing the poll period), optionally with a content hash.
+    /// An inert subscription has nothing to probe and reports `Unavailable`.
     pub async fn probe_now(&self, with_hash: bool) -> Observed {
-        probe_with_timeout(self.entry.probe.as_ref(), with_hash).await
+        match &self.entry {
+            Some(entry) => probe_with_timeout(entry.probe.as_ref(), with_hash).await,
+            None => Self::disabled_state(),
+        }
     }
 }
 
@@ -469,8 +502,12 @@ impl WatchHub {
     }
 
     /// Subscribes to `key`, creating the watcher with `make_probe` only if none is live yet.
-    /// `remote` selects the remote poll period and skips native notifications.
+    /// `remote` resources are never watched: the result is an inert [`Subscription`] and
+    /// `make_probe` is not even called.
     pub fn subscribe(&self, key: &str, remote: bool, make_probe: impl FnOnce() -> Arc<dyn VersionProbe>) -> Subscription {
+        if remote {
+            return Subscription::inert();
+        }
         let mut map = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         map.retain(|_, weak| weak.strong_count() > 0);
         if let Some(entry) = map.get(key).and_then(Weak::upgrade) {
@@ -478,13 +515,10 @@ impl WatchHub {
         }
         let probe = make_probe();
         let hint = Arc::new(Notify::new());
-        let guard = match (remote, probe.local_path()) {
-            (false, Some(path)) => native::start(path, probe.is_directory(), Arc::clone(&hint)),
-            _ => None,
-        };
-        let period = if remote {
-            self.cfg.remote_poll
-        } else if guard.is_some() {
+        let guard = probe
+            .local_path()
+            .and_then(|path| native::start(path, probe.is_directory(), Arc::clone(&hint)));
+        let period = if guard.is_some() {
             self.cfg.local_poll_with_native
         } else {
             self.cfg.local_poll
@@ -509,10 +543,11 @@ impl WatchHub {
         })
     }
 
-    /// A path behind a provider. `session_key` must identify the provider session (e.g. its id).
-    pub fn watch_vfs(&self, session_key: &str, vfs: Arc<dyn AsyncVfs>, path: EntryPath, directory: bool) -> Subscription {
-        let key = format!("vfs:{session_key}:{}:{}", u8::from(directory), path.0.display());
-        self.subscribe(&key, true, || Arc::new(VfsProbe::new(vfs, path, directory)))
+    /// A path behind a provider (SFTP / FTP / network share). Remote resources are not watched:
+    /// this returns an inert [`Subscription`] and drops `vfs` at once, so the hub never polls
+    /// the connection and never keeps the session alive. Callers should still skip the call.
+    pub fn watch_vfs(&self, _session_key: &str, _vfs: Arc<dyn AsyncVfs>, _path: EntryPath, _directory: bool) -> Subscription {
+        Subscription::inert()
     }
 }
 
@@ -742,6 +777,31 @@ mod tests {
         }
         assert!(seen, "an edit inside the folder shows up within one listing period");
         assert_eq!(vfs.opens.load(SeqCst), 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn remote_subscriptions_are_inert() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = temp_dir("remote-off");
+        std::fs::write(dir.join("a.txt"), "1").unwrap();
+        let vfs = Arc::new(CountingVfs {
+            inner: crate::LocalVfs::new(&dir),
+            stats: Default::default(),
+            lists: Default::default(),
+            opens: Default::default(),
+        });
+        let hub = WatchHub::new(Handle::current(), fast());
+        let mut file = hub.watch_vfs("s1", vfs.clone(), EntryPath("a.txt".into()), false);
+        let folder = hub.watch_vfs("s1", vfs.clone(), EntryPath(PathBuf::new()), true);
+        assert!(file.is_inert() && folder.is_inert());
+        assert_eq!(hub.active_watchers(), 0);
+        tokio::time::sleep(Duration::from_millis(150)).await; // ~7 polls if one were running
+        assert_eq!(vfs.stats.load(SeqCst) + vfs.lists.load(SeqCst) + vfs.opens.load(SeqCst), 0);
+        assert_eq!(Arc::strong_count(&vfs), 1, "the hub keeps no reference to the provider");
+        assert_eq!(file.current().seq, 0);
+        assert!(!file.changed().await, "no watcher: returns at once, nothing is left waiting");
+        assert!(matches!(file.probe_now(true).await, Observed::Unavailable(_)));
         std::fs::remove_dir_all(dir).ok();
     }
 

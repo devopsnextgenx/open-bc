@@ -328,6 +328,17 @@ pub enum ConnectionProfile {
     Network(network::NetworkShareConfig),
 }
 
+impl ConnectionProfile {
+    /// True for everything that is not a plain local folder (SFTP, FTP and mounted network
+    /// shares). Change detection must stay off for these: a mounted share is an ordinary path
+    /// to the OS, so `WatchHub::watch_local` would otherwise poll it over the network (and
+    /// inotify never reports changes made by other machines on a CIFS/SMB mount).
+    #[must_use]
+    pub fn is_remote(&self) -> bool {
+        !matches!(self, ConnectionProfile::Local { .. })
+    }
+}
+
 /// Build the right provider for a profile. This is the single place that
 /// needs to change when a new protocol is added, so the UI layer and any
 /// callers only ever depend on [`AsyncVfs`] and never on a concrete
