@@ -75,29 +75,46 @@ public:
     void track(std::uint8_t side, const QString& path, bool isDirectory = false) {
         if (!session_ || side > 1) return;
         paths_[side] = path;
+        directory_[side] = isDirectory;
+        watching_[side] = false;
         banner_->clearSide(side);  // new input: any old notice belonged to the previous one
         if (path.isEmpty()) {
             openbc_watch_clear(session_, side);
             return;
         }
-        RemoteProfile profile;
-        const bool remote = RemoteProfileStore::findProfileForPath(path, &profile) &&
-                            profile.protocol != RemoteProtocol::NetworkDrive;  // mounted drives are plain paths
-        if (!remote) {
-            openbc_watch_set_local(session_, side, path.toUtf8().constData(), isDirectory ? 1 : 0);
-            return;
-        }
-        // Reuse the connection the viewer already opened to load the file; never connect (block) here.
-        const std::int32_t sessionId = sharedVfsBridge().connectedSessionId(profile);
-        if (sessionId < 0) return;  // not connected: nothing to compare against, so nothing to watch
-        const QByteArray relative = remoteRelativePath(path, profile).toUtf8();
-        openbc_watch_set_remote(session_, side, sessionId, relative.constData(), isDirectory ? 1 : 0);
+        startWatch(side);
+    }
+
+    // A remote side registered by track() before its connection existed (folder compare registers
+    // on refresh(), the connection is opened by the comparison itself) is not watched yet. Call
+    // this once the viewer has loaded: it starts those watches, from the state at that moment,
+    // without touching sides that are already watched or any notice on screen.
+    void trackPending() {
+        for (std::uint8_t side = 0; side < 2; ++side)
+            if (session_ && !paths_[side].isEmpty() && !watching_[side]) startWatch(side);
     }
 
     FileChangeBanner* banner() const { return banner_; }
 
 private:
     static void noHandles(int, void*) {}  // watch events carry text only
+
+    void startWatch(std::uint8_t side) {
+        const QString& path = paths_[side];
+        const bool isDirectory = directory_[side];
+        RemoteProfile profile;
+        const bool remote = RemoteProfileStore::findProfileForPath(path, &profile) &&
+                            profile.protocol != RemoteProtocol::NetworkDrive;  // mounted drives are plain paths
+        if (!remote) {
+            watching_[side] = openbc_watch_set_local(session_, side, path.toUtf8().constData(), isDirectory ? 1 : 0) != 0;
+            return;
+        }
+        // Reuse the connection the viewer already opened to load the file; never connect (block) here.
+        const std::int32_t sessionId = sharedVfsBridge().connectedSessionId(profile);
+        if (sessionId < 0) return;  // not connected: nothing to compare against, so nothing to watch
+        const QByteArray relative = remoteRelativePath(path, profile).toUtf8();
+        watching_[side] = openbc_watch_set_remote(session_, side, sessionId, relative.constData(), isDirectory ? 1 : 0) != 0;
+    }
 
     void reload(const QList<std::uint8_t>& sides) {
         if (sides.isEmpty()) return;
@@ -131,6 +148,8 @@ private:
     QPointer<FileChangeBanner> banner_;
     OpenBcWatchSession* session_ = nullptr;
     QString paths_[2];
+    bool directory_[2] = {false, false};
+    bool watching_[2] = {false, false};  // false for a remote side whose connection did not exist yet
 };
 
 }  // namespace openbc::app

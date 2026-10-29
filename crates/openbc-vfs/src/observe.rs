@@ -15,7 +15,7 @@
 //! Limits, stated plainly:
 //! * Remote providers here (SFTP / FTP / mounted shares) expose size + mtime through
 //!   [`AsyncVfs::stat`]; none of them gives an ETag or revision id, so remote detection is
-//!   polling of size+mtime (plus an opt-in content hash for small files). It is not push-based.
+//!   polling of size+mtime every few seconds, never a download. It is not push-based.
 //! * `Unavailable` (permissions, network down) is reported as such and never as a change.
 //! * Two spellings of one local path (symlink alias) are two watchers.
 
@@ -32,10 +32,25 @@ use tokio::runtime::Handle;
 use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 
-use crate::{read_small_file, AsyncVfs, VfsError};
+use crate::{AsyncVfs, VfsError};
 
-/// Files up to this size may be content-hashed to confirm a suspected change.
+/// Local files up to this size may be content-hashed to confirm a suspected change.
 pub const HASH_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Remote resources are NEVER downloaded to check them: a file is judged by size + modified
+/// time (one `stat`), a folder level by the folder's own `stat` plus a listing (attributes come
+/// with the listing, no per-file requests). Downloading would cost far more than the check is
+/// worth and compete with the viewers for the one shared connection.
+///
+/// A folder's own mtime changes when entries are added, removed or renamed, but not when a file
+/// inside is edited in place. So the cheap `stat` runs every poll and the full listing (which
+/// also sees size/mtime changes of the entries) every this many polls, or at once when the
+/// folder's own stamp moved.
+pub const REMOTE_DIR_LISTING_EVERY: u32 = 6;
+
+/// A single probe taking longer than this is reported as `Unavailable` instead of hanging the
+/// watcher (and everything queued behind it on the same connection).
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// One look at a resource.
 #[async_trait]
@@ -209,35 +224,73 @@ pub struct VfsProbe {
     vfs: Arc<dyn AsyncVfs>,
     path: EntryPath,
     directory: bool,
+    dir: Mutex<DirCache>,
+}
+
+/// What the last full listing of a watched folder level looked like.
+#[derive(Default)]
+struct DirCache {
+    polls: u32,
+    /// (mtime, size) of the folder entry itself when the listing was taken.
+    stamp: Option<(u128, u64)>,
+    listing: Option<ResourceVersion>,
 }
 
 impl VfsProbe {
     #[must_use]
     pub fn new(vfs: Arc<dyn AsyncVfs>, path: EntryPath, directory: bool) -> Self {
-        Self { vfs, path, directory }
+        Self { vfs, path, directory, dir: Mutex::new(DirCache::default()) }
+    }
+
+    async fn probe_folder(&self) -> Observed {
+        let (listing_due, cached_stamp, cached) = {
+            let mut cache = self.dir.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            cache.polls = cache.polls.wrapping_add(1);
+            (
+                cache.listing.is_none() || cache.polls % REMOTE_DIR_LISTING_EVERY == 0,
+                cache.stamp,
+                cache.listing.clone(),
+            )
+        };
+        // Tier 1: one small request for the folder itself.
+        let meta = match self.vfs.stat(&self.path).await {
+            Ok(meta) => meta,
+            Err(err) => return observed_from_vfs(&err),
+        };
+        if !meta.is_dir {
+            return Observed::Unavailable("expected a folder but found a file".into());
+        }
+        let stamp = opt_ns(meta.modified).map(|mtime| (mtime, meta.size));
+        if !listing_due && stamp.is_some() && stamp == cached_stamp {
+            if let Some(listing) = cached {
+                return Observed::Present(listing); // nothing moved: no listing needed
+            }
+        }
+        // Tier 2: one listing request (names, sizes and mtimes of the entries come with it).
+        match self.vfs.read_dir(&self.path).await {
+            Ok(entries) => {
+                let listing = hash_rows(
+                    entries
+                        .iter()
+                        .map(|e| (e.name.clone(), e.metadata.is_dir, e.metadata.size, opt_ns(e.metadata.modified).unwrap_or(0)))
+                        .collect(),
+                );
+                let mut cache = self.dir.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                cache.stamp = stamp;
+                cache.listing = Some(listing.clone());
+                Observed::Present(listing)
+            }
+            Err(err) => observed_from_vfs(&err),
+        }
     }
 }
 
 #[async_trait]
 impl VersionProbe for VfsProbe {
-    async fn probe(&self, with_hash: bool) -> Observed {
+    /// `_with_hash` is ignored on purpose: remote content is never downloaded for a check.
+    async fn probe(&self, _with_hash: bool) -> Observed {
         if self.directory {
-            return match self.vfs.read_dir(&self.path).await {
-                Ok(entries) => Observed::Present(hash_rows(
-                    entries
-                        .iter()
-                        .map(|e| {
-                            (
-                                e.name.clone(),
-                                e.metadata.is_dir,
-                                e.metadata.size,
-                                opt_ns(e.metadata.modified).unwrap_or(0),
-                            )
-                        })
-                        .collect(),
-                )),
-                Err(err) => observed_from_vfs(&err),
-            };
+            return self.probe_folder().await;
         }
         let meta = match self.vfs.stat(&self.path).await {
             Ok(meta) => meta,
@@ -246,24 +299,17 @@ impl VersionProbe for VfsProbe {
         if meta.is_dir {
             return Observed::Unavailable("expected a file but found a folder".into());
         }
-        let mut version = ResourceVersion {
+        Observed::Present(ResourceVersion {
             kind: ResourceKind::File,
             size: meta.size,
             modified_ns: opt_ns(meta.modified),
             file_id: None,
             content_hash: None,
-        };
-        if with_hash && meta.size <= HASH_LIMIT_BYTES {
-            match read_small_file(self.vfs.as_ref(), &self.path).await {
-                Ok(bytes) => {
-                    let mut hasher = Fnv64::default();
-                    hasher.update(&bytes);
-                    version.content_hash = Some(hasher.finish());
-                }
-                Err(err) => return observed_from_vfs(&err),
-            }
-        }
-        Observed::Present(version)
+        })
+    }
+
+    fn is_directory(&self) -> bool {
+        self.directory
     }
 }
 
@@ -350,7 +396,7 @@ impl Default for WatchConfig {
         Self {
             local_poll: Duration::from_secs(2),
             local_poll_with_native: Duration::from_secs(10),
-            remote_poll: Duration::from_secs(15),
+            remote_poll: Duration::from_secs(5),
             max_backoff: Duration::from_secs(60),
             debounce: Duration::from_millis(75),
         }
@@ -398,7 +444,7 @@ impl Subscription {
 
     /// Probes right now (bypassing the poll period), optionally with a content hash.
     pub async fn probe_now(&self, with_hash: bool) -> Observed {
-        self.entry.probe.probe(with_hash).await
+        probe_with_timeout(self.entry.probe.as_ref(), with_hash).await
     }
 }
 
@@ -470,6 +516,13 @@ impl WatchHub {
     }
 }
 
+async fn probe_with_timeout(probe: &dyn VersionProbe, with_hash: bool) -> Observed {
+    match tokio::time::timeout(PROBE_TIMEOUT, probe.probe(with_hash)).await {
+        Ok(state) => state,
+        Err(_) => Observed::Unavailable("the check timed out".into()),
+    }
+}
+
 async fn poll_loop(
     probe: Arc<dyn VersionProbe>,
     tx: watch::Sender<Observation>,
@@ -480,7 +533,7 @@ async fn poll_loop(
 ) {
     let mut period = base;
     loop {
-        let state = probe.probe(false).await;
+        let state = probe_with_timeout(probe.as_ref(), false).await;
         period = if matches!(state, Observed::Unavailable(_)) { (period * 2).min(max_backoff).max(base) } else { base };
         // Publish only a real difference: repeated events for one version never wake subscribers.
         tx.send_if_modified(|current| {
@@ -614,6 +667,81 @@ mod tests {
         let before = present(&sub.current().state).unwrap().clone();
         std::fs::write(dir.join("two"), "2").unwrap();
         assert!(wait_until(&mut sub, |o| present(o).is_some_and(|v| !v.same_stat(&before))).await);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Provider that counts what a probe costs: remote checks must never open (download) a file.
+    struct CountingVfs {
+        inner: crate::LocalVfs,
+        stats: std::sync::atomic::AtomicUsize,
+        lists: std::sync::atomic::AtomicUsize,
+        opens: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl AsyncVfs for CountingVfs {
+        async fn read_dir(&self, path: &EntryPath) -> Result<Vec<openbc_core::DirectoryEntry>, VfsError> {
+            self.lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.read_dir(path).await
+        }
+        async fn stat(&self, path: &EntryPath) -> Result<openbc_core::EntryMetadata, VfsError> {
+            self.stats.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.stat(path).await
+        }
+        async fn open_file(&self, path: &EntryPath) -> Result<Box<dyn tokio::io::AsyncRead + Unpin + Send>, VfsError> {
+            self.opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.open_file(path).await
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_checks_never_download_and_folders_list_only_when_needed() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = temp_dir("remote-cost");
+        std::fs::write(dir.join("a.txt"), "1").unwrap();
+        let vfs = Arc::new(CountingVfs {
+            inner: crate::LocalVfs::new(&dir),
+            stats: Default::default(),
+            lists: Default::default(),
+            opens: Default::default(),
+        });
+
+        // A file: stat only, even when a hash is requested (baseline / rebase / confirm).
+        let file = VfsProbe::new(vfs.clone(), EntryPath("a.txt".into()), false);
+        let before = file.probe(true).await;
+        assert!(matches!(&before, Observed::Present(v) if v.content_hash.is_none()));
+        assert_eq!(vfs.opens.load(SeqCst), 0, "a remote file is never downloaded for a check");
+        std::fs::write(dir.join("a.txt"), "12345").unwrap();
+        assert_ne!(file.probe(false).await, before, "size change is seen from metadata alone");
+
+        // A folder level: idle polls are one stat each; the listing runs on the first poll only.
+        let folder = VfsProbe::new(vfs.clone(), EntryPath(PathBuf::new()), true);
+        vfs.stats.store(0, SeqCst);
+        let base = folder.probe(false).await;
+        assert_eq!(vfs.lists.load(SeqCst), 1);
+        for _ in 0..(REMOTE_DIR_LISTING_EVERY - 3) {
+            assert_eq!(folder.probe(false).await, base);
+        }
+        assert_eq!(vfs.lists.load(SeqCst), 1, "idle folder: stat only, no listing");
+
+        // A new entry moves the folder's own mtime: seen without waiting for the listing tick.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        std::fs::write(dir.join("b.txt"), "2").unwrap();
+        assert_ne!(folder.probe(false).await, base);
+
+        // An in-place edit does not move the folder's mtime: the periodic listing catches it.
+        let settled = folder.probe(false).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        std::fs::write(dir.join("a.txt"), "a much longer content").unwrap();
+        let mut seen = false;
+        for _ in 0..REMOTE_DIR_LISTING_EVERY {
+            if folder.probe(false).await != settled {
+                seen = true;
+                break;
+            }
+        }
+        assert!(seen, "an edit inside the folder shows up within one listing period");
+        assert_eq!(vfs.opens.load(SeqCst), 0);
         std::fs::remove_dir_all(dir).ok();
     }
 

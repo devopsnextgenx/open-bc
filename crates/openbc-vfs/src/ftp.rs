@@ -102,7 +102,24 @@ impl FtpVfs {
     /// Connect, optionally upgrade to explicit TLS, log in, and set the
     /// working directory to `config.root`.
     pub async fn connect(config: FtpConfig) -> Result<Self, VfsError> {
-        let address = format!("{}:{}", config.host, config.port);
+        // Resolved up front (getaddrinfo, then the system's tools: see resolve.rs). Only the TCP
+        // connection uses the address; TLS keeps verifying the host NAME below.
+        let (lookup_host, lookup_port) = (config.host.clone(), config.port);
+        let resolved = tokio::task::spawn_blocking(move || crate::resolve::resolve_host(&lookup_host, lookup_port))
+            .await
+            .map_err(|err| VfsError::Io {
+                operation: "resolve_host",
+                path: std::path::PathBuf::from(&config.host),
+                source: std::io::Error::new(std::io::ErrorKind::Other, err.to_string()),
+            })?
+            .map_err(|source| VfsError::Io {
+                operation: "resolve_host",
+                path: std::path::PathBuf::from(&config.host),
+                source,
+            })?;
+        let address = resolved
+            .first()
+            .map_or_else(|| format!("{}:{}", config.host, config.port), ToString::to_string);
         let connection = match config.security {
             FtpSecurity::Plain => {
                 let mut stream = timeout(config.connect_timeout_secs, AsyncFtpStream::connect(address.as_str()))

@@ -993,6 +993,10 @@ public:
     run_->onComplete = [this, expected]() {
       if (run_.get() != expected)
         return;
+      // The comparison has opened any remote connection by now: start the folder watches that
+      // refresh() could not (it only watches the two listed levels, never the tree below them).
+      if (changes_)
+        changes_->trackPending();
       updateFooter();
       applyViewFilter();
       if (pendingEditPath_.isEmpty())  // a freshly created entry takes the view instead

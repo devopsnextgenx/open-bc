@@ -22,6 +22,10 @@ fn main() {
     let qt_opengl_widgets = pkg_config::Config::new()
         .probe("Qt6OpenGLWidgets")
         .expect("Qt6OpenGLWidgets development files are required for the 3D Compare tab");
+    // Release notices on the Home tab (home/update_notice.cpp) talk to the GitHub releases API.
+    let qt_network = pkg_config::Config::new()
+        .probe("Qt6Network")
+        .expect("Qt6Network development files are required for the Home tab update notice");
     let qt_multimedia = pkg_config::Config::new()
         .cargo_metadata(false)
         .probe("Qt6Multimedia")
@@ -33,7 +37,7 @@ fn main() {
     let multimedia_enabled = qt_multimedia.is_some() && qt_multimedia_widgets.is_some();
 
     let mut include_paths = Vec::new();
-    for lib in [&qt_widgets, &qt_opengl, &qt_opengl_widgets]
+    for lib in [&qt_widgets, &qt_network, &qt_opengl, &qt_opengl_widgets]
         .into_iter()
         .chain(qt_multimedia.iter())
         .chain(qt_multimedia_widgets.iter())
@@ -47,6 +51,7 @@ fn main() {
 
     let mut builder = cxx_qt_build::CxxQtBuilder::new()
         .qt_module("Widgets")
+        .qt_module("Network")
         .qt_module("OpenGL")
         .qt_module("OpenGLWidgets")
         .qt_module("Qml");

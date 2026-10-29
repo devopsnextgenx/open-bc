@@ -7,6 +7,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub mod observe;
+pub mod resolve;
 #[cfg(feature = "sftp")]
 pub mod sftp;
 #[cfg(feature = "ftp")]
@@ -44,6 +45,26 @@ pub trait AsyncVfs: Send + Sync {
         &self,
         path: &EntryPath,
     ) -> Result<Box<dyn AsyncRead + Unpin + Send>, VfsError>;
+
+    /// Reads at most `limit` bytes of a file into memory. `Ok(None)` means the file is larger
+    /// than `limit` (nothing is returned, so callers never hold an oversized buffer).
+    ///
+    /// The default goes through [`AsyncVfs::open_file`]; providers that must download a whole
+    /// file before they can hand out a stream (SFTP) override it to stop at the limit.
+    async fn read_file_limited(&self, path: &EntryPath, limit: u64) -> Result<Option<Vec<u8>>, VfsError> {
+        let reader = self.open_file(path).await?;
+        let mut bytes = Vec::new();
+        reader
+            .take(limit.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|source| VfsError::Io {
+                operation: "read_file",
+                path: Path::new(&path.0).to_path_buf(),
+                source,
+            })?;
+        Ok((bytes.len() as u64 <= limit).then_some(bytes))
+    }
 
     /// Replace a file's contents with the supplied bytes.
     async fn write_file(&self, _path: &EntryPath, _bytes: &[u8]) -> Result<(), VfsError> {
@@ -251,19 +272,24 @@ impl AsyncVfs for LocalVfs {
     }
 }
 
-/// Read a provider file into memory for small-file comparisons.
+/// Upper bound for [`read_small_file`]. A comparison that needs a bigger file in memory is
+/// refused with an error instead of growing the process until the OS kills it.
+pub const MAX_SMALL_FILE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Read a provider file into memory for small-file comparisons (at most
+/// [`MAX_SMALL_FILE_BYTES`]; larger files return an error).
 pub async fn read_small_file(vfs: &dyn AsyncVfs, path: &EntryPath) -> Result<Vec<u8>, VfsError> {
-    let mut reader = vfs.open_file(path).await?;
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|source| VfsError::Io {
+    match vfs.read_file_limited(path, MAX_SMALL_FILE_BYTES).await? {
+        Some(bytes) => Ok(bytes),
+        None => Err(VfsError::Io {
             operation: "read_file",
             path: Path::new(&path.0).to_path_buf(),
-            source,
-        })?;
-    Ok(bytes)
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("file is larger than the {} MiB in-memory limit", MAX_SMALL_FILE_BYTES / (1024 * 1024)),
+            ),
+        }),
+    }
 }
 
 /// Read one folder level and return the metadata needed by a folder view.
@@ -348,5 +374,31 @@ mod tests {
         assert!(dangling_link.metadata.is_link);
 
         tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+}
+#[cfg(test)]
+mod bounded_read_tests {
+    use super::{read_small_file, AsyncVfs, EntryPath, LocalVfs};
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "openbc-vfs-limit-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[tokio::test]
+    async fn limited_read_returns_none_instead_of_buffering_a_bigger_file() {
+        let root = temp_root("none");
+        std::fs::write(root.join("big.bin"), vec![7u8; 4096]).unwrap();
+        let vfs = LocalVfs::new(&root);
+        let path = EntryPath("big.bin".into());
+        assert_eq!(vfs.read_file_limited(&path, 4096).await.unwrap().map(|b| b.len()), Some(4096));
+        assert!(vfs.read_file_limited(&path, 4095).await.unwrap().is_none());
+        assert_eq!(read_small_file(&vfs, &path).await.unwrap().len(), 4096);
+        std::fs::remove_dir_all(root).ok();
     }
 }

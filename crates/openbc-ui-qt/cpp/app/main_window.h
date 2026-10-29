@@ -237,6 +237,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     window.setCentralWidget(tabs);
 
     auto* home = new HomeView;
+    home->enableUpdateNotices(&preferences);  // bottom-right "update available" / once-per-install "what's new"
     const int homeIndex = tabs->addTab(home, "Home");
     tabs->setTabToolTip(homeIndex, "OpenBC home and session history");
 

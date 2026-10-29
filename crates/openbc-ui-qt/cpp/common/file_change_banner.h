@@ -43,28 +43,37 @@ namespace openbc::app {
 
 class FileChangeBanner : public QFrame {
 public:
+    // Size of the card relative to the original design (fonts, paddings, widths all follow it).
+    static constexpr double kScale = 1.5;
+
     // Sides (0 = left, 1 = right) the user asked to reload / to keep as they are.
     std::function<void(const QList<std::uint8_t>&)> onReload;
     std::function<void(const QList<std::uint8_t>&)> onKeep;
 
     explicit FileChangeBanner(QWidget* parent) : QFrame(parent), host_(parent) {
         setObjectName("fileChangeBanner");
+        {   // Scale before the children exist so they inherit the larger font.
+            QFont base = font();
+            if (base.pointSizeF() > 0) base.setPointSizeF(base.pointSizeF() * kScale);
+            else if (base.pixelSize() > 0) base.setPixelSize(static_cast<int>(base.pixelSize() * kScale));
+            setFont(base);
+        }
         setFrameShape(QFrame::NoFrame);
         setAutoFillBackground(true);  // opaque: it floats over content
         setStyleSheet(
             "QFrame#fileChangeBanner { background: palette(window); border: 2px solid #d9a31b; border-radius: 6px; }"
             " QFrame#fileChangeBanner QLabel { background: transparent; }");
         auto* shadow = new QGraphicsDropShadowEffect(this);
-        shadow->setBlurRadius(18);
-        shadow->setOffset(0, 3);
+        shadow->setBlurRadius(18 * kScale);
+        shadow->setOffset(0, 3 * kScale);
         shadow->setColor(QColor(0, 0, 0, 110));
         setGraphicsEffect(shadow);
 
         auto* col = new QVBoxLayout(this);
-        col->setContentsMargins(10, 8, 8, 8);
-        col->setSpacing(8);
+        col->setContentsMargins(scaled(10), scaled(8), scaled(8), scaled(8));
+        col->setSpacing(scaled(8));
         auto* top = new QHBoxLayout();
-        top->setSpacing(8);
+        top->setSpacing(scaled(8));
         icon_ = new QLabel(QString::fromUtf8("\xE2\x9A\xA0"), this);  // warning sign
         QFont iconFont = icon_->font();
         iconFont.setPointSizeF(iconFont.pointSizeF() * 1.4);
@@ -81,7 +90,7 @@ public:
         top->addWidget(text_, 1);
         top->addWidget(dismiss_, 0, Qt::AlignTop);
         auto* buttons = new QHBoxLayout();
-        buttons->setSpacing(8);
+        buttons->setSpacing(scaled(8));
         keep_ = new QPushButton("Keep Current", this);
         reload_ = new QPushButton("Reload Latest", this);
         reload_->setDefault(true);
@@ -140,13 +149,17 @@ public:
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override {
+        // Not LayoutRequest: this card's own geometry changes make the host post one, which would
+        // call reposition() again and spin the event loop for as long as the card is shown.
         if (watched == host_ && isVisibleTo(host_) &&
-            (event->type() == QEvent::Resize || event->type() == QEvent::Show || event->type() == QEvent::LayoutRequest))
+            (event->type() == QEvent::Resize || event->type() == QEvent::Show))
             reposition();
         return false;
     }
 
 private:
+    static int scaled(int value) { return static_cast<int>(value * kScale + 0.5); }
+
     static QString sideName(std::uint8_t side) { return side == 0 ? "Left" : "Right"; }
 
     static QString changeWords(const QString& change) {
@@ -178,18 +191,22 @@ private:
     // the middle of the tab. The compact pill stays for as long as a side is outdated, so it keeps
     // the horizontal center but sits at the top edge instead of covering the content.
     void reposition() {
-        if (!host_) return;
-        const int margin = 10;
-        const int width = std::max(240, std::min(compact_ ? 360 : 460, host_->width() - 2 * margin));
-        setFixedWidth(width);
+        if (!host_ || repositioning_) return;  // re-entrancy guard: geometry changes can bounce back here
+        repositioning_ = true;
+        const int margin = scaled(10);
+        const int width = std::max(scaled(240), std::min(compact_ ? scaled(360) : scaled(460), host_->width() - 2 * margin));
         QLayout* lay = layout();
         const int wanted = lay->hasHeightForWidth() ? lay->heightForWidth(width) : lay->sizeHint().height();
         const int cardHeight = std::max(wanted, lay->minimumSize().height());
-        setFixedHeight(cardHeight);
+        // Touch the size constraints only when they really change (each change invalidates the
+        // host's layout).
+        if (width != lastWidth_) { setFixedWidth(width); lastWidth_ = width; }
+        if (cardHeight != lastHeight_) { setFixedHeight(cardHeight); lastHeight_ = cardHeight; }
         const int x = std::max(margin, (host_->width() - width) / 2);
         const int y = compact_ ? margin : std::max(margin, (host_->height() - cardHeight) / 2);
-        move(x, y);
+        if (pos() != QPoint(x, y)) move(x, y);
         raise();
+        repositioning_ = false;
     }
 
     void refresh() {
@@ -235,6 +252,9 @@ private:
     QToolButton* dismiss_ = nullptr;
     bool stale_[2] = {false, false};
     bool compact_ = false;
+    bool repositioning_ = false;
+    int lastWidth_ = -1;
+    int lastHeight_ = -1;
     QString change_[2], name_[2], unavailable_[2];
 };
 

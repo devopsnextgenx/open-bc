@@ -18,6 +18,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSplitter>
@@ -27,9 +28,11 @@
 #include <QVBoxLayout>
 #include <QWidget>
 #include <functional>
+#include <memory>
 
 #include "common/file_kinds.h"
 #include "home/session_history.h"
+#include "home/update_notice.h"
 #include "style/qt_style.h"
 #include "remote/remote_connections_dialog.h"
 #include "remote/remote_vfs_bridge.h"
@@ -362,6 +365,15 @@ public:
     // When unset, only folder-compare / text-compare fall back to the two callbacks above.
     std::function<void(const QString& kind, const QStringList& paths)> onNewSession;
     std::function<void(const SessionHistoryEntry&)> onOpenHistory;
+
+    // Turns on the bottom-right release notices ("update available" with change log, and a
+    // once-per-install "what's new"). `preferences` must outlive the view. See home/update_notice.h.
+    void enableUpdateNotices(QSettings* preferences) {
+        if (updates_ || !preferences) return;
+        updates_ = std::make_unique<UpdateNotifier>(
+            this, preferences, [this]() { return footer_ && footer_->isVisibleTo(this) ? footer_->height() : 0; });
+        updates_->start();
+    }
 
     explicit HomeView(QWidget* parent = nullptr) : QWidget(parent) {
         setObjectName("homeView");
@@ -1019,6 +1031,7 @@ private:
     bool selectedSaved_ = false;
     QHash<QString, bool> treeState_;  // tree key -> expanded, mirrored to tree_state.json
     bool applyingFilter_ = false;
+    std::unique_ptr<UpdateNotifier> updates_;  // declared last: destroyed first (release notices, home/update_notice.h)
 };
 
 }  // namespace openbc::app

@@ -9,7 +9,7 @@
 //! heavy parallel throughput.
 
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
@@ -82,24 +82,13 @@ impl SftpVfs {
         // host) - resolve the address(es) ourselves and bound each attempt
         // with `connect_timeout` so a bad host/port fails within
         // `connect_timeout_secs` instead of appearing to hang.
-        let addrs: Vec<_> = (config.host.as_str(), config.port)
-            .to_socket_addrs()
-            .map_err(|source| VfsError::Io {
-                operation: "resolve_host",
-                path: PathBuf::from(&config.host),
-                source,
-            })?
-            .collect();
-        if addrs.is_empty() {
-            return Err(VfsError::Io {
-                operation: "resolve_host",
-                path: PathBuf::from(&config.host),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "no addresses found for host",
-                ),
-            });
-        }
+        // getaddrinfo first, then the system's own tools (`getent`, `avahi-resolve` for `.local`),
+        // so a host name that works in the user's shell works here too (see resolve.rs).
+        let addrs = crate::resolve::resolve_host(&config.host, config.port).map_err(|source| VfsError::Io {
+            operation: "resolve_host",
+            path: PathBuf::from(&config.host),
+            source,
+        })?;
         let mut last_error = None;
         let mut tcp = None;
         for addr in addrs {
@@ -197,6 +186,17 @@ fn authenticate_password(
         .map_err(|err| ssh_err("userauth_password_or_keyboard_interactive", root, &err))
 }
 
+/// Hands already-downloaded bytes out as an `AsyncRead` (ssh2's file handle is blocking and
+/// borrows the session, so the whole file is read inside the blocking task first).
+fn stream_bytes(bytes: Vec<u8>) -> Box<dyn AsyncRead + Unpin + Send> {
+    let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(async move {
+        // Ends early (and frees `bytes`) when the reader is dropped before reading everything.
+        let _ = writer.write_all(&bytes).await;
+    });
+    Box::new(reader)
+}
+
 fn join_error(err: tokio::task::JoinError) -> VfsError {
     VfsError::Io {
         operation: "spawn_blocking",
@@ -212,7 +212,7 @@ impl AsyncVfs for SftpVfs {
         let root = self.root.clone();
         let resolved = self.resolve(path);
         tokio::task::spawn_blocking(move || {
-            let session = session.lock().expect("sftp session mutex poisoned");
+            let session = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &resolved, &err))?;
             let listing = sftp.readdir(&resolved).map_err(|err| ssh_err("readdir", &resolved, &err))?;
             let mut result = Vec::with_capacity(listing.len());
@@ -248,7 +248,7 @@ impl AsyncVfs for SftpVfs {
         let session = self.session.clone();
         let resolved = self.resolve(path);
         tokio::task::spawn_blocking(move || {
-            let session = session.lock().expect("sftp session mutex poisoned");
+            let session = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &resolved, &err))?;
             let stat = sftp.stat(&resolved).map_err(|err| ssh_err("stat", &resolved, &err))?;
             Ok(EntryMetadata {
@@ -262,36 +262,39 @@ impl AsyncVfs for SftpVfs {
         .map_err(join_error)?
     }
 
-    async fn open_file(&self, path: &EntryPath) -> Result<Box<dyn AsyncRead + Unpin + Send>, VfsError> {
+    async fn read_file_limited(&self, path: &EntryPath, limit: u64) -> Result<Option<Vec<u8>>, VfsError> {
         let session = self.session.clone();
         let resolved = self.resolve(path);
-        // ssh2's file handle is blocking and borrows the session, so it
-        // can't be handed back across the spawn_blocking boundary. Instead
-        // we read the whole file inside the blocking task (fine for the
-        // small-file comparisons this trait is used for - see
-        // `read_small_file` in lib.rs) and stream the bytes back to the
-        // caller through an in-memory `tokio::io::duplex` pipe, which is a
-        // real `AsyncRead` without pulling in an extra crate.
-        let bytes = tokio::task::spawn_blocking(move || {
-            let session = session.lock().expect("sftp session mutex poisoned");
+        tokio::task::spawn_blocking(move || {
+            let session = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &resolved, &err))?;
-            let mut file = sftp.open(&resolved).map_err(|err| ssh_err("open_file", &resolved, &err))?;
+            let file = sftp.open(&resolved).map_err(|err| ssh_err("open_file", &resolved, &err))?;
+            // Never trust the server-reported size: stop reading one byte past the limit.
             let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes).map_err(|source| VfsError::Io {
+            file.take(limit.saturating_add(1)).read_to_end(&mut bytes).map_err(|source| VfsError::Io {
                 operation: "read_file",
                 path: resolved.clone(),
                 source,
             })?;
-            Ok::<Vec<u8>, VfsError>(bytes)
+            Ok::<Option<Vec<u8>>, VfsError>((bytes.len() as u64 <= limit).then_some(bytes))
         })
         .await
-        .map_err(join_error)??;
+        .map_err(join_error)?
+    }
 
-        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
-        tokio::spawn(async move {
-            let _ = writer.write_all(&bytes).await;
-        });
-        Ok(Box::new(reader))
+    async fn open_file(&self, path: &EntryPath) -> Result<Box<dyn AsyncRead + Unpin + Send>, VfsError> {
+        // Bounded like every other in-memory read (see `crate::MAX_SMALL_FILE_BYTES`).
+        let bytes = match self.read_file_limited(path, crate::MAX_SMALL_FILE_BYTES).await? {
+            Some(bytes) => bytes,
+            None => {
+                return Err(VfsError::Io {
+                    operation: "open_file",
+                    path: self.resolve(path),
+                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, "file is too large to open in memory"),
+                })
+            }
+        };
+        Ok(stream_bytes(bytes))
     }
 
     async fn write_file(&self, path: &EntryPath, bytes: &[u8]) -> Result<(), VfsError> {
@@ -299,7 +302,7 @@ impl AsyncVfs for SftpVfs {
         let resolved = self.resolve(path);
         let bytes = bytes.to_vec();
         tokio::task::spawn_blocking(move || {
-            let session = session.lock().expect("sftp session mutex poisoned");
+            let session = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &resolved, &err))?;
             let mut file = sftp.create(&resolved).map_err(|err| ssh_err("write_file", &resolved, &err))?;
             file.write_all(&bytes).map_err(|source| VfsError::Io {
@@ -316,7 +319,7 @@ impl AsyncVfs for SftpVfs {
         let session = self.session.clone();
         let resolved = self.resolve(path);
         tokio::task::spawn_blocking(move || {
-            let session = session.lock().expect("sftp session mutex poisoned");
+            let session = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &resolved, &err))?;
             sftp.mkdir(&resolved, 0o755).map_err(|err| ssh_err("create_dir", &resolved, &err))
         })
@@ -329,7 +332,7 @@ impl AsyncVfs for SftpVfs {
         let source = self.resolve(from);
         let destination = self.resolve(to);
         tokio::task::spawn_blocking(move || {
-            let session = session.lock().expect("sftp session mutex poisoned");
+            let session = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &source, &err))?;
             sftp.rename(&source, &destination, None)
                 .map_err(|err| ssh_err("rename", &source, &err))
@@ -342,7 +345,7 @@ impl AsyncVfs for SftpVfs {
         let session = self.session.clone();
         let resolved = self.resolve(path);
         tokio::task::spawn_blocking(move || {
-            let session = session.lock().expect("sftp session mutex poisoned");
+            let session = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &resolved, &err))?;
             sftp.unlink(&resolved).map_err(|err| ssh_err("remove_file", &resolved, &err))
         })
@@ -354,7 +357,7 @@ impl AsyncVfs for SftpVfs {
         let session = self.session.clone();
         let resolved = self.resolve(path);
         tokio::task::spawn_blocking(move || {
-            let session = session.lock().expect("sftp session mutex poisoned");
+            let session = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let sftp = session.sftp().map_err(|err| ssh_err("sftp_init", &resolved, &err))?;
             sftp.rmdir(&resolved).map_err(|err| ssh_err("remove_dir", &resolved, &err))
         })
