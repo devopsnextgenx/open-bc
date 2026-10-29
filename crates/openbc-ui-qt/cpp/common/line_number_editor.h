@@ -250,6 +250,35 @@ protected:
         QPlainTextEdit::insertFromMimeData(source);
     }
 
+    // Copy / cut of a selection puts the FILE's text on the clipboard: alignment-filler rows
+    // (empty padding the compare view inserts so both panes line up) are not lines of the file,
+    // so they are left out instead of arriving as bulk blank lines in the other pane or in
+    // another editor/IDE. Plain text only (no rich-text/HTML of the themed pane), so pasting
+    // elsewhere never drags colours along.
+    QMimeData* createMimeDataFromSelection() const override {
+        const QTextCursor cursor = textCursor();
+        if (!cursor.hasSelection()) return QPlainTextEdit::createMimeDataFromSelection();
+        const int start = cursor.selectionStart();
+        const int end = cursor.selectionEnd();
+        const QTextBlock first = document()->findBlock(start);
+        const QTextBlock last = document()->findBlock(end);
+        QStringList lines;
+        for (QTextBlock b = first; b.isValid(); b = b.next()) {
+            if (!isFillerBlock(b)) {
+                const int from = b == first ? start - b.position() : 0;
+                const int to = b == last ? end - b.position() : b.text().size();
+                lines << b.text().mid(from, to - from);
+            }
+            if (b == last) break;
+        }
+        // A selection that ends right at the start of a skipped filler row still ended with a
+        // line break after the last real line; keep that break.
+        if (!lines.isEmpty() && isFillerBlock(last) && end == last.position()) lines << QString();
+        auto* mime = new QMimeData;
+        mime->setText(lines.join(QLatin1Char('\n')));
+        return mime;
+    }
+
     // (paintEvent unchanged)
     void paintEvent(QPaintEvent* event) override {
         QPlainTextEdit::paintEvent(event);
@@ -538,6 +567,12 @@ private:
 
     static constexpr const char* kLineMime = "application/x-openbc-linecopy";
 
+    // An empty block the compare view added only to line the panes up (not a line of the file).
+    bool isFillerBlock(const QTextBlock& block) const {
+        const int i = block.blockNumber();
+        return i >= 0 && i < filler_.size() && filler_[i] && block.text().isEmpty();
+    }
+
     static QString normalizeNewlines(QString text) {
         text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
         text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
@@ -548,6 +583,7 @@ private:
 
     void copyCurrentLine(bool cut) {
         const QTextBlock block = textCursor().block();
+        if (isFillerBlock(block)) return;  // padding, not a line of the file: nothing to copy or cut
         auto* mime = new QMimeData;
         mime->setText(block.text() + QLatin1Char('\n'));
         mime->setData(QString::fromLatin1(kLineMime), QByteArrayLiteral("1"));

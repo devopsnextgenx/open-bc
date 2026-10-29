@@ -52,6 +52,10 @@ std::uint8_t openbc_highlight_italic(const OpenBcHighlight*, std::size_t);
 char* openbc_highlight_to_html(const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t,
                                std::uint8_t);
 void openbc_highlight_html_destroy(char*);
+// User extension -> language mappings (`extension<TAB>language` lines) and the built-in language
+// catalog. The catalog string is released with openbc_highlight_html_destroy.
+std::size_t openbc_highlight_set_user_mappings(const std::uint8_t*, std::size_t);
+char* openbc_highlight_catalog();
 
 char* openbc_vfs_connect(const std::uint8_t*, std::size_t, std::int32_t*);
 void openbc_vfs_disconnect(std::int32_t);

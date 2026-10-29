@@ -1,0 +1,20 @@
+#!/bin/sh
+# openbc-fm - launcher used by every file-manager integration (Nautilus, Dolphin, ...).
+# Resolution order:
+#   1. ~/.config/openbc/launcher  (one command line; written by install-file-manager-integration.sh
+#                                  for Flatpak / AppImage / custom installs)
+#   2. openbc on PATH             (deb / rpm / tarball)
+#   3. the Flatpak io.github.devopsnextgenx.open-bc
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}/openbc/launcher"
+if [ -r "$cfg" ]; then
+    # shellcheck disable=SC2046  # the file holds a command line; word splitting is intended
+    exec $(cat "$cfg") "$@"
+fi
+if command -v openbc >/dev/null 2>&1; then
+    exec openbc "$@"
+fi
+if command -v flatpak >/dev/null 2>&1 && flatpak info io.github.devopsnextgenx.open-bc >/dev/null 2>&1; then
+    exec flatpak run io.github.devopsnextgenx.open-bc "$@"
+fi
+echo "openbc-fm: OpenBC was not found (no ~/.config/openbc/launcher, no 'openbc' on PATH, no Flatpak)." >&2
+exit 1

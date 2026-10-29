@@ -13,6 +13,8 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include <utility>
+#include <QAbstractSlider>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -908,6 +910,7 @@ public:
     expandedPaths_.clear();
     rememberExpandedPaths(leftTree_, expandedPaths_);
     rememberExpandedPaths(rightTree_, expandedPaths_);
+    captureViewStateForRefresh();  // same folder pair: keep scroll position and selection
     cancelRun();
 
     const QString left = leftText();
@@ -927,6 +930,7 @@ public:
     updateFooter();
 
     if (left.isEmpty() && right.isEmpty()) {
+      pendingView_.valid = false;
       leftTree_->clear();
       rightTree_->clear();
       log("Select a folder to list, or two folders to compare");
@@ -950,12 +954,14 @@ public:
         !right.isEmpty() &&
         RemoteProfileStore::findProfileForPath(right, &rightProfile);
     if (!left.isEmpty() && !leftRemote && !QFileInfo(left).isDir()) {
+      pendingView_.valid = false;
       leftTree_->clear();
       rightTree_->clear();
       log("Left folder not found: " + QDir::toNativeSeparators(left));
       return;
     }
     if (!right.isEmpty() && !rightRemote && !QFileInfo(right).isDir()) {
+      pendingView_.valid = false;
       leftTree_->clear();
       rightTree_->clear();
       log("Right folder not found: " + QDir::toNativeSeparators(right));
@@ -979,14 +985,19 @@ public:
     run_->expandedPaths = expandedPaths_;
     const ComparisonRun *expected = run_.get();
     run_->onProgress = [this, expected]() {
-      if (run_.get() == expected)
+      if (run_.get() == expected) {
         updateFooter();
+        restoreViewState(/*final=*/false);  // as soon as the remembered top row exists again
+      }
     };
     run_->onComplete = [this, expected]() {
       if (run_.get() != expected)
         return;
       updateFooter();
       applyViewFilter();
+      if (pendingEditPath_.isEmpty())  // a freshly created entry takes the view instead
+        restoreViewState(/*final=*/true);
+      pendingView_.valid = false;
       focusPendingEdit();
       log("Folder comparison completed");
     };
@@ -2774,6 +2785,82 @@ private:
             [this, lh, rh](int, int) { syncHorizontal(lh, rh); });
     connect(rh, &QScrollBar::rangeChanged, this,
             [this, lh, rh](int, int) { syncHorizontal(rh, lh); });
+    // The user took over the scroll bar: stop restoring the remembered position.
+    for (QScrollBar *bar : {lv, rv}) {
+      connect(bar, &QAbstractSlider::actionTriggered, this,
+              [this](int) { pendingView_.valid = false; });
+    }
+  }
+
+  // ------------------------------------------------ view state across refresh
+  // A refresh (after a copy/move/delete, F5, an option toggle) rebuilds both trees, which
+  // used to leave the view at the top. For an unchanged folder pair the first visible row
+  // (plus its offset), the scroll values and each tree's current row are remembered here and
+  // put back as soon as that row exists again (progress ticks) and once more at completion.
+  struct ViewState {
+    bool valid = false;
+    QString topPath;      // first visible row of the left tree
+    int topOffset = 0;    // its top edge relative to the viewport
+    int vertical = 0;     // fallback when the row no longer exists
+    int horizontal = 0;
+    QString leftCurrent;  // current row of each tree
+    QString rightCurrent;
+  };
+
+  void captureViewStateForRefresh() {
+    const QString left = leftText();
+    const QString right = rightText();
+    const bool samePair = left == lastRefreshLeft_ && right == lastRefreshRight_;
+    lastRefreshLeft_ = left;
+    lastRefreshRight_ = right;
+    if (!samePair) {
+      pendingView_.valid = false;
+      return;
+    }
+    // Refreshing again while a restore is still pending: the trees are only partly built, so
+    // keep the state captured from the fully built view.
+    if (pendingView_.valid || leftTree_->topLevelItemCount() == 0)
+      return;
+    ViewState state;
+    state.valid = true;
+    if (auto *top = leftTree_->itemAt(1, 1)) {
+      state.topPath = top->data(0, kPathRole).toString();
+      state.topOffset = leftTree_->visualItemRect(top).top();
+    }
+    state.vertical = leftTree_->verticalScrollBar()->value();
+    state.horizontal = leftTree_->horizontalScrollBar()->value();
+    if (auto *item = leftTree_->currentItem())
+      state.leftCurrent = item->data(0, kPathRole).toString();
+    if (auto *item = rightTree_->currentItem())
+      state.rightCurrent = item->data(0, kPathRole).toString();
+    pendingView_ = std::move(state);
+  }
+
+  // `final` = the comparison is complete: apply whatever is left, with fallbacks.
+  void restoreViewState(bool final) {
+    if (!pendingView_.valid)
+      return;
+    auto *anchor = findPath(leftTree_, pendingView_.topPath);
+    if (!anchor && !final)
+      return;  // its folder has not been listed yet
+    auto *vbar = leftTree_->verticalScrollBar();
+    if (final) {
+      for (auto [tree, path] : {std::pair<QTreeWidget *, QString>{leftTree_, pendingView_.leftCurrent},
+                                std::pair<QTreeWidget *, QString>{rightTree_, pendingView_.rightCurrent}}) {
+        if (auto *item = findPath(tree, path)) {
+          const QSignalBlocker blocker(tree);  // no selection-sync side effects while restoring
+          tree->setCurrentItem(item);
+        }
+      }
+    }
+    if (anchor) {
+      leftTree_->scrollToItem(anchor, QAbstractItemView::PositionAtTop);
+      vbar->setValue(vbar->value() + leftTree_->visualItemRect(anchor).top() - pendingView_.topOffset);
+    } else {
+      vbar->setValue(qMin(pendingView_.vertical, vbar->maximum()));
+    }
+    if (final)
+      leftTree_->horizontalScrollBar()->setValue(qMin(pendingView_.horizontal, leftTree_->horizontalScrollBar()->maximum()));
   }
 
   // ---------------------------------------------------------------- helpers
@@ -2908,6 +2995,9 @@ private:
   QSettings *preferences_ = nullptr;
   std::unique_ptr<FileChangeController> changes_;  // external-change notice + reload (common/file_change_controller.h)
   QSet<QString> expandedPaths_;
+  ViewState pendingView_;        // scroll position / selection to restore after the running refresh
+  QString lastRefreshLeft_;      // folder pair of the previous refresh (view state is kept only for the same pair)
+  QString lastRefreshRight_;
   QString instrumentationSessionId_ =
       QUuid::createUuid().toString(QUuid::WithoutBraces);
 

@@ -12,6 +12,11 @@ use openbc_vfs::{read_folder_level, AsyncVfs};
 use crate::metrics::depth_of;
 use crate::scan::{compare_file_content_by_hash, ScanError};
 
+/// Same-size files whose timestamps differ are verified by content up to this size; a timestamp
+/// alone must not make identical files look different (typical right after a copy, which stamps
+/// the destination with the copy time). Larger files keep the timestamp-based Newer/Older status.
+const TIMESTAMP_VERIFY_LIMIT: u64 = 16 * 1024 * 1024;
+
 /// Modification times closer than this count as equal (FAT-style 2 s resolution).
 const TIMESTAMP_TOLERANCE: Duration = Duration::from_secs(2);
 
@@ -83,6 +88,14 @@ pub async fn compare_folder_sides_with_options(
                 Err(error) => ComparisonStatus::Error(error.to_string()),
             };
         } else if ignore_timestamps || modified_times_match(left.metadata.modified, right.metadata.modified) {
+            entry.status = ComparisonStatus::Equal;
+        } else if left.metadata.size <= TIMESTAMP_VERIFY_LIMIT
+            && matches!(
+                compare_file_content_by_hash(left_vfs.as_ref(), &left.path, right_vfs.as_ref(), &right.path).await,
+                Ok(true)
+            )
+        {
+            // Identical bytes: a different timestamp is not a difference.
             entry.status = ComparisonStatus::Equal;
         } else {
             entry.status = newer_status(left.metadata.modified, right.metadata.modified);

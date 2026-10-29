@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 
-use super::language;
 use super::spans::{merge_adjacent_spans, HighlightSpan};
 
 /// Rendered HTML body (`<span class="tsc-...">` per token) and its stylesheet.
@@ -14,9 +13,10 @@ pub(super) struct Rendered {
     css: String,
 }
 
-/// Renders `source`; `None` when the language has no grammar or the theme fails to load.
-pub(super) fn render(source: &str, language: &str, is_dark_mode: bool) -> Option<Rendered> {
-    let lang = language::tree_painter_path(language).and_then(tree_painter::Lang::from)?;
+/// Renders `source` with the grammar tree-painter associates with `extension` (`rs`, `py`, `js`);
+/// `None` when it has no such grammar or the theme fails to load.
+pub(super) fn render(source: &str, extension: &str, is_dark_mode: bool) -> Option<Rendered> {
+    let lang = tree_painter::Lang::from(format!("source.{extension}"))?;
     let theme_source = if is_dark_mode {
         tree_painter::themes::CATPPUCCIN_MOCHA
     } else {

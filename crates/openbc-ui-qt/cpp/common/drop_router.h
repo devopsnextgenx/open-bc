@@ -32,8 +32,11 @@
 //   * different kind, tab Dirty      -> OpenNewTab (unsaved work is never touched).
 //
 //  Which side a single item fills (same-kind tab)
-//   * left empty -> left; else right empty -> right; else the side under the cursor
-//     (`sideHint`), else left. The other side is preserved.
+//   * the side under the cursor (`sideHint`) ALWAYS wins: a file dropped on the right half
+//     fills the right side, on the left half the left side, whether or not that side was
+//     already set. The other side is preserved.
+//   * only when the UI cannot tell the side (no hint): left empty -> left; else right empty
+//     -> right; else left.
 //   * Two items always set both sides.
 //
 //  In-place conversion between viewer types is deliberately NOT done: each viewer
@@ -157,9 +160,10 @@ inline Decision route(const TabContext& ctx, const std::vector<Item>& items) {
         d.right = items[1].path;
         d.run = true;
     } else if (sameKind) {
-        if (!ctx.leftSet) d.assign = Assign::Left;
+        if (ctx.sideHint) d.assign = *ctx.sideHint == Side::Right ? Assign::Right : Assign::Left;  // predictable: where it lands
+        else if (!ctx.leftSet) d.assign = Assign::Left;
         else if (!ctx.rightSet) d.assign = Assign::Right;
-        else d.assign = ctx.sideHint.value_or(Side::Left) == Side::Right ? Assign::Right : Assign::Left;
+        else d.assign = Assign::Left;
         (d.assign == Assign::Left ? d.left : d.right) = items[0].path;
         // Run as soon as both sides will be populated (one dropped + the preserved other one).
         d.run = d.assign == Assign::Left ? ctx.rightSet : ctx.leftSet;

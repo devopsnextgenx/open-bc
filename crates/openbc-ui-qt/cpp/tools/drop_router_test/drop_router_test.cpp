@@ -100,6 +100,15 @@ static void testFolderTab() {
     c.sideHint.reset();
     d = route(c, {dir("/n")});
     CHECK(d.assign == Assign::Left);  // documented default
+    // The side under the cursor always wins, even when the other side is the empty one.
+    TabContext e = tab(TabKind::Folder, Occupancy::Populated, false, false);
+    e.sideHint = Side::Right;
+    d = route(e, {dir("/r")});
+    CHECK(d.assign == Assign::Right && d.right == "/r" && d.left.empty() && !d.run);
+    e.leftSet = true;  // left already set, dropped on the left half -> replaces left (not "first empty")
+    e.sideHint = Side::Left;
+    d = route(e, {dir("/l2")});
+    CHECK(d.assign == Assign::Left && d.left == "/l2" && d.right.empty() && !d.run);
 }
 
 static void testIncompatible() {

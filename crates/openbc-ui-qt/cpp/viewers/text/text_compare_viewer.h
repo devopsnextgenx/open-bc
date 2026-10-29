@@ -260,8 +260,10 @@ private:
     }
 
     void applyLanguageHighlighting() {
-        leftHighlighter_->setLanguage(QFileInfo(leftPath_).suffix());
-        rightHighlighter_->setLanguage(QFileInfo(rightPath_).suffix());
+        // Full file names, so names without an extension (Makefile, Dockerfile, .bashrc) and
+        // multi-part suffixes (view.html.erb) resolve; the backend picks the matching rule.
+        leftHighlighter_->setLanguage(QFileInfo(leftPath_).fileName());
+        rightHighlighter_->setLanguage(QFileInfo(rightPath_).fileName());
     }
 
     void setHighlightStyle(SyntaxHighlighter::Style style) {
@@ -491,7 +493,19 @@ private:
         return frame;
     }
 
-    void refreshSideHeader(bool left) {
+    // Bytes the side will have once saved: the in-memory lines joined with '\n', as saveSide()
+    // writes them. (The header used to show the size on disk, so after copying content to the
+    // other side the two sizes kept differing until the file was saved.)
+    qint64 currentContentBytes(bool left) const {
+        const QStringList& lines = left ? leftOriginal_ : rightOriginal_;
+        qint64 bytes = qMax(0, static_cast<int>(lines.size()) - 1);  // the line breaks
+        for (const QString& line : lines) bytes += line.toUtf8().size();
+        return bytes;
+    }
+
+    // `recomputeSize` false = keep the cached in-memory size (per-keystroke refreshes; the
+    // debounced sync that follows refreshes it for real).
+    void refreshSideHeader(bool left, bool recomputeSize = true) {
         const QString& path = left ? leftPath_ : rightPath_;
         PathSelector* selector = left ? leftSelector_ : rightSelector_;
         QLabel* attrsLabel = left ? leftAttrsLabel_ : rightAttrsLabel_;
@@ -504,7 +518,15 @@ private:
 
         if (info.exists()) {
             const QString modified = info.lastModified().toString("M/d/yyyy h:mm:ss AP");
-            const QString size = QLocale().toString(info.size()) + " bytes";
+            qint64& cachedBytes = left ? leftBytes_ : rightBytes_;
+            qint64 shownBytes = info.size();
+            if (sideDirty(left)) {
+                if (recomputeSize || cachedBytes < 0) cachedBytes = currentContentBytes(left);
+                shownBytes = cachedBytes;  // what is on screen, not the stale file on disk
+            } else {
+                cachedBytes = -1;
+            }
+            const QString size = QLocale().toString(shownBytes) + " bytes";
             const QString lineEnding = detectLineEnding(left);
             attrsLabel->setText(QString("%1    %2    %3    %4")
                                      .arg(modified, size, "UTF-8", lineEnding));
@@ -799,6 +821,7 @@ private:
         leftEditTimer_->setInterval(400);
         connect(leftEditTimer_, &QTimer::timeout, this, [this]() {
             syncFromEditors();
+            refreshSideHeader(true);
             pushSideHistory(/*left=*/true);
         });
         rightEditTimer_ = new QTimer(this);
@@ -806,18 +829,19 @@ private:
         rightEditTimer_->setInterval(400);
         connect(rightEditTimer_, &QTimer::timeout, this, [this]() {
             syncFromEditors();
+            refreshSideHeader(false);
             pushSideHistory(/*left=*/false);
         });
         connect(leftEditor_->document(), &QTextDocument::contentsChanged, this, [this]() {
             if (applyingProgrammaticUpdate_ || restoringHistory_ || leftHighlighter_->isHighlighting()) return;
             leftUnsaved_ = true;
-            refreshSideHeader(true);
+            refreshSideHeader(true, /*recomputeSize=*/false);
             if (leftEditTimer_) leftEditTimer_->start();
         });
         connect(rightEditor_->document(), &QTextDocument::contentsChanged, this, [this]() {
             if (applyingProgrammaticUpdate_ || restoringHistory_ || rightHighlighter_->isHighlighting()) return;
             rightUnsaved_ = true;
-            refreshSideHeader(false);
+            refreshSideHeader(false, /*recomputeSize=*/false);
             if (rightEditTimer_) rightEditTimer_->start();
         });
 
@@ -1872,6 +1896,8 @@ private:
     // undo/redo restores it.
     bool leftUnsaved_ = false;                                   // <-- new
     bool rightUnsaved_ = false;                                  // <-- new
+    qint64 leftBytes_ = -1;   // cached in-memory size shown in the side header while unsaved (-1 = none)
+    qint64 rightBytes_ = -1;
 
     QAction* saveAction_ = nullptr;
     QAction* undoAction_ = nullptr;

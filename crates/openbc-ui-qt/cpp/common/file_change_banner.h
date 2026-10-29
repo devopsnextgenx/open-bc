@@ -2,16 +2,17 @@
 // ---------------------------------------------------------------------------
 // Popup notice for "a loaded file changed on disk / remotely".
 //
-// A floating card parented to the viewer (NOT part of its layout): it sits over the top-right of
-// the tab content, above every child, with an accent border and a drop shadow, so it cannot be
-// scrolled away or overlooked while the user keeps working. It follows the viewer's resizes.
+// A floating card parented to the viewer (NOT part of its layout): it sits centered over the tab
+// content, above every child, with an accent border and a drop shadow, so it cannot be scrolled
+// away or overlooked while the user keeps working. It follows the viewer's resizes.
 // If the viewer's tab is in the background the card shows when the tab is next opened; if the
 // whole window is inactive the taskbar/dock entry is flashed (QApplication::alert).
 //
 //   Full    : "<Left file 'a.txt' was changed externally. The version currently displayed may be
 //             outdated.>"                      [Keep Current] [Reload Latest]   (x)
 //   Compact : a small "outdated" pill with [Reload Latest]. Reached by Keep Current or by
-//             dismissing (x). Dismissing never reloads; the pill stays while the side is stale.
+//             dismissing (x). Dismissing never reloads; the pill stays while the side is stale,
+//             so it is centered horizontally but parked at the top, out of the text.
 //
 // A genuinely newer version (engine sends a new Stale) expands it to Full again; repeated events
 // for the same version never reach this widget (the engine de-duplicates them).
@@ -173,16 +174,21 @@ private:
         refresh();
     }
 
-    // Pins the card to the top-right corner of the viewer, above all of its children.
+    // Centers the card in the viewer (the tab), above all of its children. The full notice sits in
+    // the middle of the tab. The compact pill stays for as long as a side is outdated, so it keeps
+    // the horizontal center but sits at the top edge instead of covering the content.
     void reposition() {
         if (!host_) return;
         const int margin = 10;
         const int width = std::max(240, std::min(compact_ ? 360 : 460, host_->width() - 2 * margin));
         setFixedWidth(width);
         QLayout* lay = layout();
-        const int height = lay->hasHeightForWidth() ? lay->heightForWidth(width) : lay->sizeHint().height();
-        setFixedHeight(std::max(height, lay->minimumSize().height()));
-        move(std::max(margin, host_->width() - width - margin), margin);
+        const int wanted = lay->hasHeightForWidth() ? lay->heightForWidth(width) : lay->sizeHint().height();
+        const int cardHeight = std::max(wanted, lay->minimumSize().height());
+        setFixedHeight(cardHeight);
+        const int x = std::max(margin, (host_->width() - width) / 2);
+        const int y = compact_ ? margin : std::max(margin, (host_->height() - cardHeight) / 2);
+        move(x, y);
         raise();
     }
 

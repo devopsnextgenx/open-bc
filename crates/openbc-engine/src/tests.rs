@@ -105,3 +105,44 @@ async fn compares_and_mutates_files_through_engine_and_vfs() {
 
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+/// Identical files whose timestamps differ (what a copy leaves behind) must compare Equal,
+/// while same-size files with different bytes still report which side is newer.
+#[tokio::test]
+async fn differing_timestamps_alone_do_not_make_identical_files_different() {
+    let unique = format!(
+        "openbc-engine-ts-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    );
+    let root = std::env::temp_dir().join(unique);
+    let (left_root, right_root) = (root.join("left"), root.join("right"));
+    tokio::fs::create_dir_all(&left_root).await.unwrap();
+    tokio::fs::create_dir_all(&right_root).await.unwrap();
+    let left: Arc<dyn AsyncVfs> = Arc::new(LocalVfs::new(&left_root));
+    let right: Arc<dyn AsyncVfs> = Arc::new(LocalVfs::new(&right_root));
+
+    let same = EntryPath("same.txt".into());
+    let changed = EntryPath("changed.txt".into());
+    write_file(left.as_ref(), &same, b"abcd").await.unwrap();
+    write_file(left.as_ref(), &changed, b"abcd").await.unwrap();
+    // Beyond the 2 s timestamp tolerance.
+    tokio::time::sleep(std::time::Duration::from_millis(2300)).await;
+    write_file(right.as_ref(), &same, b"abcd").await.unwrap();
+    write_file(right.as_ref(), &changed, b"abce").await.unwrap();
+
+    let result = compare_folder_level_with_options(
+        Arc::clone(&left),
+        EntryPath("".into()),
+        Arc::clone(&right),
+        EntryPath("".into()),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    let status_of = |name: &str| result.entries.iter().find(|e| e.name == name).unwrap().status.clone();
+    assert_eq!(status_of("same.txt"), ComparisonStatus::Equal);
+    assert_eq!(status_of("changed.txt"), ComparisonStatus::RightNewer);
+    let _ = tokio::fs::remove_dir_all(&root).await;
+}

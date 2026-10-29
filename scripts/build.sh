@@ -147,9 +147,7 @@ pkg_deb() {
   # Single source of truth: CMake's install() rules (binaries, .desktop, metainfo, hicolor icons)
   # - identical to what the Flatpak build installs.
   run cmake --install "$BUILD_DIR" --prefix "$stage/usr"
-  run install -m 0755 scripts/nautilus/openbc-nautilus-action "$stage/usr/share/openbc/nautilus/"
-  run install -m 0755 scripts/nautilus/install-nautilus.sh "$stage/usr/bin/openbc-install-nautilus"
-  run install -m 0644 scripts/nautilus/openbc_nautilus.py "$stage/usr/share/nautilus-python/extensions/openbc.py"
+  # (Nautilus + Dolphin file-manager files come from CMake's install() rules too.)
 
   # refresh icon / desktop caches so the launcher icon shows up immediately after install
   for hook in postinst postrm; do
@@ -196,6 +194,7 @@ Summary:        OpenBC File and Directory Comparison Tool
 License:        Proprietary
 AutoReqProv:    yes
 Requires:       qt6-qtbase-gui, openssl-libs, zlib, xz-libs, qt6-qtmultimedia, hicolor-icon-theme
+Recommends:     nautilus-python
 
 %description
 OpenBC is a comparison tool with Rust backends and a Qt6 GUI.
@@ -217,6 +216,11 @@ update-desktop-database -q %{_datadir}/applications >/dev/null 2>&1 || :
 /usr/share/applications/io.github.devopsnextgenx.open-bc.desktop
 /usr/share/metainfo/io.github.devopsnextgenx.open-bc.metainfo.xml
 /usr/share/icons/hicolor/*/apps/io.github.devopsnextgenx.open-bc.png
+/usr/bin/openbc-install-nautilus
+/usr/bin/openbc-install-dolphin
+/usr/share/openbc/
+/usr/share/nautilus-python/extensions/openbc.py
+/usr/share/kio/servicemenus/openbc-compare-*.desktop
 SPEC
   run rpmbuild -bb --define "_topdir $top" "$top/SPECS/openbc.spec"
   $DRY || find "$top/RPMS" -name '*.rpm' -exec cp {} "$OUT_DIR/" \;
@@ -402,6 +406,48 @@ pkg_appimage() {
                    -name '*wayland*.so' -type f)
         [ "$missing" = 0 ] || exit 1
       fi
+    fi
+
+    # ---- Step 2d: things linuxdeploy does not give us (all skipped in dry-run).
+    if ! $DRY; then
+      local id="io.github.devopsnextgenx.open-bc"
+
+      # (1) AppImage tooling (AppMan `am`, appimaged, AppImageLauncher, `--appimage-extract`) expects a REAL
+      #     .desktop file and icon at the AppDir root. Copy them (not symlinks): `am` does
+      #     `mv squashfs-root/*.desktop ...`, which breaks on a missing file and moves symlinks as dangling ones.
+      cp -f "$appdir/usr/share/applications/$id.desktop" "$appdir/$id.desktop"
+      cp -f "$appdir/usr/share/icons/hicolor/512x512/apps/$id.png" "$appdir/$id.png"
+      cp -f "$appdir/usr/share/icons/hicolor/512x512/apps/$id.png" "$appdir/.DirIcon"
+      # AppImage-specific desktop keys (harmless to other tools)
+      grep -q '^X-AppImage-Version=' "$appdir/$id.desktop" || \
+        printf 'X-AppImage-Version=%s\n' "$VERSION" >> "$appdir/$id.desktop"
+
+      # (2) libwayland-egl is tiny and ABI-stable but linuxdeploy's excludelist drops it. Qt's
+      #     wayland-egl client-buffer plugin needs it; on hosts without it Qt prints
+      #     'Failed to load client buffer integration "wayland-egl"' and QOpenGLWidget dies.
+      if [ -n "$wl" ]; then
+        local egl
+        egl="$(ldconfig -p 2>/dev/null | awk '/libwayland-egl\.so\.1 / && /x86-64|AArch64/ {print $NF; exit}')"
+        if [ -n "$egl" ] && [ -f "$egl" ]; then
+          echo "--- bundling $egl"
+          cp -aL "$egl" "$appdir/usr/lib/libwayland-egl.so.1"
+        else
+          echo "WARNING: libwayland-egl.so.1 not found on the build host (apt: libwayland-egl1)" >&2
+        fi
+      fi
+
+      # (3) Runtime hook (sourced by AppRun). Qt Wayland + QOpenGLWidget is the fragile combination inside an
+      #     AppImage (host Mesa/EGL vs bundled Qt). Default to X11/XWayland, which uses the host GL stack and
+      #     works on Wayland desktops too. Users can opt in to native Wayland with OPENBC_FORCE_WAYLAND=1
+      #     or by setting QT_QPA_PLATFORM themselves.
+      mkdir -p "$appdir/apprun-hooks"
+      cat > "$appdir/apprun-hooks/openbc-hook.sh" <<'HOOK'
+#!/bin/sh
+if [ -z "${QT_QPA_PLATFORM:-}" ] && [ -z "${OPENBC_FORCE_WAYLAND:-}" ] && [ -n "${DISPLAY:-}" ]; then
+  export QT_QPA_PLATFORM=xcb
+fi
+HOOK
+      chmod +x "$appdir/apprun-hooks/openbc-hook.sh"
     fi
 
     # ---- Step 3: PACKAGE only. No --executable / --plugin here: that would re-deploy and bring glib/gtk back.

@@ -3,9 +3,12 @@
 // OptionsDialog: Tools > Options. A searchable page list on the left and a
 // stacked settings page on the right, with OK / Cancel / Apply.
 //
-// Pages: Startup, Tabs, Appearance, Text Editing, Next Difference, Backups,
+// Pages: Startup, Tabs, Appearance, Text Editing, Syntax Highlighting, Next Difference, Backups,
 // File Operations, Archive Types, Commands, Open With, Tweaks.
-// (Archive Types and Open With have no design yet - they are placeholders.)
+// The page list is grouped by completion status (app/options_status.h): IMPLEMENTED, IN PROGRESS
+// and PENDING, with a separator row per group and a banner on every unfinished page. Archive Types
+// and Open With have no design yet - they are placeholders. Progress is documented in
+// crates/openbc-ui-qt/options.md.
 //
 // Editing model: the dialog works on a private copy of AppOptions (`draft_`).
 // Every control writes straight into that copy through the small bind helpers
@@ -20,10 +23,12 @@
 #pragma once
 
 #include <QAbstractButton>
+#include <QAbstractItemView>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QCompleter>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -39,10 +44,13 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPalette>
+#include <QVariant>
 #include <QPixmap>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollArea>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStackedWidget>
@@ -50,11 +58,13 @@
 #include <QTableWidget>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <functional>
 #include <utility>
 #include <vector>
 
 #include "app/app_options.h"
+#include "app/options_status.h"
 #include "app/options_icons.h"
 
 namespace openbc::app {
@@ -119,17 +129,34 @@ public:
         stack_ = new QStackedWidget(this);
         body->addWidget(stack_, 1);
 
-        addPage("Startup", buildStartup());
-        addPage("Tabs", buildTabs());
-        addPage("Appearance", buildAppearance());
-        addPage("Text Editing", buildTextEditing());
-        addPage("Next Difference", buildNextDifference());
-        addPage("Backups", buildBackups());
-        addPage("File Operations", buildFileOperations());
-        addPage("Archive Types", buildPlaceholder("Archive Types"));
-        addPage("Commands", buildCommands());
-        addPage("Open With", buildPlaceholder("Open With"));
-        addPage("Tweaks", buildTweaks());
+        // Build every page, then list them grouped by completion status (options_status.h):
+        // IMPLEMENTED, IN PROGRESS, PENDING - each group starts with a separator row.
+        const std::vector<std::pair<QString, QWidget*>> built = {
+            {"Startup", buildStartup()},
+            {"Tabs", buildTabs()},
+            {"Appearance", buildAppearance()},
+            {"Text Editing", buildTextEditing()},
+            {"Syntax Highlighting", buildSyntaxHighlighting()},
+            {"Next Difference", buildNextDifference()},
+            {"Backups", buildBackups()},
+            {"File Operations", buildFileOperations()},
+            {"Archive Types", buildPlaceholder("Archive Types")},
+            {"Commands", buildCommands()},
+            {"Open With", buildPlaceholder("Open With")},
+            {"Tweaks", buildTweaks()},
+        };
+        using options_status::Status;
+        for (const Status group : {Status::Implemented, Status::InProgress, Status::Pending}) {
+            bool headerAdded = false;
+            for (const auto& [title, content] : built) {
+                if (options_status::statusOf(title.toStdString()) != group) continue;
+                if (!headerAdded) {
+                    addGroupHeader(group);
+                    headerAdded = true;
+                }
+                addPage(title, content);
+            }
+        }
 
         buttons_ = new QDialogButtonBox(
             QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Apply, this);
@@ -137,13 +164,24 @@ public:
         apply_->setEnabled(false);
         root->addWidget(buttons_);
 
-        connect(pages_, &QListWidget::currentRowChanged, stack_, &QStackedWidget::setCurrentIndex);
+        // Rows are not stack indexes any more (group headers sit in between): each page row
+        // carries its stack index in Qt::UserRole, header rows carry none.
+        connect(pages_, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* current, QListWidgetItem*) {
+            if (!current) return;
+            const QVariant index = current->data(Qt::UserRole);
+            if (index.isValid()) stack_->setCurrentIndex(index.toInt());
+        });
         connect(search_, &QLineEdit::textChanged, this, [this](const QString& t) { filterPages(t); });
         connect(buttons_, &QDialogButtonBox::accepted, this, [this]() { commit(); accept(); });
         connect(buttons_, &QDialogButtonBox::rejected, this, [this]() { reject(); });
         connect(apply_, &QPushButton::clicked, this, [this]() { commit(); });
 
-        pages_->setCurrentRow(0);
+        for (int i = 0; i < pages_->count(); ++i) {  // first real page, never a group header
+            if (pages_->item(i)->data(Qt::UserRole).isValid()) {
+                pages_->setCurrentRow(i);
+                break;
+            }
+        }
     }
 
     // Opens the dialog modally; true when the user pressed OK.
@@ -161,32 +199,81 @@ private:
         apply_->setEnabled(false);
     }
 
-    void addPage(const QString& title, QWidget* content) {
-        auto* scroll = new QScrollArea;
-        scroll->setFrameShape(QFrame::NoFrame);
-        scroll->setWidgetResizable(true);
-        scroll->setWidget(content);
-        stack_->addWidget(scroll);
-        pages_->addItem(new QListWidgetItem(options_icons::forPage(title), title));
+    // Separator row that starts a status group. Not selectable, so keyboard and mouse skip it.
+    void addGroupHeader(options_status::Status status) {
+        auto* header = new QListWidgetItem(QString::fromLatin1(options_status::groupLabel(status)));
+        header->setFlags(Qt::ItemIsEnabled);
+        QFont f = header->font();
+        f.setBold(true);
+        if (f.pointSizeF() > 0) f.setPointSizeF(f.pointSizeF() * 0.85);
+        header->setFont(f);
+        header->setForeground(palette().color(QPalette::PlaceholderText));
+        header->setSizeHint(QSize(0, 30));
+        pages_->addItem(header);
+    }
 
-        // Everything the search box can match on this page.
+    void addPage(const QString& title, QWidget* content) {
+        // Everything the search box can match on this page (collected before the status banner
+        // is added, so searching "progress" does not match every unfinished page).
         QStringList words{title};
         for (auto* b : content->findChildren<QAbstractButton*>()) words << b->text();
         for (auto* l : content->findChildren<QLabel*>()) words << l->text();
         for (auto* g : content->findChildren<QGroupBox*>()) words << g->title();
-        searchText_.push_back(words.join('\n').remove('&').toLower());
+
+        const options_status::PageStatus* status = options_status::find(title.toStdString());
+        const bool finished = status && status->status == options_status::Status::Implemented;
+        if (!finished) {
+            // Say so on the page itself, not only in the list.
+            auto* banner = new QLabel(status ? QString::fromUtf8(status->note) : QStringLiteral("Pending: not designed yet."));
+            banner->setWordWrap(true);
+            banner->setStyleSheet(
+                "QLabel { background: palette(alternate-base); border: 1px solid palette(mid);"
+                " border-radius: 4px; padding: 6px 8px; }");
+            if (auto* box = qobject_cast<QVBoxLayout*>(content->layout())) box->insertWidget(0, banner);
+        }
+
+        auto* scroll = new QScrollArea;
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidgetResizable(true);
+        scroll->setWidget(content);
+        const int stackIndex = stack_->addWidget(scroll);
+        auto* item = new QListWidgetItem(options_icons::forPage(title), title);
+        item->setData(Qt::UserRole, stackIndex);
+        if (status) item->setToolTip(QString::fromUtf8(status->note));
+        if (status && status->status == options_status::Status::Pending)
+            item->setForeground(palette().color(QPalette::PlaceholderText));
+        pages_->addItem(item);
+
+        searchText_.push_back(words.join('\n').remove('&').toLower());  // indexed by stack index
     }
 
     void filterPages(const QString& needle) {
         const QString n = needle.trimmed().toLower();
-        int firstVisible = -1;
+        QListWidgetItem* firstVisible = nullptr;
+        QListWidgetItem* header = nullptr;
+        bool headerHasVisible = false;
+        auto closeGroup = [&]() {
+            if (header) header->setHidden(!headerHasVisible);  // an empty group hides its separator too
+        };
         for (int i = 0; i < pages_->count(); ++i) {
-            const bool match = n.isEmpty() || searchText_[static_cast<size_t>(i)].contains(n);
-            pages_->item(i)->setHidden(!match);
-            if (match && firstVisible < 0) firstVisible = i;
+            QListWidgetItem* item = pages_->item(i);
+            const QVariant index = item->data(Qt::UserRole);
+            if (!index.isValid()) {
+                closeGroup();
+                header = item;
+                headerHasVisible = false;
+                continue;
+            }
+            const bool match = n.isEmpty() || searchText_[static_cast<size_t>(index.toInt())].contains(n);
+            item->setHidden(!match);
+            if (match) {
+                headerHasVisible = true;
+                if (!firstVisible) firstVisible = item;
+            }
         }
-        if (firstVisible >= 0 && pages_->currentItem() && pages_->currentItem()->isHidden())
-            pages_->setCurrentRow(firstVisible);
+        closeGroup();
+        if (firstVisible && pages_->currentItem() && pages_->currentItem()->isHidden())
+            pages_->setCurrentItem(firstVisible);
     }
 
     static QLabel* heading(const QString& text) {
@@ -522,6 +609,225 @@ private:
         v->addSpacing(8);
         v->addWidget(note("To set tab stops, use <b>Tools &gt; File Formats</b>"));
         v->addStretch(1);
+        return page;
+    }
+
+    // ---- Syntax Highlighting ----------------------------------------------
+    // One table with the effective rule per extension / file name (built-in or the user's own),
+    // and an editor row to add or change a rule. Only draft_.syntaxMappings is edited; OK/Apply
+    // saves it to the profile and open comparisons re-highlight (see syntax_mappings.h).
+    QWidget* buildSyntaxHighlighting() {
+        QVBoxLayout* v;
+        auto* page = pageShell(&v);
+        v->addWidget(heading("Syntax Highlighting"));
+        const SyntaxCatalog& catalog = SyntaxCatalog::get();
+        v->addWidget(note("Choose the highlighting language for a file extension (for example h or cpp) or an "
+                          "exact file name (for example Makefile). Your mappings override the built-in ones, are "
+                          "saved in your profile, and also apply to comparisons that are already open once you "
+                          "press OK or Apply."));
+
+        auto* filterRow = new QHBoxLayout;
+        auto* filter = new QLineEdit;
+        filter->setPlaceholderText("Filter by extension, file name or language");
+        filter->setClearButtonEnabled(true);
+        auto* mineOnly = new QCheckBox("Show only my mappings");
+        filterRow->addWidget(filter, 1);
+        filterRow->addWidget(mineOnly);
+        v->addLayout(filterRow);
+
+        auto* table = new QTableWidget(0, 4);
+        table->setObjectName("syntaxMappingsTable");
+        table->setHorizontalHeaderLabels({"Extension / file name", "Language", "Source", "Highlighting"});
+        table->setSelectionBehavior(QAbstractItemView::SelectRows);
+        table->setSelectionMode(QAbstractItemView::SingleSelection);
+        table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        table->verticalHeader()->hide();
+        table->horizontalHeader()->setStretchLastSection(true);
+        table->setColumnWidth(0, 180);
+        table->setColumnWidth(1, 170);
+        table->setColumnWidth(2, 190);
+        table->setMinimumHeight(260);
+        v->addWidget(table, 1);
+
+        auto* summary = new QLabel(QString("%1 built-in languages, %2 built-in extensions and file names.")
+                                       .arg(catalog.languages().size())
+                                       .arg(catalog.entries().size()));
+        v->addWidget(summary);
+
+        v->addWidget(rule());
+        auto* form = new QGridLayout;
+        auto* key = new QLineEdit;
+        key->setObjectName("syntaxMappingKey");
+        key->setPlaceholderText("cpp, h, Makefile");
+        auto* language = new QComboBox;
+        language->setObjectName("syntaxMappingLanguage");
+        language->setEditable(true);
+        language->setInsertPolicy(QComboBox::NoInsert);
+        language->setMinimumWidth(220);
+        QStringList names;
+        for (const SyntaxLanguage& entry : catalog.languages()) names << entry.name;
+        names.sort(Qt::CaseInsensitive);
+        language->addItems(names);
+        if (auto* completer = language->completer()) {
+            completer->setCompletionMode(QCompleter::PopupCompletion);
+            completer->setFilterMode(Qt::MatchContains);
+            completer->setCaseSensitivity(Qt::CaseInsensitive);
+        }
+        language->setCurrentIndex(-1);
+        language->lineEdit()->setPlaceholderText("Language (type to search)");
+        auto* addButton = new QPushButton("&Add / Update");
+        addButton->setObjectName("syntaxMappingAdd");
+        auto* removeButton = new QPushButton("&Remove");
+        removeButton->setObjectName("syntaxMappingRemove");
+        removeButton->setEnabled(false);
+        removeButton->setToolTip("Removes your mapping for the selected extension; the built-in rule applies again.");
+        form->addWidget(new QLabel("Extension or file name:"), 0, 0);
+        form->addWidget(new QLabel("Language:"), 0, 1);
+        form->addWidget(key, 1, 0);
+        form->addWidget(language, 1, 1);
+        form->addWidget(addButton, 1, 2);
+        form->addWidget(removeButton, 1, 3);
+        form->setColumnStretch(0, 1);
+        form->setColumnStretch(1, 1);
+        v->addLayout(form);
+        auto* status = new QLabel;
+        status->setObjectName("syntaxMappingStatus");
+        status->setWordWrap(true);
+        v->addWidget(status);
+
+        // Rebuilds the table from the built-in catalog plus draft_.syntaxMappings.
+        auto populate = [=]() {
+            const QString needle = filter->text().trimmed().toLower();
+            QHash<QString, QString> custom;
+            for (const SyntaxMapping& m : draft_.syntaxMappings) custom.insert(m.key, m.language);
+            struct Row { QString key, language, source; };
+            QList<Row> rows;
+            QSet<QString> seen;
+            for (const SyntaxCatalogEntry& e : catalog.entries()) {
+                if (seen.contains(e.key)) continue;
+                seen.insert(e.key);
+                const auto it = custom.constFind(e.key);
+                if (it != custom.constEnd())
+                    rows.append({e.key, it.value(), "Custom (overrides " + e.language + ")"});
+                else
+                    rows.append({e.key, e.language, e.fileName ? "Built-in (file name)" : "Built-in"});
+            }
+            for (const SyntaxMapping& m : draft_.syntaxMappings)
+                if (!seen.contains(m.key)) rows.append({m.key, m.language, "Custom"});
+            std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
+                return a.key.compare(b.key, Qt::CaseInsensitive) < 0;
+            });
+
+            QSignalBlocker block(table);
+            table->setRowCount(0);
+            for (const Row& r : rows) {
+                const bool isCustom = r.source.startsWith("Custom");
+                if (mineOnly->isChecked() && !isCustom) continue;
+                if (!needle.isEmpty() && !r.key.toLower().contains(needle) &&
+                    !r.language.toLower().contains(needle) && !r.source.toLower().contains(needle))
+                    continue;
+                const SyntaxLanguage* info = catalog.findLanguage(r.language);
+                QString quality = "Exact";
+                if (info && info->engine == "plain") quality = "None (plain text)";
+                else if (info && info->approximate) quality = "Approximate";
+                const int row = table->rowCount();
+                table->insertRow(row);
+                const QStringList cells{r.key, r.language, r.source, quality};
+                for (int c = 0; c < cells.size(); ++c) {
+                    auto* item = new QTableWidgetItem(cells[c]);
+                    if (isCustom) {
+                        QFont f = item->font();
+                        f.setBold(true);
+                        item->setFont(f);
+                    }
+                    table->setItem(row, c, item);
+                }
+            }
+            removeButton->setEnabled(false);
+        };
+
+        // Selecting a row loads it into the editor row.
+        auto syncEditor = [=]() {
+            if (table->selectedItems().isEmpty()) {
+                removeButton->setEnabled(false);
+                return;
+            }
+            const int row = table->currentRow();
+            key->setText(table->item(row, 0)->text());
+            language->setCurrentText(table->item(row, 1)->text());
+            removeButton->setEnabled(table->item(row, 2)->text().startsWith("Custom"));
+        };
+        auto selectKey = [=](const QString& wanted) {
+            for (int row = 0; row < table->rowCount(); ++row) {
+                if (table->item(row, 0)->text() != wanted) continue;
+                table->selectRow(row);
+                table->scrollToItem(table->item(row, 0));
+                syncEditor();
+                return;
+            }
+        };
+
+        connect(filter, &QLineEdit::textChanged, this, [populate](const QString&) { populate(); });
+        connect(mineOnly, &QCheckBox::toggled, this, [populate](bool) { populate(); });
+        connect(table, &QTableWidget::itemSelectionChanged, this, [=]() {
+            syncEditor();
+            status->clear();
+        });
+
+        connect(addButton, &QPushButton::clicked, this, [=]() {
+            const QString k = SyntaxCatalog::normalizeKey(key->text());
+            if (k.isEmpty()) {
+                status->setText("Enter an extension such as cpp or a file name such as Makefile "
+                                "(no spaces, slashes or wildcards).");
+                return;
+            }
+            const SyntaxLanguage* chosen = catalog.findLanguage(language->currentText());
+            if (!chosen) {
+                status->setText(QString("\"%1\" is not a known language. Pick one from the list.")
+                                    .arg(language->currentText().trimmed()));
+                return;
+            }
+            auto& list = draft_.syntaxMappings;
+            int existing = -1;
+            for (int i = 0; i < list.size(); ++i)
+                if (list[i].key == k) existing = i;
+            QString message;
+            if (catalog.builtInLanguageFor(k) == chosen->name) {
+                // Same as the built-in rule: nothing to store, and a leftover override goes away.
+                if (existing >= 0) {
+                    list.removeAt(existing);
+                    markDirty();
+                }
+                message = QString("%1 uses %2 by default.").arg(k, chosen->name);
+            } else {
+                if (existing >= 0) list[existing].language = chosen->name;
+                else list.append({k, chosen->name});
+                markDirty();
+                message = QString("%1 will use %2.").arg(k, chosen->name);
+            }
+            populate();
+            selectKey(k);
+            status->setText(message);  // after selectKey: selecting a row clears the status
+        });
+
+        connect(removeButton, &QPushButton::clicked, this, [=]() {
+            if (table->selectedItems().isEmpty()) return;
+            const QString k = table->item(table->currentRow(), 0)->text();
+            auto& list = draft_.syntaxMappings;
+            for (int i = 0; i < list.size(); ++i) {
+                if (list[i].key != k) continue;
+                list.removeAt(i);
+                markDirty();
+                break;
+            }
+            const QString fallback = catalog.builtInLanguageFor(k);
+            populate();
+            selectKey(k);
+            status->setText(fallback.isEmpty() ? QString("Removed the mapping for %1.").arg(k)
+                                               : QString("Removed. %1 uses %2 again.").arg(k, fallback));
+        });
+
+        populate();
         return page;
     }
 

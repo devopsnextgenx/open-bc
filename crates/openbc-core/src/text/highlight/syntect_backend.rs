@@ -1,4 +1,4 @@
-//! `syntect` backend (C-family, shell and markup languages).
+//! `syntect` backend (everything in the Sublime default pack: C-family, shell, markup, ...).
 
 use std::sync::OnceLock;
 
@@ -9,7 +9,6 @@ use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
 use super::html::plain_html;
-use super::language;
 use super::spans::{merge_adjacent_spans, HighlightSpan};
 
 const DARK_THEME: &str = "base16-ocean.dark";
@@ -32,27 +31,25 @@ struct Resolved {
     theme: &'static Theme,
 }
 
-/// Looks up the syntax (by extension, then by token) and the light/dark theme.
-fn resolve(language: &str, is_dark_mode: bool) -> Option<Resolved> {
+/// Looks up the syntax by its exact name (see the registry) and the light/dark theme.
+fn resolve(syntax_name: &str, is_dark_mode: bool) -> Option<Resolved> {
     let syntax_set = syntax_set();
-    let syntax = syntax_set
-        .find_syntax_by_extension(&language::normalize(language))
-        .or_else(|| syntax_set.find_syntax_by_token(language.trim()))?;
+    let syntax = syntax_set.find_syntax_by_name(syntax_name)?;
     let theme_name = if is_dark_mode { DARK_THEME } else { LIGHT_THEME };
     let theme = theme_set().themes.get(theme_name)?;
     Some(Resolved { syntax_set, syntax, theme })
 }
 
-/// Self-contained HTML; falls back to escaped plain text when the language or theme is missing.
-pub(super) fn highlight_html(source: &str, language: &str, is_dark_mode: bool) -> String {
-    resolve(language, is_dark_mode)
+/// Self-contained HTML; falls back to escaped plain text when the syntax or theme is missing.
+pub(super) fn highlight_html(source: &str, syntax_name: &str, is_dark_mode: bool) -> String {
+    resolve(syntax_name, is_dark_mode)
         .and_then(|r| highlighted_html_for_string(source, r.syntax_set, r.syntax, r.theme).ok())
         .unwrap_or_else(|| plain_html(source))
 }
 
-/// Per-token spans; empty when the language or theme is missing.
-pub(super) fn highlight_spans(source: &str, language: &str, is_dark_mode: bool) -> Vec<HighlightSpan> {
-    let Some(resolved) = resolve(language, is_dark_mode) else {
+/// Per-token spans; empty when the syntax or theme is missing.
+pub(super) fn highlight_spans(source: &str, syntax_name: &str, is_dark_mode: bool) -> Vec<HighlightSpan> {
+    let Some(resolved) = resolve(syntax_name, is_dark_mode) else {
         return Vec::new();
     };
     let mut highlighter = HighlightLines::new(resolved.syntax, resolved.theme);

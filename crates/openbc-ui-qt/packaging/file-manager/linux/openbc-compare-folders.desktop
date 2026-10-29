@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=inode/directory;
+Actions=OpenBCSelectLeftFolder;OpenBCCompareToFolder;
+X-KDE-Submenu=OpenBC
+Icon=io.github.devopsnextgenx.open-bc
+
+[Desktop Action OpenBCSelectLeftFolder]
+Name=Select Left Folder
+Icon=folder-open
+Exec=@FM_LAUNCHER@ --select-left-folder %f
+
+[Desktop Action OpenBCCompareToFolder]
+Name=Compare to Selected Folder
+Icon=view-split-left-right
+Exec=@FM_LAUNCHER@ --compare-to-left-folder %f

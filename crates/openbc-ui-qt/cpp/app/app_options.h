@@ -6,14 +6,17 @@
 //
 // OptionsStore: the single owner of the *committed* options.
 //
-// MOCK STAGE: nothing here talks to the backend yet. The dialog edits a copy
+// MOCK STAGE (except syntaxMappings, see below): nothing here talks to the backend yet. The dialog edits a copy
 // of AppOptions; OK/Apply hands it to OptionsStore::commit(), which keeps it
 // in memory and notifies listeners. The two seams to fill in later are
 // clearly marked:
 //   - OptionsStore::load()    -> read the user profile from preferences.ini
 //   - OptionsStore::persist() -> write it back (same QSettings the window
 //                                geometry and theme/dark already use)
-// and listeners (addListener) are where tabs, the theme, backups, confirmation
+// The first persisted part of the profile is `syntaxMappings`: OptionsStore hands it to
+// SyntaxMappingStore (common/syntax_mappings.h), which saves it to preferences.ini, applies it to
+// the backend and re-highlights open comparisons. The other fields are still the mock described
+// above. Listeners (addListener) are where tabs, the theme, backups, confirmation
 // prompts, etc. will subscribe to reload when the options change. Per
 // ARCHITECTURE.md the UI layer only consumes and emits owned values; nothing
 // here blocks or touches the engine/VFS crates.
@@ -29,6 +32,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/syntax_mappings.h"
 #include "style/qt_style.h"
 
 namespace openbc::app {
@@ -142,6 +146,10 @@ struct AppOptions {
     SyncConfirmation syncConfirmation = SyncConfirmation::Prompt;
     bool includeHiddenItemsByDefault = false;
 
+    // ---- Syntax Highlighting ----------------------------------------------
+    // The user's extension / file name -> language rules, on top of the built-in table.
+    QList<SyntaxMapping> syntaxMappings;
+
     // ---- Commands ---------------------------------------------------------
     bool largeToolbarButtonsWithText = true;
     // Key: view name ("Home", "Folder Compare", ...).
@@ -194,6 +202,10 @@ public:
     // Called by the dialog on OK / Apply.
     void commit(const AppOptions& next) {
         options_ = next;
+        // Saved, applied to the backend and pushed to open editors by the store. Keep the
+        // cleaned-up list (unknown languages and duplicate keys dropped) as the committed value.
+        SyntaxMappingStore::instance().setMappings(options_.syntaxMappings);
+        options_.syntaxMappings = SyntaxMappingStore::instance().mappings();
         persist();
         for (const auto& listener : listeners_) listener(options_);
     }
@@ -203,8 +215,12 @@ public:
     void addListener(Listener listener) { listeners_.push_back(std::move(listener)); }
 
     // TODO(options): read the saved profile from preferences.ini; fall back
-    // to AppOptions{} defaults for any missing key. Mock: defaults only.
-    void load() { options_ = AppOptions{}; }
+    // to AppOptions{} defaults for any missing key. Mock: defaults only, except the syntax
+    // mappings, which come from the real profile.
+    void load() {
+        options_ = AppOptions{};
+        options_.syntaxMappings = SyntaxMappingStore::instance().mappings();
+    }
 
     // TODO(options): write options_ to the user profile in preferences.ini.
     // Mock: intentionally a no-op so nothing is written to disk yet.

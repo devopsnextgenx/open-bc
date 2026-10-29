@@ -42,4 +42,5 @@ crates/openbc-ui-qt/cpp/app/app_info.h
 crates/**/*.zip
 crates.7z
 cratesx/
+crates-updated/
 tracking.env

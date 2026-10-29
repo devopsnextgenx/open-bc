@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=all/allfiles;
+Actions=OpenBCSelectLeftFile;OpenBCCompareToFile;
+X-KDE-Submenu=OpenBC
+Icon=io.github.devopsnextgenx.open-bc
+
+[Desktop Action OpenBCSelectLeftFile]
+Name=Select Left File
+Icon=document-open
+Exec=@OPENBC_FM_EXEC@ --select-left-file %f
+
+[Desktop Action OpenBCCompareToFile]
+Name=Compare to Left File
+Icon=view-split-left-right
+Exec=@OPENBC_FM_EXEC@ --compare-to-left-file %f

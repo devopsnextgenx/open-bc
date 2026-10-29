@@ -1,0 +1,29 @@
+Windows Registry Editor Version 5.00
+
+; Classic Explorer context-menu verbs for OpenBC (per user). Replace C:\\Program Files\\OpenBC with the
+; install folder. On Windows 11 these appear under "Show more options".
+; Uninstall: delete the four OpenBC.* keys below.
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\OpenBC.SelectLeft]
+@="OpenBC: Select Left Folder"
+"Icon"="C:\\Program Files\\OpenBC\\openbc.exe"
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\OpenBC.SelectLeft\command]
+@="\"C:\\Program Files\\OpenBC\\openbc.exe\" --select-left-folder \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\OpenBC.CompareTo]
+@="OpenBC: Compare to Selected Folder"
+"Icon"="C:\\Program Files\\OpenBC\\openbc.exe"
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\OpenBC.CompareTo\command]
+@="\"C:\\Program Files\\OpenBC\\openbc.exe\" --compare-to-left-folder \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\OpenBC.SelectLeft]
+@="OpenBC: Select Left File"
+"Icon"="C:\\Program Files\\OpenBC\\openbc.exe"
+[HKEY_CURRENT_USER\Software\Classes\*\shell\OpenBC.SelectLeft\command]
+@="\"C:\\Program Files\\OpenBC\\openbc.exe\" --select-left-file \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\OpenBC.CompareTo]
+@="OpenBC: Compare to Selected File"
+"Icon"="C:\\Program Files\\OpenBC\\openbc.exe"
+[HKEY_CURRENT_USER\Software\Classes\*\shell\OpenBC.CompareTo\command]
+@="\"C:\\Program Files\\OpenBC\\openbc.exe\" --compare-to-left-file \"%1\""

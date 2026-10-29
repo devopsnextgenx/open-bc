@@ -105,3 +105,11 @@ add new kinds there, never in `main_window.h`.
 ## 9. Drag-and-drop and reload
 
 Viewers never parse drops or watch files themselves. A viewer exposes `applyDroppedPaths(left, right)` (empty = leave that side) and, for reload, creates a `FileChangeController` (`common/file_change_controller.h`) and calls `track()` right before loading. Routing policy: `common/drop_router.h`; details and limits: `docs/DROP_AND_RELOAD.md`. Unit tests for the policy: `cpp/tools/drop_router_test` (see its header for the g++ line).
+
+## 10. Syntax highlighting languages
+
+Which extension or file name uses which grammar is decided in **one** place: `crates/openbc-core/src/text/highlight/registry.rs`. Never hard-code extension lists in C++ or QML; add a row to the table (a test fails on duplicate keys, unknown grammars, and extensions the engines know that the table misses) and regenerate `docs/SYNTAX_LANGUAGES.md`. Pass viewers' highlighters the **file name**, not the suffix (`SyntaxHighlighter::setLanguage`), so `Makefile` and `view.html.erb` resolve. User overrides live in `common/syntax_mappings.h` (`SyntaxMappingStore`: persisted in `preferences.ini`, pushed to the backend, and every `SyntaxHighlighter` re-highlights itself on change); the Options page is `Syntax Highlighting` in `app/options_dialog.h`.
+
+## 11. Options dialog
+
+Tools > Options pages are grouped by completion status (`cpp/app/options_status.h`). The per-page and per-field state, and what to do to finish a page, is in `options.md` (crate root): read it before working on options, and update it and `options_status.h` together.

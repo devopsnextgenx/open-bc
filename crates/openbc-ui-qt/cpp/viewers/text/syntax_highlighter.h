@@ -13,6 +13,7 @@
 
 #include "backend/backend_api.h"
 #include "common/diff_algorithms.h"
+#include "common/syntax_mappings.h"
 
 namespace openbc::app {
 
@@ -35,8 +36,15 @@ public:
         connect(document, &QTextDocument::contentsChanged, this, [this]() {
             refreshAndRehighlight();
         });
+        // Tools > Options > Syntax Highlighting: a changed extension mapping re-highlights this
+        // document right away. Subscribing also makes the store load the profile (and hand it to
+        // the backend) before this highlighter asks for its first spans.
+        SyntaxMappingStore::instance().addListener(this, [this]() { refreshAndRehighlight(); });
     }
 
+    // `language` is whatever identifies the file: its name ("Makefile", "main.rs"), an extension
+    // or a language name. The backend resolves it (built-in table first overridden by the user's
+    // mappings), so pass the full file name rather than only the suffix.
     void setLanguage(const QString& extension) {
         if (extension_ == extension) return;
         extension_ = extension;

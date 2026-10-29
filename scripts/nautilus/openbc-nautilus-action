@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Nautilus "Scripts" action. Installed once per user under ~/.local/share/nautilus/scripts with the
+# action name as file name (see install-nautilus.sh); the name selects what to do.
 set -u
 
 action=${0##*/}
@@ -14,35 +16,46 @@ fail() {
     exit 1
 }
 
+# How to start OpenBC: $OPENBC_BIN, else the command line in ~/.config/openbc/launcher (written by
+# the installers for AppImage / Flatpak), else `openbc` on PATH.
+launcher_file="${XDG_CONFIG_HOME:-$HOME/.config}/openbc/launcher"
+openbc_cmd=(openbc)
+if [[ -n "${OPENBC_BIN:-}" ]]; then
+    openbc_cmd=("$OPENBC_BIN")
+elif [[ -r "$launcher_file" ]]; then
+    read -r -a openbc_cmd < "$launcher_file"
+    [[ ${#openbc_cmd[@]} -gt 0 ]] || openbc_cmd=(openbc)
+fi
+
 [[ -n "${selected_paths[0]:-}" ]] || fail "Select an item first."
-openbc_bin=${OPENBC_BIN:-openbc}
-command -v "$openbc_bin" >/dev/null 2>&1 || fail "OpenBC was not found in PATH."
+command -v "${openbc_cmd[0]}" >/dev/null 2>&1 || fail "OpenBC was not found (${openbc_cmd[0]})."
 
 case "$action" in
     "Select Left Folder")
         [[ ${#selected_paths[@]} -eq 1 && -d ${selected_paths[0]} ]] || fail "Select one folder."
-        exec "$openbc_bin" --select-left-folder "${selected_paths[0]}"
+        exec "${openbc_cmd[@]}" --select-left-folder "${selected_paths[0]}"
         ;;
     "Compare to Left Folder")
         [[ ${#selected_paths[@]} -eq 1 && -d ${selected_paths[0]} ]] || fail "Select one folder."
-        exec "$openbc_bin" --compare-to-left-folder "${selected_paths[0]}"
+        exec "${openbc_cmd[@]}" --compare-to-left-folder "${selected_paths[0]}"
         ;;
     "Select Left File")
         [[ ${#selected_paths[@]} -eq 1 && -f ${selected_paths[0]} ]] || fail "Select one file."
-        exec "$openbc_bin" --select-left-file "${selected_paths[0]}"
+        exec "${openbc_cmd[@]}" --select-left-file "${selected_paths[0]}"
         ;;
     "Compare to Left File")
         [[ ${#selected_paths[@]} -eq 1 && -f ${selected_paths[0]} ]] || fail "Select one file."
-        exec "$openbc_bin" --compare-to-left-file "${selected_paths[0]}"
+        exec "${openbc_cmd[@]}" --compare-to-left-file "${selected_paths[0]}"
         ;;
     "Compare")
         [[ ${#selected_paths[@]} -eq 2 ]] || fail "Select exactly two files or exactly two folders."
         [[ -e ${selected_paths[0]} && -e ${selected_paths[1]} ]] || fail "Both selected items must exist."
-        [[ -d ${selected_paths[0]} && -d ${selected_paths[1]} ]] &&
-            exec "$openbc_bin" "${selected_paths[0]}" "${selected_paths[1]}"
+        if [[ -d ${selected_paths[0]} && -d ${selected_paths[1]} ]]; then
+            exec "${openbc_cmd[@]}" "${selected_paths[0]}" "${selected_paths[1]}"
+        fi
         [[ ! -d ${selected_paths[0]} && ! -d ${selected_paths[1]} ]] ||
             fail "Select two folders or two files, not one of each."
-        exec "$openbc_bin" "${selected_paths[0]}" "${selected_paths[1]}"
+        exec "${openbc_cmd[@]}" "${selected_paths[0]}" "${selected_paths[1]}"
         ;;
     *)
         fail "Unknown OpenBC action: $action"

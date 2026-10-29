@@ -26,6 +26,9 @@ if(NOT DEFINED CPACK_PACKAGE_VERSION)
     endif()
 endif()
 
+# Accept both "v1.0.21" (flatpak/CI) and "1.0.21": always store the bare version.
+string(REGEX REPLACE "^v" "" CPACK_PACKAGE_VERSION "${CPACK_PACKAGE_VERSION}")
+
 message(STATUS "Building OpenBC Version: ${CPACK_PACKAGE_VERSION}")
 
 # Configure app_info.h directly inside the source tree so Cargo/rustc finds it natively
@@ -79,7 +82,7 @@ include(FetchContent)
 FetchContent_Declare(
     Corrosion
     GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git
-    GIT_TAG v0.5.0
+    GIT_TAG v0.6.1
 )
 FetchContent_MakeAvailable(Corrosion)
 
@@ -213,5 +216,27 @@ if(NOT WIN32)
         install(FILES resources/icons/fevicon.png
                 DESTINATION share/icons/hicolor/512x512/apps RENAME ${OPENBC_ICON_NAME}.png)
     endif()
+
+    # --- File-manager integration (Linux). One set of install() rules, so deb, rpm, AppImage and
+    # flatpak all carry the same files (build.sh no longer copies the Nautilus ones by hand).
+    #   Nautilus: python extension + action script (+ openbc-install-nautilus for per-user installs)
+    #   Dolphin : KDE service menus (+ openbc-install-dolphin for AppImage/Flatpak users)
+    # Host file managers only read /usr/share, so AppImage and Flatpak users run the installers once.
+    set(OPENBC_SCRIPTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/scripts")
+    install(PROGRAMS "${OPENBC_SCRIPTS_DIR}/nautilus/openbc-nautilus-action" DESTINATION share/openbc/nautilus)
+    install(PROGRAMS "${OPENBC_SCRIPTS_DIR}/nautilus/install-nautilus.sh"
+            DESTINATION bin RENAME openbc-install-nautilus)
+    install(FILES "${OPENBC_SCRIPTS_DIR}/nautilus/openbc_nautilus.py"
+            DESTINATION share/nautilus-python/extensions RENAME openbc.py)
+
+    set(OPENBC_FM_EXEC "openbc")
+    foreach(_n openbc-compare-folders openbc-compare-files openbc-compare-two)
+        configure_file("${OPENBC_SCRIPTS_DIR}/dolphin/${_n}.desktop.in"
+                       "${CMAKE_CURRENT_BINARY_DIR}/dolphin/${_n}.desktop" @ONLY)
+        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dolphin/${_n}.desktop" DESTINATION share/kio/servicemenus)
+        install(FILES "${OPENBC_SCRIPTS_DIR}/dolphin/${_n}.desktop.in" DESTINATION share/openbc/dolphin)
+    endforeach()
+    install(PROGRAMS "${OPENBC_SCRIPTS_DIR}/dolphin/install-dolphin.sh"
+            DESTINATION bin RENAME openbc-install-dolphin)
 endif()
 include(CPack)

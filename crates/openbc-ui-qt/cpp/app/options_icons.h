@@ -106,6 +106,24 @@ inline QIcon textEditing() {
     });
 }
 
+inline QIcon syntaxHighlighting() {
+    return openbc::ui::icons::make([](QPainter& p, QIcon::Mode, QIcon::State) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x2d, 0x2d, 0x30));
+        p.drawRoundedRect(QRectF(1.2, 2.0, 13.6, 12.0), 1.4, 1.4);                  // editor
+        struct Bar { qreal x, y, w; QColor color; };
+        const Bar bars[] = {                                                          // colored tokens
+            {3.0, 4.4, 3.0, QColor(0xc5, 0x86, 0xc0)}, {6.8, 4.4, 4.6, QColor(0x56, 0x9c, 0xd6)},
+            {3.0, 7.2, 1.6, QColor(0x4e, 0xc9, 0xb0)}, {5.4, 7.2, 5.6, QColor(0xce, 0x91, 0x78)},
+            {3.0, 10.0, 2.6, QColor(0xd7, 0xba, 0x7d)}, {6.4, 10.0, 5.0, QColor(0xd4, 0xd4, 0xd4)},
+        };
+        for (const Bar& b : bars) {
+            p.setBrush(b.color);
+            p.drawRoundedRect(QRectF(b.x, b.y, b.w, 1.6), 0.6, 0.6);
+        }
+    });
+}
+
 inline QIcon nextDifference() {
     return openbc::ui::icons::make([](QPainter& p, QIcon::Mode, QIcon::State) {
         p.setPen(Qt::NoPen);
@@ -198,6 +216,7 @@ inline QIcon forPage(const QString& title) {
     if (title == "Tabs") return tabs();
     if (title == "Appearance") return appearance();
     if (title == "Text Editing") return textEditing();
+    if (title == "Syntax Highlighting") return syntaxHighlighting();
     if (title == "Next Difference") return nextDifference();
     if (title == "Backups") return backups();
     if (title == "File Operations") return fileOperations();

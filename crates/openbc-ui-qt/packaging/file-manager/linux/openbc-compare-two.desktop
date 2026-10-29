@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=all/all;
+X-KDE-MinNumberOfUrls=2
+X-KDE-MaxNumberOfUrls=2
+Actions=OpenBCCompareTwo;
+Icon=io.github.devopsnextgenx.open-bc
+
+[Desktop Action OpenBCCompareTwo]
+Name=Compare with OpenBC
+Icon=view-split-left-right
+Exec=@FM_LAUNCHER@ %F
