@@ -9,7 +9,11 @@
 # Windows unless you also pass  -f windows_runner=self-hosted  (needs the "openbc-windows" container runner).
 
 
-# Tag pushes always use GitHub-hosted runners.
+# Runner choice (job "pick-runner"): tag pushes and manual runs default to "auto" - a local runner is used when
+# an idle one with the right label is online, otherwise the job runs on GitHub-hosted. A queued job for an
+# offline self-hosted runner would wait for up to 24 h, which is why availability is checked first.
+# Listing runners needs a token with repository "Administration: read" (the built-in GITHUB_TOKEN cannot):
+# add it as secret RUNNER_ADMIN_TOKEN. Without the secret "auto" safely means GitHub-hosted.
 #
 # UNTESTED scaffold: first run may need small tweaks (package names, WiX URL). Logs show which step.
 name: release
@@ -17,15 +21,15 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: Where to run the Linux jobs (deb, AppImage, flatpak, rpm)
+        description: Where to run the Linux jobs (auto = self-hosted if an idle runner is online, else GitHub-hosted)
         type: choice
-        options: [github-hosted, self-hosted]
-        default: github-hosted
+        options: [auto, github-hosted, self-hosted]
+        default: auto
       windows_runner:
-        description: Where to run the MSI job (self-hosted falls back to GitHub-hosted if openbc-windows is offline)
+        description: Where to run the MSI job (auto = self-hosted if an idle openbc-windows runner is online, else GitHub-hosted)
         type: choice
-        options: [github-hosted, self-hosted]
-        default: github-hosted
+        options: [auto, github-hosted, self-hosted]
+        default: auto
   push:
     tags: ['v*']
 
@@ -39,14 +43,60 @@ env:
   OPENBC_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
 
 jobs:
+  # ------------------------------------------------------------------ choose self-hosted vs GitHub-hosted
+  pick-runner:
+    runs-on: ubuntu-24.04
+    outputs:
+      debian: ${{ steps.pick.outputs.debian }}
+      fedora: ${{ steps.pick.outputs.fedora }}
+      windows: ${{ steps.pick.outputs.windows }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+          REPO: ${{ github.repository }}
+          LINUX_MODE: ${{ inputs.runner || 'auto' }}
+          WINDOWS_MODE: ${{ inputs.windows_runner || 'auto' }}
+        run: |
+          set -uo pipefail
+          runners=""
+          if [ -n "${GH_TOKEN:-}" ]; then
+            # one line per runner: status <TAB> busy <TAB> comma-separated labels (gh has jq built in)
+            runners="$(gh api --paginate "repos/${REPO}/actions/runners" \
+              --jq '.runners[] | [.status, (.busy | tostring), ([.labels[].name] | join(","))] | @tsv' 2>/dev/null)" || runners=""
+          else
+            echo "::notice::RUNNER_ADMIN_TOKEN is not set: cannot see local runners, 'auto' uses GitHub-hosted."
+          fi
+          # idle LABEL: an online, not busy runner that carries the label
+          idle() {
+            [ -n "$runners" ] || return 1
+            echo "$runners" | awk -F'\t' -v l="$1" '
+              $1 == "online" && $2 == "false" { n = split($3, a, ","); for (i = 1; i <= n; i++) if (a[i] == l) f = 1 }
+              END { exit !f }'
+          }
+          # decide MODE LABEL -> true | false
+          decide() {
+            case "$1" in
+              self-hosted)   echo true ;;                      # forced, as before
+              github-hosted) echo false ;;
+              *)             if idle "$2"; then echo true; else echo false; fi ;;
+            esac
+          }
+          {
+            echo "debian=$(decide "$LINUX_MODE" openbc-debian)"
+            echo "fedora=$(decide "$LINUX_MODE" openbc-fedora)"
+            echo "windows=$(decide "$WINDOWS_MODE" openbc-windows)"
+          } | tee -a "$GITHUB_OUTPUT"
+
   # ------------------------------------------------------------------ .deb + AppImage + Flatpak (one runner, one checkout)
   linux:
-    runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted","openbc-debian"]') || 'ubuntu-24.04' }}
+    needs: pick-runner
+    runs-on: ${{ needs.pick-runner.outputs.debian == 'true' && fromJSON('["self-hosted","openbc-debian"]') || 'ubuntu-24.04' }}
     steps:
       # Host build + deb + flatpak-builder + KDE runtime need several GB; free the preinstalled toolchains.
       # (GitHub-hosted only; the local image already has everything and must not be wiped.)
       - name: Free disk space
-        if: inputs.runner != 'self-hosted'
+        if: needs.pick-runner.outputs.debian != 'true'
         run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -57,9 +107,9 @@ jobs:
             echo "::error::tag ${GITHUB_REF_NAME} must look like vMAJOR.MINOR.PATCH (MSI needs a numeric version)"; exit 1; }
       # Local image (runners/Dockerfile.debian) already ships Rust, Qt, flatpak and the generator's Python deps.
       - uses: dtolnay/rust-toolchain@stable
-        if: inputs.runner != 'self-hosted'
+        if: needs.pick-runner.outputs.debian != 'true'
       - name: Install build + flatpak dependencies
-        if: inputs.runner != 'self-hosted'
+        if: needs.pick-runner.outputs.debian != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake ninja-build pkg-config perl \
@@ -74,7 +124,7 @@ jobs:
       # Ubuntu 24.04 runners block unprivileged user namespaces, which flatpak-builder's sandbox needs.
       # (Local container runs --privileged instead.)
       - name: Allow user namespaces
-        if: inputs.runner != 'self-hosted'
+        if: needs.pick-runner.outputs.debian != 'true'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       # Separate steps keep failures attributable. The AppImage step reuses the host build tree left by the
@@ -117,12 +167,13 @@ jobs:
 
   # ------------------------------------------------------------------ .rpm (built on Fedora so it links Fedora's Qt/glibc)
   rpm:
-    runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted","openbc-fedora"]') || 'ubuntu-24.04' }}
+    needs: pick-runner
+    runs-on: ${{ needs.pick-runner.outputs.fedora == 'true' && fromJSON('["self-hosted","openbc-fedora"]') || 'ubuntu-24.04' }}
     # Hosted: run inside a fedora container. Self-hosted: the runner container already is Fedora.
-    container: ${{ inputs.runner != 'self-hosted' && 'fedora:latest' || null }}
+    container: ${{ needs.pick-runner.outputs.fedora != 'true' && 'fedora:latest' || null }}
     steps:
       - name: Install build dependencies
-        if: inputs.runner != 'self-hosted'
+        if: needs.pick-runner.outputs.fedora != 'true'
         run: |
           dnf install -y git gcc-c++ make cmake ninja-build rust cargo rpm-build which perl-core \
             qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel mesa-libGL-devel libxkbcommon-devel \
@@ -135,7 +186,8 @@ jobs:
 
   # ------------------------------------------------------------------ Windows MSI
   msi:
-    runs-on: ${{ inputs.windows_runner == 'self-hosted' && fromJSON('["self-hosted","openbc-windows"]') || 'windows-2022' }}
+    needs: pick-runner
+    runs-on: ${{ needs.pick-runner.outputs.windows == 'true' && fromJSON('["self-hosted","openbc-windows"]') || 'windows-2022' }}
 
 
 
@@ -145,7 +197,7 @@ jobs:
       # Hosted: release:false -> reuse the runner's preinstalled C:\msys64 (build.sh hardcodes /c/msys64).
       # Self-hosted: runners/Dockerfile.windows already has MSYS2, the packages and WiX.
       - uses: msys2/setup-msys2@v2
-        if: inputs.windows_runner != 'self-hosted'
+        if: needs.pick-runner.outputs.windows != 'true'
         with:
           msystem: UCRT64
           release: false
@@ -165,19 +217,19 @@ jobs:
             mingw-w64-ucrt-x86_64-xz
             mingw-w64-ucrt-x86_64-pkgconf
       - name: Install WiX 3.14 (heat/candle/light; build.sh looks in /c/msys64/opt/wix)
-        if: inputs.windows_runner != 'self-hosted'
+        if: needs.pick-runner.outputs.windows != 'true'
         shell: pwsh
         run: |
           Invoke-WebRequest https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip -OutFile wix.zip
           Expand-Archive wix.zip -DestinationPath C:\msys64\opt\wix
       - name: Build MSI
-        if: inputs.windows_runner != 'self-hosted'
+        if: needs.pick-runner.outputs.windows != 'true'
         shell: msys2 {0}
         run: |
           ./scripts/build.sh -c -p win
       # Same script, but run through the container's own MSYS2 (the "msys2" shell only exists after setup-msys2).
       - name: Build MSI (self-hosted)
-        if: inputs.windows_runner == 'self-hosted'
+        if: needs.pick-runner.outputs.windows == 'true'
         shell: C:\msys64\usr\bin\bash.exe --login -eo pipefail {0}
         env:
           MSYSTEM: UCRT64
