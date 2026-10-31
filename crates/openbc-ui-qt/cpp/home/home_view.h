@@ -634,15 +634,37 @@ private:
     void buildFooter(QVBoxLayout* outer) {
         footer_ = new QFrame(this);
         footer_->setObjectName("homeFooter");
-        footer_->setFixedHeight(117);
-        auto* row = new QHBoxLayout(footer_);
-        row->setContentsMargins(18, 18, 8, 6);
+        auto* footerColumn = new QVBoxLayout(footer_);
+        footerColumn->setContentsMargins(0, 0, 0, 0);
+        footerColumn->setSpacing(0);
+
+        // Slim bar that is always visible; the three columns below it start collapsed.
+        auto* bar = new QWidget(footer_);
+        bar->setFixedHeight(kFooterBarHeight);
+        auto* barRow = new QHBoxLayout(bar);
+        barRow->setContentsMargins(18, 0, 8, 0);
+        auto* barTitle = new QLabel("KNOWLEDGE BASE  \u00b7  SUPPORT FORUMS  \u00b7  SCREENCASTS", bar);
+        barTitle->setObjectName("homeFooterTitle");
+        footerToggle_ = new QToolButton(bar);
+        footerToggle_->setObjectName("homeFooterIcon");
+        footerToggle_->setAutoRaise(true);
+        footerToggle_->setCursor(Qt::PointingHandCursor);
+        barRow->addWidget(barTitle);
+        barRow->addStretch(1);
+        barRow->addWidget(footerToggle_);
+        footerColumn->addWidget(bar);
+
+        footerBody_ = new QWidget(footer_);
+        footerBody_->setFixedHeight(kFooterBodyHeight);
+        footerColumn->addWidget(footerBody_);
+        auto* row = new QHBoxLayout(footerBody_);
+        row->setContentsMargins(18, 8, 8, 6);
         row->setSpacing(58);
 
         auto column = [this](const QString& title) {
             auto* box = new QVBoxLayout;
             box->setSpacing(4);
-            auto* head = new QLabel(title, footer_);
+            auto* head = new QLabel(title, footerBody_);
             head->setObjectName("homeFooterTitle");
             box->addWidget(head);
             return box;
@@ -650,10 +672,10 @@ private:
 
         auto* kb = column("KNOWLEDGE BASE");
         auto* kbRow = new QHBoxLayout;
-        auto* kbEdit = new QLineEdit(footer_);
+        auto* kbEdit = new QLineEdit(footerBody_);
         kbEdit->setObjectName("homeFooterSearch");
         kbEdit->setFixedWidth(167);
-        auto* kbButton = new QToolButton(footer_);
+        auto* kbButton = new QToolButton(footerBody_);
         kbButton->setObjectName("homeFooterIcon");
         kbButton->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Find));
         kbRow->addWidget(kbEdit);
@@ -664,27 +686,34 @@ private:
         row->addLayout(kb);
 
         auto* forums = column("SUPPORT FORUMS");
-        auto* forumsText = new QLabel("Visit our <b><u>online forums</u></b> for<br>technical support.", footer_);
+        auto* forumsText = new QLabel("Visit our <b><u>online forums</u></b> for<br>technical support.", footerBody_);
         forumsText->setObjectName("homeFooterText");
         forums->addWidget(forumsText);
         forums->addStretch();
         row->addLayout(forums);
 
         auto* casts = column("SCREENCASTS");
-        auto* castsText = new QLabel("Watch our <b><u>online videos</u></b> for tips<br>on getting the most out of OpenBC.", footer_);
+        auto* castsText = new QLabel("Watch our <b><u>online videos</u></b> for tips<br>on getting the most out of OpenBC.", footerBody_);
         castsText->setObjectName("homeFooterText");
         casts->addWidget(castsText);
         casts->addStretch();
         row->addLayout(casts);
 
         row->addStretch(1);
-        auto* close = new QToolButton(footer_);
-        close->setObjectName("homeFooterIcon");
-        close->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Close));
-        close->setAutoRaise(true);
-        connect(close, &QToolButton::clicked, this, [this]() { footer_->hide(); });
-        row->addWidget(close, 0, Qt::AlignTop);
         outer->addWidget(footer_);
+        connect(footerToggle_, &QToolButton::clicked, this, [this]() { setFooterExpanded(!footerExpanded_); });
+        setFooterExpanded(false);   // starts minimized
+    }
+
+    static constexpr int kFooterBarHeight = 26;
+    static constexpr int kFooterBodyHeight = 96;
+
+    void setFooterExpanded(bool expanded) {
+        footerExpanded_ = expanded;
+        footerBody_->setVisible(expanded);
+        footer_->setFixedHeight(kFooterBarHeight + (expanded ? kFooterBodyHeight : 0) + 1);
+        footerToggle_->setArrowType(expanded ? Qt::DownArrow : Qt::UpArrow);
+        footerToggle_->setToolTip(expanded ? "Minimize" : "Show knowledge base, forums and screencasts");
     }
 
     // ----- launching ------------------------------------------------------
@@ -1016,6 +1045,9 @@ private:
     QTreeWidgetItem* selectedItem_ = nullptr;
     QWidget* info_ = nullptr;
     QFrame* footer_ = nullptr;
+    QWidget* footerBody_ = nullptr;
+    QToolButton* footerToggle_ = nullptr;
+    bool footerExpanded_ = false;
     QLabel* infoIcon_ = nullptr;
     QLabel* infoName_ = nullptr;
     QLabel* leftLabel_ = nullptr;

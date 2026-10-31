@@ -13,7 +13,7 @@
 
 #include "backend/backend_api.h"
 #include "common/diff_algorithms.h"
-#include "common/syntax_mappings.h"
+#include "options/syntax_mappings.h"
 
 namespace openbc::app {
 

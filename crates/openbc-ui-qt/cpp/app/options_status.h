@@ -28,9 +28,9 @@ struct PageStatus {
 
 inline constexpr PageStatus kPages[] = {
     {"Syntax Highlighting", Status::Implemented, "Saved to preferences.ini and applied to open comparisons."},
+    {"Appearance", Status::Implemented, "Saved to preferences.ini and applied (theme, text font, colors)."},
     {"Startup", Status::InProgress, "Work in progress: changes are not saved or applied yet."},
     {"Tabs", Status::InProgress, "Work in progress: changes are not saved or applied yet."},
-    {"Appearance", Status::InProgress, "Work in progress: changes are not saved or applied yet."},
     {"Text Editing", Status::InProgress, "Work in progress: changes are not saved or applied yet."},
     {"Next Difference", Status::InProgress, "Work in progress: changes are not saved or applied yet."},
     {"Backups", Status::InProgress, "Work in progress: changes are not saved or applied yet."},

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Nautilus "Scripts" action. Installed once per user under ~/.local/share/nautilus/scripts with the
 # action name as file name (see install-nautilus.sh); the name selects what to do.
+# "openbc: Compare To Left ..." is not installed by install-nautilus.sh: the running OpenBC creates it
+# (a symlink to the "Select Left" script) only while a left item is selected, and removes it again.
 set -u
 
 action=${0##*/}
@@ -31,23 +33,23 @@ fi
 command -v "${openbc_cmd[0]}" >/dev/null 2>&1 || fail "OpenBC was not found (${openbc_cmd[0]})."
 
 case "$action" in
-    "Select Left Folder")
+    "openbc: Select Left Folder")
         [[ ${#selected_paths[@]} -eq 1 && -d ${selected_paths[0]} ]] || fail "Select one folder."
         exec "${openbc_cmd[@]}" --select-left-folder "${selected_paths[0]}"
         ;;
-    "Compare to Left Folder")
+    "openbc: Compare To Left Folder")
         [[ ${#selected_paths[@]} -eq 1 && -d ${selected_paths[0]} ]] || fail "Select one folder."
         exec "${openbc_cmd[@]}" --compare-to-left-folder "${selected_paths[0]}"
         ;;
-    "Select Left File")
+    "openbc: Select Left File")
         [[ ${#selected_paths[@]} -eq 1 && -f ${selected_paths[0]} ]] || fail "Select one file."
         exec "${openbc_cmd[@]}" --select-left-file "${selected_paths[0]}"
         ;;
-    "Compare to Left File")
+    "openbc: Compare To Left File")
         [[ ${#selected_paths[@]} -eq 1 && -f ${selected_paths[0]} ]] || fail "Select one file."
         exec "${openbc_cmd[@]}" --compare-to-left-file "${selected_paths[0]}"
         ;;
-    "Compare")
+    "openbc: Compare")
         [[ ${#selected_paths[@]} -eq 2 ]] || fail "Select exactly two files or exactly two folders."
         [[ -e ${selected_paths[0]} && -e ${selected_paths[1]} ]] || fail "Both selected items must exist."
         if [[ -d ${selected_paths[0]} && -d ${selected_paths[1]} ]]; then

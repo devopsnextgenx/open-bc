@@ -30,6 +30,7 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <algorithm>
+#include "options/appearance_state.h"
 #include <functional>
 #include <vector>
 
@@ -79,20 +80,28 @@ inline QColor chromeBg() { return QColor(0x3e, 0x3e, 0x3e); }
 inline QColor inputBg() { return QColor(0x23, 0x23, 0x23); }
 inline QColor headerBg() { return QColor(0x36, 0x36, 0x36); }
 inline QColor border() { return QColor(0x50, 0x50, 0x50); }
-inline QColor rowA() { return QColor(0x26, 0x28, 0x33); }
-inline QColor rowB() { return QColor(0x2d, 0x2f, 0x3e); }
-inline QColor selection() { return QColor(0x44, 0x47, 0x5a); }
+inline QColor rowA() { return appearance::background("Folder Views/Default text", QColor(0x26, 0x28, 0x33)); }
+inline QColor rowB() {
+  if (!appearance::state().stripes) return rowA();
+  const QColor base = appearance::background("Folder Views/Default text", QColor());
+  return base.isValid() ? (base.lightness() < 128 ? base.lighter(112) : base.darker(106))
+                        : QColor(0x2d, 0x2f, 0x3e);
+}
+inline QColor selection() { return appearance::background("Folder Views/Selection", QColor(0x44, 0x47, 0x5a)); }
 inline QColor selectionBorder() { return QColor(0x5f, 0x63, 0x7f); }
 inline QColor text() { return QColor(0xf8, 0xf8, 0xf2); }
 inline QColor dimText() { return QColor(0x62, 0x72, 0xa4); }
+// Name column text of folder rows and the dimmed size/date columns of folder rows.
+inline QColor folderText() { return appearance::text("Folder Views/Default text", QColor(0xf8, 0xf8, 0xf2)); }
+inline QColor folderInfo() { return appearance::info("Folder Views/Default text", dimText()); }
 inline QColor treeLine() { return QColor(0x76, 0x7a, 0x92); }
 
-inline QColor same() { return QColor(0xf1, 0xfa, 0x8c); }
-inline QColor newer() { return QColor(0x50, 0xfa, 0x7b); }
-inline QColor older() { return QColor(0xfa, 0xb6, 0x8d); }
-inline QColor different() { return QColor(0xff, 0x55, 0x55); }
-inline QColor orphan() { return QColor(0xbd, 0x93, 0xf9); }
-inline QColor equalMarker() { return QColor(0x9a, 0xa0, 0xb8); }
+inline QColor same() { return appearance::text("Folder Views/Same", QColor(0xf1, 0xfa, 0x8c)); }
+inline QColor newer() { return appearance::text("Folder Views/Newer", QColor(0x50, 0xfa, 0x7b)); }
+inline QColor older() { return appearance::text("Folder Views/Older", QColor(0xfa, 0xb6, 0x8d)); }
+inline QColor different() { return appearance::text("Folder Views/Different", QColor(0xff, 0x55, 0x55)); }
+inline QColor orphan() { return appearance::text("Folder Views/Orphan", QColor(0xbd, 0x93, 0xf9)); }
+inline QColor equalMarker() { return appearance::text("Folder Views/Unknown", QColor(0x9a, 0xa0, 0xb8)); }
 
 inline QColor folderYellow() { return QColor(0xff, 0xe9, 0x8f); }
 inline QColor folderRed() { return QColor(0xff, 0x8f, 0x8f); }
@@ -140,7 +149,7 @@ inline QColor statusTextColor(RowStatus status) {
   case RowStatus::Equal:
   case RowStatus::Pending:
   default:
-    return color::text();
+    return color::folderText();
   }
 }
 
@@ -422,6 +431,32 @@ inline QString applicationStyleSheet(Theme theme = Theme::Dark) {
     for (const auto &color : colors)
       sheet.replace(color.first, color.second);
   }
+  // Appearance overrides last, so they win over the defaults above in both themes.
+  const auto css = [](const QColor &c) { return c.name(QColor::HexRgb); };
+  const auto &colors = appearance::state().colors;
+  if (const auto it = colors.constFind("Folder Views/Log panel"); it != colors.constEnd()) {
+    sheet += QString("QPlainTextEdit#console { %1%2 }\n")
+                 .arg(it->text.isValid() ? "color: " + css(it->text) + ";" : QString(),
+                      it->background.isValid() ? " background: " + css(it->background) + ";" : QString());
+  }
+  if (const auto it = colors.constFind("File Views/Default text"); it != colors.constEnd()) {
+    sheet += QString("QWidget#textCompareView QPlainTextEdit { %1%2 }\n")
+                 .arg(it->text.isValid() ? "color: " + css(it->text) + ";" : QString(),
+                      it->background.isValid() ? " background: " + css(it->background) + ";" : QString());
+  }
+  if (const auto it = colors.constFind("File Views/Selection");
+      it != colors.constEnd() && it->background.isValid()) {
+    sheet += QString("QWidget#textCompareView QPlainTextEdit { selection-background-color: %1; }\n")
+                 .arg(css(it->background));
+  }
+  // "Use gradient for center background": the strip between the two folder panes.
+  sheet += appearance::state().gradientCenter
+               ? QStringLiteral("QWidget#folderGutter { background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+                                " stop:0 #2a2a2a, stop:0.5 #444444, stop:1 #2a2a2a); }\n")
+               : QStringLiteral("QWidget#folderGutter { background: #3e3e3e; }\n");
+  if (theme == Theme::Light) {
+    sheet.replace("#2a2a2a", "#dfe5ef").replace("#444444", "#f4f6fb").replace("QWidget#folderGutter { background: #3e3e3e;", "QWidget#folderGutter { background: #e5e9f2;");
+  }
   return sheet;
 }
 
@@ -521,6 +556,8 @@ inline QIcon folderIcon(const QColor &base, const QColor &second = QColor()) {
 // Folder icon coloured by which kinds of differences it contains.
 inline QIcon folderIconForMask(quint32 mask) {
   static QHash<quint32, QIcon> cache;
+  // "Color folders to reflect content" off: every folder keeps the plain yellow icon (mask 0).
+  if (!appearance::state().colorFolders) mask = 0;
   const auto found = cache.constFind(mask);
   if (found != cache.constEnd()) {
     return *found;
@@ -569,6 +606,11 @@ inline QIcon groupNodeIcon(const QColor &color) {
 // Small square shown in front of file names, coloured by status.
 inline QIcon markerIcon(RowStatus status) {
   static QHash<int, QIcon> cache;
+  static int cachedRevision = -1;
+  if (cachedRevision != appearance::state().revision) { // colours changed: rebuild lazily
+    cache.clear();
+    cachedRevision = appearance::state().revision;
+  }
   const int key = static_cast<int>(status);
   const auto found = cache.constFind(key);
   if (found != cache.constEnd()) {
@@ -1348,7 +1390,7 @@ public:
     }
 
     const QBrush fg = index.data(Qt::ForegroundRole).value<QBrush>();
-    painter->setPen(fg.style() == Qt::NoBrush ? color::text() : fg.color());
+    painter->setPen(fg.style() == Qt::NoBrush ? color::folderText() : fg.color());
     painter->setFont(opt.font);
     const Qt::Alignment align = opt.displayAlignment & Qt::AlignHorizontal_Mask
                                     ? opt.displayAlignment

@@ -22,6 +22,8 @@ crates/openbc-ui-qt/
     backend/    backend_api.h, backend_channel.h, compare_backend_api.h
     remote/     SFTP/FTP/SMB profiles, dialogs, vfs bridge
     home/       home_view.h, session_history.h
+    options/    ALL of Tools > Options: AppOptions/OptionsStore, options_dialog.h, appearance_controller.h,
+                text_font.h, syntax_mappings.h, options.md (read it first)
     viewers/<name>/   one folder per compare tab
     tools/      standalone executables (depcheck) - own main(), never linked into the GUI
   docs/         REFACTOR_SAVEPOINT.md (progress log), this file lives at the crate root
@@ -108,8 +110,8 @@ Viewers never parse drops or watch files themselves. A viewer exposes `applyDrop
 
 ## 10. Syntax highlighting languages
 
-Which extension or file name uses which grammar is decided in **one** place: `crates/openbc-core/src/text/highlight/registry.rs`. Never hard-code extension lists in C++ or QML; add a row to the table (a test fails on duplicate keys, unknown grammars, and extensions the engines know that the table misses) and regenerate `docs/SYNTAX_LANGUAGES.md`. Pass viewers' highlighters the **file name**, not the suffix (`SyntaxHighlighter::setLanguage`), so `Makefile` and `view.html.erb` resolve. User overrides live in `common/syntax_mappings.h` (`SyntaxMappingStore`: persisted in `preferences.ini`, pushed to the backend, and every `SyntaxHighlighter` re-highlights itself on change); the Options page is `Syntax Highlighting` in `app/options_dialog.h`.
+Which extension or file name uses which grammar is decided in **one** place: `crates/openbc-core/src/text/highlight/registry.rs`. Never hard-code extension lists in C++ or QML; add a row to the table (a test fails on duplicate keys, unknown grammars, and extensions the engines know that the table misses) and regenerate `docs/SYNTAX_LANGUAGES.md`. Pass viewers' highlighters the **file name**, not the suffix (`SyntaxHighlighter::setLanguage`), so `Makefile` and `view.html.erb` resolve. User overrides live in `options/syntax_mappings.h` (`SyntaxMappingStore`: persisted in `preferences.ini`, pushed to the backend, and every `SyntaxHighlighter` re-highlights itself on change); the Options page is `Syntax Highlighting` in `options/options_dialog.h`.
 
 ## 11. Options dialog
 
-Tools > Options pages are grouped by completion status (`cpp/app/options_status.h`). The per-page and per-field state, and what to do to finish a page, is in `options.md` (crate root): read it before working on options, and update it and `options_status.h` together.
+Everything about Tools > Options is in `cpp/options/` (model + persistence in `app_options.h`, pages in `options_dialog.h`, behaviour in `*_controller.h`, status in `options_status.h`). Per-page and per-field state and the steps to finish a page are in `cpp/options/options.md`: read it before working on options, and update it and `options_status.h` together. Keep settings logic there; viewers only read the result (e.g. `TextFont::instance()`, `appearance::state()`).

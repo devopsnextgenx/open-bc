@@ -58,6 +58,7 @@
 #include "common/unsaved_changes_dialog.h"
 #include "common/file_change_controller.h"
 #include "style/qt_style.h"
+#include "options/text_font.h"
 #include "remote/remote_profile_store.h"
 #include "remote/remote_vfs_bridge.h"
 #include "viewers/text/syntax_highlighter.h"
@@ -682,6 +683,19 @@ private:
                                                               : QVector<CharSegment>();
         });
         applyLanguageHighlighting();
+
+        // Font and diff colours come from Tools > Options > Appearance; re-applied on every change.
+        TextFont::instance().subscribe(this, [this]() {
+            const QFont editorFont = TextFont::instance().font();
+            leftEditor_->applyEditorFont(editorFont);
+            rightEditor_->applyEditorFont(editorFont);
+            if (!rows_.isEmpty()) {
+                computeDiffSelections(rows_);
+                updateExtraSelections();
+            }
+            leftEditor_->viewport()->update();
+            rightEditor_->viewport()->update();
+        });
 
         syntaxStyleMenu_ = new QMenu("Syntax & Style", this);
         auto* syntaxMenu = syntaxStyleMenu_->addMenu("Syntax Highlighting");
@@ -1592,20 +1606,27 @@ private:
             (editor == leftEditor_ ? leftDiffSelections_ : rightDiffSelections_).append(selection);
         };
         static const QBrush kHatch(QColor(0x50, 0x50, 0x50, 130), Qt::BDiagPattern);
+        // Tools > Options > Appearance > File Views > Compare colors (overrides keep the default alpha
+        // unless the user picked a translucent colour).
+        namespace ap = openbc::ui::appearance;
+        const QColor differentBg = ap::background("File Views/Different", QColor(150, 120, 30, 150));
+        const QColor unimportantBg = ap::background("File Views/Unimportant", QColor(45, 90, 135, 150));
+        const QColor leftOnlyBg = ap::background("File Views/Left only", QColor(70, 70, 70, 90));
+        const QColor rightOnlyBg = ap::background("File Views/Right only", QColor(70, 70, 70, 90));
         for (int row = 0; row < rows.size(); ++row) {
             const TextDiffLine& line = rows[row];
             if (!line.changed) continue;
             if (line.whitespaceOnly) {
-                addSelection(leftEditor_, row, QColor(45, 90, 135, 150));
-                addSelection(rightEditor_, row, QColor(45, 90, 135, 150));
+                addSelection(leftEditor_, row, unimportantBg);
+                addSelection(rightEditor_, row, unimportantBg);
             } else if (line.leftNumber > 0 && line.rightNumber > 0) {
-                addSelection(leftEditor_, row, QColor(150, 120, 30, 150));
-                addSelection(rightEditor_, row, QColor(150, 120, 30, 150));
+                addSelection(leftEditor_, row, differentBg);
+                addSelection(rightEditor_, row, differentBg);
             } else if (line.leftNumber > 0) {
-                addSelection(leftEditor_, row, QColor(70, 70, 70, 90));
+                addSelection(leftEditor_, row, leftOnlyBg);
                 addSelection(rightEditor_, row, kHatch);
             } else if (line.rightNumber > 0) {
-                addSelection(rightEditor_, row, QColor(70, 70, 70, 90));
+                addSelection(rightEditor_, row, rightOnlyBg);
                 addSelection(leftEditor_, row, kHatch);
             }
         }

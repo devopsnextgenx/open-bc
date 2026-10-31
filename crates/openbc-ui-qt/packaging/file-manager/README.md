@@ -1,13 +1,21 @@
+> Legacy reference. The maintained scripts (Nautilus Scripts + nautilus-python, Dolphin `.desktop.in`, MSI registry in `scripts/build.sh`) use the same `openbc:` names and the same app-managed "Compare To Left" mechanism; see `cpp/app/context_menu_state.*`.
+
 # File-manager integration (Nautilus, Dolphin, Windows Explorer)
 
 The app already understands the command lines these menus run (`cli_options.cpp`, `handleLaunch` in
 `main_window.h`; the left item is remembered in preferences `context/leftPath`):
 
-| Menu entry | Command |
-|---|---|
-| Select Left Folder / File | `openbc --select-left-folder PATH` / `--select-left-file PATH` |
-| Compare to Selected Folder / File | `openbc --compare-to-left-folder PATH` / `--compare-to-left-file PATH` |
-| Compare with OpenBC (2 items selected) | `openbc LEFT RIGHT` |
+| Menu entry | Command | Shown |
+|---|---|---|
+| openbc: Select Left Folder / File | `openbc --select-left-folder PATH` / `--select-left-file PATH` | always |
+| openbc: Compare To Left Folder / File | `openbc --compare-to-left-folder PATH` / `--compare-to-left-file PATH` | only after a left item was selected |
+| openbc: Compare (2 items selected) | `openbc LEFT RIGHT` | two items of the same kind |
+
+"Select Left" opens no tab: the running OpenBC (started on demand, Home tab only) keeps the path in memory.
+The first tab appears when "Compare To Left" supplies the right side (an empty tab is reused). OpenBC publishes
+the selection so the file manager can hide "Compare To Left" until it exists (`app/context_menu_state.*`):
+Windows writes/removes the `OpenBC.CompareToLeft` verb in HKCU; Linux writes `$XDG_RUNTIME_DIR/openbc/left-selection`
+(Nautilus extension reads it) and `~/.local/share/kio/servicemenus/openbc-compare-to-left-*.desktop` (Dolphin).
 
 This folder holds what has to be INSTALLED so the file managers show them. Nothing here is wired into
 the root build yet (CMakeLists.txt, scripts/build.sh, release.yml live outside `crates/`). Untested on real desktops.
@@ -44,5 +52,4 @@ endforeach()
 `windows/openbc-explorer.reg` shows the verbs (classic menu, under "Show more options" on Windows 11;
 the new Windows 11 menu needs an `IExplorerCommand` shell extension, not done). For the MSI, the same keys
 go into the installer as registry entries under `HKCR` of the exe component (CPack WiX: a
-`CPACK_WIX_PATCH_FILE` fragment on the openbc.exe component). Two-item "Compare" is not offered on
-Windows, because static verbs run once per selected item.
+`CPACK_WIX_PATCH_FILE` fragment on the openbc.exe component). Two-item "Compare" uses `MultiSelectModel=Player` (untested; it also appears for a single item, which opens a one-sided compare).

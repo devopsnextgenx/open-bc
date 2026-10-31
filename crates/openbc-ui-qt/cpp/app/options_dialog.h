@@ -33,6 +33,13 @@
 #include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFont>
+#include <QFontComboBox>
+#include <QFontDatabase>
+#include <QGraphicsDropShadowEffect>
+#include <QGuiApplication>
+#include <QMouseEvent>
+#include <QSizeGrip>
+#include <QWindow>
 #include <QFontDialog>
 #include <QFrame>
 #include <QGridLayout>
@@ -66,6 +73,7 @@
 #include "app/app_options.h"
 #include "app/options_status.h"
 #include "app/options_icons.h"
+#include "common/text_font.h"
 
 namespace openbc::app {
 
@@ -97,14 +105,60 @@ private:
     QColor color_;
 };
 
+// Title strip of the frameless Options window: dragging it moves the window.
+class OptionsTitleBar : public QLabel {
+public:
+    explicit OptionsTitleBar(const QString& text, QWidget* parent = nullptr) : QLabel(text, parent) {
+        QFont f = font();
+        f.setBold(true);
+        f.setPointSizeF(f.pointSizeF() * 1.1);
+        setFont(f);
+        setContentsMargins(4, 2, 4, 6);
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent* event) override {
+        if (event->button() == Qt::LeftButton && window()->windowHandle()) {
+            window()->windowHandle()->startSystemMove();
+            event->accept();
+            return;
+        }
+        QLabel::mousePressEvent(event);
+    }
+};
+
 class OptionsDialog : public QDialog {
 public:
     explicit OptionsDialog(OptionsStore& store, QWidget* parent = nullptr)
         : QDialog(parent), store_(store), draft_(store.options()) {
         setWindowTitle("Options");
-        resize(780, 640);
+        setObjectName("optionsDialog");
+        setStyleSheet("QDialog#optionsDialog { background: transparent; }");   // the card paints the frame
+        resize(820, 680);
 
-        auto* root = new QVBoxLayout(this);
+        // Same look as the "new release" card on Home: blue 2px border, rounded corners and a soft
+        // drop shadow. A frameless translucent window is the only way to get a shadow around a
+        // dialog (the native frame has none on a dark theme), so the card draws the frame itself.
+        setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
+        setAttribute(Qt::WA_TranslucentBackground);
+        auto* frameLayout = new QVBoxLayout(this);
+        frameLayout->setContentsMargins(18, 14, 18, 22);   // room for the shadow
+        auto* card = new QFrame(this);
+        card->setObjectName("optionsCard");
+        card->setFrameShape(QFrame::NoFrame);
+        card->setAutoFillBackground(true);
+        card->setStyleSheet(
+            "QFrame#optionsCard { background: palette(window); border: 2px solid #2f6db5; border-radius: 6px; }");
+        auto* shadow = new QGraphicsDropShadowEffect(card);
+        shadow->setBlurRadius(22);
+        shadow->setOffset(0, 4);
+        shadow->setColor(QColor(0, 0, 0, 140));
+        card->setGraphicsEffect(shadow);
+        frameLayout->addWidget(card);
+
+        auto* root = new QVBoxLayout(card);
+        root->setContentsMargins(10, 8, 10, 8);
+        root->addWidget(new OptionsTitleBar("Options", card));
         auto* body = new QHBoxLayout;
         root->addLayout(body, 1);
 
@@ -162,7 +216,10 @@ public:
             QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Apply, this);
         apply_ = buttons_->button(QDialogButtonBox::Apply);
         apply_->setEnabled(false);
-        root->addWidget(buttons_);
+        auto* buttonRow = new QHBoxLayout;
+        buttonRow->addWidget(buttons_, 1);
+        buttonRow->addWidget(new QSizeGrip(card), 0, Qt::AlignBottom | Qt::AlignRight);
+        root->addLayout(buttonRow);
 
         // Rows are not stack indexes any more (group headers sit in between): each page row
         // carries its stack index in Qt::UserRole, header rows carry none.
@@ -175,6 +232,8 @@ public:
         connect(buttons_, &QDialogButtonBox::accepted, this, [this]() { commit(); accept(); });
         connect(buttons_, &QDialogButtonBox::rejected, this, [this]() { reject(); });
         connect(apply_, &QPushButton::clicked, this, [this]() { commit(); });
+        // Closing without OK (Cancel, Esc) drops a theme that was only being previewed.
+        connect(this, &QDialog::rejected, this, [this]() { revertThemePreview(); });
 
         for (int i = 0; i < pages_->count(); ++i) {  // first real page, never a group header
             if (pages_->item(i)->data(Qt::UserRole).isValid()) {
@@ -193,6 +252,14 @@ public:
 private:
     // ---- plumbing ---------------------------------------------------------
     void markDirty() { apply_->setEnabled(true); }
+
+    // Appearance > Preview: show the draft theme now, or fall back to the committed one.
+    void previewDraftTheme() {
+        if (store_.previewTheme) store_.previewTheme(draft_.previewTheme ? draft_.theme : store_.options().theme);
+    }
+    void revertThemePreview() {
+        if (store_.previewTheme) store_.previewTheme(store_.options().theme);
+    }
 
     void commit() {
         store_.commit(draft_);
@@ -498,9 +565,12 @@ private:
         connect(theme, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int i) {
             draft_.theme = static_cast<ThemeChoice>(i);
             markDirty();
+            previewDraftTheme();
         });
         v->addWidget(theme, 0, Qt::AlignLeft);
-        v->addWidget(check("&Preview", &draft_.previewTheme));
+        auto* preview = check("&Preview", &draft_.previewTheme);
+        connect(preview, &QCheckBox::toggled, this, [this](bool) { previewDraftTheme(); });
+        v->addWidget(preview);
 
         auto* tabs = new QTabWidget;
         tabs->addTab(buildColorTab("Folder Views",
@@ -520,17 +590,86 @@ private:
                                    false),
                      "Picture Compare");
         v->addWidget(tabs, 1);
+        v->addWidget(note("Colors that no view uses yet are kept but have no effect: Folder Views \"Filtered out\" and "
+                          "\"Merge colors\", File Views \"Same\", and everything under Picture Compare. Folder "
+                          "colors apply to rows after the next refresh."));
 
-        auto* systemFont = check("Use s&ystem font", &draft_.useSystemFont);
-        v->addWidget(systemFont);
-        auto* font = fontButton(&draft_.customFont);
-        font->setEnabled(!draft_.useSystemFont);
-        connect(systemFont, &QCheckBox::toggled, font, [font](bool on) { font->setEnabled(!on); });
-        v->addWidget(font, 0, Qt::AlignLeft);
+        addTextFontControls(v);
         v->addWidget(check("Color &folders to reflect content", &draft_.colorFoldersToReflectContent));
         v->addWidget(check("Use &gradient for center background", &draft_.useGradientForCenterBackground));
         v->addWidget(note("Additional color schemes will be available from the OpenBC website."));
         return page;
+    }
+
+    // Font of the Text Compare editors: Beyond Compare's default (else the system fixed-width font),
+    // or any font installed on this machine.
+    void addTextFontControls(QVBoxLayout* v) {
+        v->addWidget(heading("Text Compare Font"));
+        auto* useDefault = check(
+            QString("Use &default font (%1, otherwise the system fixed-width font)").arg(TextFont::kDefaultFamily),
+            &draft_.useSystemFont);
+        v->addWidget(useDefault);
+
+        auto* controls = new QWidget;
+        auto* grid = new QGridLayout(controls);
+        grid->setContentsMargins(20, 0, 0, 0);
+        auto* family = new QFontComboBox;   // lists every font installed on the system
+        family->setFontFilters(QFontComboBox::AllFonts);
+        family->setMinimumWidth(260);
+        auto* size = new QSpinBox;
+        size->setRange(6, 72);
+        size->setSuffix(" pt");
+        auto* monospacedOnly = new QCheckBox("Show &monospaced fonts only");
+        auto* sample = new QLabel("AaBbYyZz 0123456789 {}[]()<>;:/\\ iIl1 oO0");
+        sample->setFrameShape(QFrame::StyledPanel);
+        sample->setContentsMargins(6, 4, 6, 4);
+        grid->addWidget(new QLabel("Font:"), 0, 0);
+        grid->addWidget(family, 0, 1);
+        grid->addWidget(new QLabel("Size:"), 0, 2);
+        grid->addWidget(size, 0, 3);
+        grid->addWidget(monospacedOnly, 1, 1, 1, 3);
+        grid->addWidget(sample, 2, 0, 1, 4);
+        grid->setColumnStretch(1, 1);
+
+        QFont start = TextFont::defaultFont();
+        if (!draft_.customFont.isEmpty()) {
+            QFont parsed;
+            if (parsed.fromString(draft_.customFont) && !parsed.family().isEmpty()) start = parsed;
+        }
+        {
+            const QSignalBlocker b1(family), b2(size);
+            family->setCurrentFont(start);
+            size->setValue(start.pointSize() > 0 ? start.pointSize() : TextFont::kDefaultPointSize);
+        }
+        auto chosen = [family, size]() {
+            QFont f = family->currentFont();
+            f.setPointSize(size->value());
+            return f;
+        };
+        auto refreshSample = [sample, chosen, useDefault]() {
+            sample->setFont(useDefault->isChecked() ? TextFont::defaultFont() : chosen());
+        };
+        auto store = [this, chosen, refreshSample]() {
+            draft_.customFont = chosen().toString();
+            refreshSample();
+            markDirty();
+        };
+        connect(family, &QFontComboBox::currentFontChanged, this, [store](const QFont&) { store(); });
+        connect(size, qOverload<int>(&QSpinBox::valueChanged), this, [store](int) { store(); });
+        connect(monospacedOnly, &QCheckBox::toggled, this, [family, store](bool on) {
+            const QFont keep = family->currentFont();
+            family->setFontFilters(on ? QFontComboBox::MonospacedFonts : QFontComboBox::AllFonts);
+            family->setCurrentFont(keep);
+            store();
+        });
+        controls->setEnabled(!draft_.useSystemFont);
+        connect(useDefault, &QCheckBox::toggled, this, [controls, store, refreshSample](bool on) {
+            controls->setEnabled(!on);
+            if (!on) store();
+            else refreshSample();
+        });
+        refreshSample();
+        v->addWidget(controls);
     }
 
     QWidget* buildColorTab(const QString& tab, const ColorTree& items, bool folderExtras) {

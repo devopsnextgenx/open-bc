@@ -562,38 +562,27 @@ pkg_msi() {
         <RegistryValue Root="HKCU" Key="Software\OpenBC" Name="desktop_shortcut" Type="integer" Value="1" KeyPath="yes"/>
       </Component>
     </DirectoryRef>
+    <!-- "openbc: Compare To Left Folder/File" is NOT installed here: the running OpenBC adds the verbs under
+         HKCU\\Software\\Classes (OpenBC.CompareToLeftFolder / OpenBC.CompareToLeftFile) only while a left item is
+         selected and removes them again, so Explorer never offers a Compare that cannot work. -->
     <DirectoryRef Id="TARGETDIR">
       <Component Id="OpenBCFolderSelectLeft" Guid="*">
         <RegistryKey Root="HKCR" Key="Directory\shell\OpenBC.SelectLeftFolder">
-          <RegistryValue Name="MUIVerb" Type="string" Value="Select Left Folder" KeyPath="yes" />
+          <RegistryValue Name="MUIVerb" Type="string" Value="openbc: Select Left Folder" KeyPath="yes" />
           <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]openbc.exe,0" />
           <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; --select-left-folder &quot;%1&quot;" /></RegistryKey>
         </RegistryKey>
       </Component>
-      <Component Id="OpenBCFolderCompareToLeft" Guid="*">
-        <RegistryKey Root="HKCR" Key="Directory\shell\OpenBC.CompareToLeftFolder">
-          <RegistryValue Name="MUIVerb" Type="string" Value="Compare to Left Folder" KeyPath="yes" />
-          <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]openbc.exe,0" />
-          <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; --compare-to-left-folder &quot;%1&quot;" /></RegistryKey>
-        </RegistryKey>
-      </Component>
       <Component Id="OpenBCFileSelectLeft" Guid="*">
         <RegistryKey Root="HKCR" Key="*\shell\OpenBC.SelectLeftFile">
-          <RegistryValue Name="MUIVerb" Type="string" Value="Select Left File" KeyPath="yes" />
+          <RegistryValue Name="MUIVerb" Type="string" Value="openbc: Select Left File" KeyPath="yes" />
           <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]openbc.exe,0" />
           <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; --select-left-file &quot;%1&quot;" /></RegistryKey>
         </RegistryKey>
       </Component>
-      <Component Id="OpenBCFileCompareToLeft" Guid="*">
-        <RegistryKey Root="HKCR" Key="*\shell\OpenBC.CompareToLeftFile">
-          <RegistryValue Name="MUIVerb" Type="string" Value="Compare to Left File" KeyPath="yes" />
-          <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]openbc.exe,0" />
-          <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; --compare-to-left-file &quot;%1&quot;" /></RegistryKey>
-        </RegistryKey>
-      </Component>
       <Component Id="OpenBCFolderCompareSelection" Guid="*">
         <RegistryKey Root="HKCR" Key="Directory\shell\OpenBC.Compare">
-          <RegistryValue Name="MUIVerb" Type="string" Value="Compare" KeyPath="yes" />
+          <RegistryValue Name="MUIVerb" Type="string" Value="openbc: Compare" KeyPath="yes" />
           <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]openbc.exe,0" />
           <RegistryValue Name="MultiSelectModel" Type="string" Value="Player" />
           <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; %*" /></RegistryKey>
@@ -601,7 +590,7 @@ pkg_msi() {
       </Component>
       <Component Id="OpenBCFileCompareSelection" Guid="*">
         <RegistryKey Root="HKCR" Key="*\shell\OpenBC.Compare">
-          <RegistryValue Name="MUIVerb" Type="string" Value="Compare" KeyPath="yes" />
+          <RegistryValue Name="MUIVerb" Type="string" Value="openbc: Compare" KeyPath="yes" />
           <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]openbc.exe,0" />
           <RegistryValue Name="MultiSelectModel" Type="string" Value="Player" />
           <RegistryKey Key="command"><RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]openbc.exe&quot; %*" /></RegistryKey>
@@ -613,9 +602,7 @@ pkg_msi() {
       <ComponentRef Id="ApplicationShortcut" />
       <ComponentRef Id="DesktopShortcut" />
       <ComponentRef Id="OpenBCFolderSelectLeft" />
-      <ComponentRef Id="OpenBCFolderCompareToLeft" />
       <ComponentRef Id="OpenBCFileSelectLeft" />
-      <ComponentRef Id="OpenBCFileCompareToLeft" />
       <ComponentRef Id="OpenBCFolderCompareSelection" />
       <ComponentRef Id="OpenBCFileCompareSelection" />
     </Feature>

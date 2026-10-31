@@ -1,4 +1,9 @@
-"""OpenBC entries in the Nautilus (GNOME Files) context menu (needs python3-nautilus / nautilus-python)."""
+"""OpenBC entries in the Nautilus (GNOME Files) context menu (needs python3-nautilus / nautilus-python).
+
+"openbc: Compare To Left ..." is offered only while the running OpenBC holds a left item. OpenBC publishes
+that to $XDG_RUNTIME_DIR/openbc/left-selection (first line "folder" or "file") and deletes the file when the
+selection is cleared or OpenBC exits.
+"""
 import os
 import shlex
 
@@ -28,6 +33,17 @@ def _openbc_command():
     return ["/usr/bin/openbc"]
 
 
+def _left_kind():
+    """'folder' / 'file' while OpenBC holds a left item, else None."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    try:
+        with open(os.path.join(runtime, "openbc", "left-selection"), encoding="utf-8") as handle:
+            kind = handle.readline().strip()
+    except OSError:
+        return None
+    return kind if kind in ("folder", "file") else None
+
+
 class OpenBCMenuProvider(GObject.GObject, Nautilus.MenuProvider):
     # Nautilus 4.x calls get_file_items(files); 3.0 calls get_file_items(window, files).
     def get_file_items(self, *args):
@@ -42,18 +58,15 @@ class OpenBCMenuProvider(GObject.GObject, Nautilus.MenuProvider):
             directories.append(file_info.is_directory())
 
         if len(paths) == 1:
-            if directories[0]:
-                return [
-                    self._item("Select Left Folder", "--select-left-folder", paths),
-                    self._item("Compare to Left Folder", "--compare-to-left-folder", paths),
-                ]
-            return [
-                self._item("Select Left File", "--select-left-file", paths),
-                self._item("Compare to Left File", "--compare-to-left-file", paths),
-            ]
+            kind = "folder" if directories[0] else "file"
+            title = kind.capitalize()
+            items = [self._item("openbc: Select Left " + title, "--select-left-" + kind, paths)]
+            if _left_kind() == kind:
+                items.append(self._item("openbc: Compare To Left " + title, "--compare-to-left-" + kind, paths))
+            return items
 
         if len(paths) == 2 and directories[0] == directories[1]:
-            return [self._item("Compare", None, paths)]
+            return [self._item("openbc: Compare", None, paths)]
         return []
 
     def _item(self, label, action, paths):

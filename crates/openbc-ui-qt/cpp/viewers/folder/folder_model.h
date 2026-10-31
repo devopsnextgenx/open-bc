@@ -158,8 +158,8 @@ struct EntryPair {
 inline void applyRowStyle(QTreeWidgetItem* item, RowStatus status, bool isDir) {
     // Folder names keep the normal text colour (the folder icon carries the
     // status); their size/date/attribute columns are dimmed.
-    const QColor name = isDir ? color::text() : openbc::ui::statusTextColor(status);
-    const QColor rest = isDir ? color::dimText() : name;
+    const QColor name = isDir ? color::folderText() : openbc::ui::statusTextColor(status);
+    const QColor rest = isDir ? color::folderInfo() : name;
     item->setForeground(0, name);
     for (int column = 1; column < item->columnCount(); ++column) {
         item->setForeground(column, rest);

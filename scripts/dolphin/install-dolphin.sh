@@ -22,7 +22,7 @@ while [ $# -gt 0 ]; do
 done
 names="openbc-compare-folders openbc-compare-files openbc-compare-two"
 if [ "$uninstall" = 1 ]; then
-    for n in $names; do rm -f "$dest/$n.desktop"; done
+    for n in $names openbc-compare-to-left-folder openbc-compare-to-left-file; do rm -f "$dest/$n.desktop"; done
     echo "Removed."; exit 0
 fi
 mkdir -p "$dest"
@@ -30,4 +30,9 @@ for n in $names; do
     sed "s|@OPENBC_FM_EXEC@|$cmd|g" "$src/$n.desktop.in" > "$dest/$n.desktop"
     chmod 0755 "$dest/$n.desktop"   # KDE only trusts executable service menus under $HOME
 done
+# The running OpenBC writes "Compare To Left" itself; it reads the command from here (same file the
+# Nautilus helpers use).
+if [ "$cmd" != "openbc" ]; then
+    cfg="${XDG_CONFIG_HOME:-$HOME/.config}/openbc"; mkdir -p "$cfg"; printf '%s\n' "$cmd" > "$cfg/launcher"
+fi
 echo "Installed in $dest - reopen Dolphin."

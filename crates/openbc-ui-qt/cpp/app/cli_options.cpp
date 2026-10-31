@@ -47,7 +47,7 @@ QString cliHelpText() {
         "OpenBC - file and folder comparison\n\n"
         "Usage: openbc [options] [LEFT [RIGHT]]\n\n"
         "  LEFT, RIGHT           two files or two folders to compare (both optional)\n"
-        "  --select-left-folder PATH   remember a folder as the left side\n"
+        "  --select-left-folder PATH   remember a folder as the left side (opens no tab)\n"
         "  --compare-to-left-folder PATH   compare a folder to the remembered left folder\n"
         "  --select-left-file PATH   remember a file as the left side\n"
         "  --compare-to-left-file PATH   compare a file to the remembered left file\n"

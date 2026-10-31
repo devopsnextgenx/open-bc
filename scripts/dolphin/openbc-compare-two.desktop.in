@@ -5,9 +5,10 @@ MimeType=all/all;
 X-KDE-MinNumberOfUrls=2
 X-KDE-MaxNumberOfUrls=2
 Actions=OpenBCCompareTwo;
+X-KDE-Submenu=openbc
 Icon=io.github.devopsnextgenx.open-bc
 
 [Desktop Action OpenBCCompareTwo]
-Name=Compare with OpenBC
+Name=openbc: Compare
 Icon=view-split-left-right
 Exec=@OPENBC_FM_EXEC@ %F

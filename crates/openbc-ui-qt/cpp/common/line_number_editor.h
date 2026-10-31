@@ -4,6 +4,7 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include "style/qt_style.h"
 #include <QEvent>
 #include <QClipboard>
 #include <QFocusEvent>
@@ -279,6 +280,14 @@ protected:
         return mime;
     }
 
+    // Applies the Text Compare font (options/text_font.h) and keeps tab stops and gutters in step.
+    void applyEditorFont(const QFont& editorFont) {
+        setFont(editorFont);
+        setTabStopDistance(fontMetrics().horizontalAdvance(' ') * 4);
+        updateMarginWidths();
+        viewport()->update();
+    }
+
     // (paintEvent unchanged)
     void paintEvent(QPaintEvent* event) override {
         QPlainTextEdit::paintEvent(event);
@@ -370,7 +379,7 @@ private:
         const int textMargin = numberSide_ == GutterSide::Left ? 8 : 6;
         forEachVisibleBlock(event, [&](int blockNumber, int top, int bottom) {
             const int number = blockNumber < lineNumbers_.size() ? lineNumbers_[blockNumber] : 0;
-            painter.setPen(number ? QGuiApplication::palette().color(QPalette::Text)
+            painter.setPen(number ? openbc::ui::appearance::text("File Views/Line numbers", QGuiApplication::palette().color(QPalette::Text))
                                   : QGuiApplication::palette().color(QPalette::Disabled,
                                                                       QPalette::Text));
             painter.drawText(0, top, lineNumberArea_->width() - textMargin, bottom - top,

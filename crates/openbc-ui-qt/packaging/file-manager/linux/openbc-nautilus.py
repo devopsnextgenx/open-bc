@@ -3,10 +3,13 @@
 Needs nautilus-python (Debian/Ubuntu: python3-nautilus, Fedora: nautilus-python).
 Works with Nautilus 43+ (extension API 4.0) and older releases (API 3.0).
 
-  * two items of the same kind selected  -> "Compare with OpenBC"
-  * one item selected                    -> "OpenBC: Select Left ..." / "OpenBC: Compare to Selected ..."
-    (OpenBC itself remembers the left item, like Beyond Compare)
-  * right-click on the folder background -> the same two entries for the folder being shown
+  * two items of the same kind selected  -> "openbc: Compare"
+  * one item selected                    -> "openbc: Select Left Folder/File", and, only while a left item
+    is selected in the running OpenBC, "openbc: Compare To Left Folder/File"
+  * right-click on the folder background -> the same entries for the folder being shown
+
+OpenBC keeps the left item in memory and publishes it to $XDG_RUNTIME_DIR/openbc/left-selection
+("folder" or "file" on the first line); the file is removed when the selection is cleared or OpenBC exits.
 """
 import os
 import shutil
@@ -21,6 +24,17 @@ except ValueError:
 from gi.repository import GObject, Nautilus  # noqa: E402
 
 _LAUNCHER = "openbc-fm"
+
+
+def _left_kind():
+    """'folder' / 'file' when OpenBC currently holds a left item, else None."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    try:
+        with open(os.path.join(runtime, "openbc", "left-selection"), encoding="utf-8") as handle:
+            kind = handle.readline().strip()
+    except OSError:
+        return None
+    return kind if kind in ("folder", "file") else None
 
 
 def _launcher():
@@ -56,12 +70,12 @@ class OpenBCMenuProvider(GObject.GObject, Nautilus.MenuProvider):
     def _single(self, path, is_dir, prefix):
         kind = "folder" if is_dir else "file"
         title = kind.capitalize()
-        return [
-            self._item(prefix + "SelectLeft", "OpenBC: Select Left " + title,
-                       lambda *_: _run(["--select-left-" + kind, path])),
-            self._item(prefix + "CompareTo", "OpenBC: Compare to Selected " + title,
-                       lambda *_: _run(["--compare-to-left-" + kind, path])),
-        ]
+        items = [self._item(prefix + "SelectLeft", "openbc: Select Left " + title,
+                            lambda *_: _run(["--select-left-" + kind, path]))]
+        if _left_kind() == kind:
+            items.append(self._item(prefix + "CompareToLeft", "openbc: Compare To Left " + title,
+                                    lambda *_: _run(["--compare-to-left-" + kind, path])))
+        return items
 
     # Nautilus 4.0: get_file_items(files); 3.0: get_file_items(window, files).
     def get_file_items(self, *args):
@@ -71,7 +85,7 @@ class OpenBCMenuProvider(GObject.GObject, Nautilus.MenuProvider):
             return []
         if len(entries) == 2 and entries[0][1] == entries[1][1]:
             first, second = entries[0][0], entries[1][0]
-            return [self._item("Compare", "Compare with OpenBC", lambda *_: _run([first, second]))]
+            return [self._item("Compare", "openbc: Compare", lambda *_: _run([first, second]))]
         if len(entries) == 1:
             return self._single(entries[0][0], entries[0][1], "Item")
         return []

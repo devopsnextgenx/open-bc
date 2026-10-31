@@ -63,8 +63,10 @@
 #include "home/session_history.h"
 #include "app/cli_options.h"
 #include "app/dependency_check.h"
-#include "app/app_options.h"
-#include "app/options_dialog.h"
+#include "options/app_options.h"
+#include "options/appearance_controller.h"
+#include "options/options_dialog.h"
+#include "app/context_menu_state.h"
 #include "app/single_instance.h"
 #include "app/app_info.h"
 #include "app/about_dialog.h"
@@ -171,9 +173,12 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     PersistedMainWindow window(preferences);
     window.setWindowIcon(QApplication::windowIcon());
 
-    // Tools > Options. The store holds the committed options (mocked for now:
-    // in-memory only, see app_options.h); the dialog edits a copy of them.
-    OptionsStore optionsStore;
+    // Left item of the file-manager "Select Left / Compare To Left" pair (memory only).
+    ContextMenuState::purgeStale();
+    ContextMenuState contextLeft;
+
+    // Tools > Options. The store holds the committed options (see options/app_options.h); the dialog edits a copy of them.
+    OptionsStore optionsStore(&preferences);
 
     // Put the main window into GL-composed mode before it is first shown. Otherwise the first
     // 3D tab flips the backing store and Qt recreates the native window mid-session, which
@@ -249,15 +254,10 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
             reinterpret_cast<const std::uint8_t*>(idBytes.constData()), idBytes.size(),
             reinterpret_cast<const std::uint8_t*>(labelBytes.constData()), labelBytes.size());
     };
+    // Tools > Options > Appearance: theme, colours, fonts (everything lives in cpp/options/).
     auto* darkThemeAction = new QAction("Dark Theme", &window);
-    darkThemeAction->setCheckable(true);
-    darkThemeAction->setChecked(preferences.value("theme/dark", true).toBool());
-    QObject::connect(darkThemeAction, &QAction::toggled, &window, [&](bool dark) {
-        const auto theme = dark ? openbc::ui::Theme::Dark : openbc::ui::Theme::Light;
-        application.setPalette(dark ? openbc::ui::darkPalette() : openbc::ui::lightPalette());
-        application.setStyleSheet(openbc::ui::applicationStyleSheet(theme));
-        preferences.setValue("theme/dark", dark);
-    });
+    AppearanceController appearance(application, optionsStore, darkThemeAction, &window);
+    appearance.install();
 
     // Tools > Options... lives in every tab's Tools menu (rebuildMenus re-adds it
     // after the tab's own tools, since it clears that menu on each tab switch).
@@ -960,17 +960,31 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         window.raise();
         window.activateWindow();
     };
-    auto openBlankFolderCompare = [&]() {
+    // A tab that was opened but never filled is reused instead of leaving it behind next to a new one.
+    auto reuseBlankTab = [&](const QString& kind, const QString& left, const QString& right) -> bool {
         for (int i = 0; i < tabs->count(); ++i) {
-            auto* session = dynamic_cast<FolderCompareViewer*>(tabs->widget(i));
-            if (session && session->leftText().isEmpty() && session->rightText().isEmpty()) {
+            QWidget* w = tabs->widget(i);
+            if (kind == "folder-compare") {
+                auto* session = dynamic_cast<FolderCompareViewer*>(w);
+                if (!session || !session->leftText().isEmpty() || !session->rightText().isEmpty()) continue;
                 tabs->setCurrentIndex(i);
-                focusWindow();
-                return;
+                session->setPaths(left, right);
+                session->refresh();
+                return true;
+            }
+            if (kind == "text-compare") {
+                auto* view = dynamic_cast<TextCompareViewer*>(w);
+                if (!view || !view->leftText().isEmpty() || !view->rightText().isEmpty() ||
+                    view->hasUnsavedChanges())
+                    continue;
+                tabs->setCurrentIndex(i);
+                view->applyDroppedPaths(left, right);   // the viewer reads the files itself
+                SessionHistory::record("text", left, right);
+                home->refreshHistory();
+                return true;
             }
         }
-        addSession(QString(), QString(), false);
-        focusWindow();
+        return false;
     };
     auto dispatchComparison = [&](const LaunchRequest& request) {
         QString launchError;
@@ -983,6 +997,11 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         if (kind.isEmpty()) return;
         QStringList paths;
         if (!request.left.isEmpty() || !request.right.isEmpty()) paths << request.left << request.right;
+        const bool both = !request.left.isEmpty() && !request.right.isEmpty();
+        if (both && reuseBlankTab(kind, request.left, request.right)) {
+            focusWindow();
+            return;
+        }
         if (kind == "text-compare") {
             auto readText = [](const QString& path) {
                 QFile file(path);
@@ -994,46 +1013,46 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         }
         focusWindow();
     };
+    // "openbc: Select Left ..." only remembers the item (in memory, see context_menu_state.h);
+    // no tab is created until "openbc: Compare To Left ..." supplies the right side.
+    auto handleContextAction = [&](const LaunchRequest& request) {
+        const bool folderAction = request.contextAction.endsWith("folder");
+        const bool selectLeft = request.contextAction.startsWith("select-left-");
+        const QFileInfo selected(request.contextPath);
+        if ((folderAction && !selected.isDir()) || (!folderAction && !selected.isFile())) {
+            window.statusBar()->showMessage(folderAction ? "Select a folder for this action"
+                                                         : "Select a file for this action", 10000);
+            return;
+        }
+        const ContextMenuState::Kind kind =
+            folderAction ? ContextMenuState::Kind::Folder : ContextMenuState::Kind::File;
+        const QString kindName = folderAction ? "folder" : "file";
+        if (selectLeft) {
+            contextLeft.setLeft(kind, request.contextPath);
+            window.statusBar()->showMessage("Left " + kindName + ": " +
+                                                QDir::toNativeSeparators(request.contextPath) +
+                                                " - now choose \"openbc: Compare To Left " +
+                                                (folderAction ? "Folder" : "File") + "\" on the other one",
+                                            15000);
+            return;   // no window raise, no tab: the user is still in the file manager
+        }
+        if (!contextLeft.matches(kind)) {
+            window.statusBar()->showMessage("Select a left " + kindName + " first", 10000);
+            focusWindow();
+            return;
+        }
+        LaunchRequest comparison;
+        comparison.left = contextLeft.path();
+        comparison.right = request.contextPath;
+        dispatchComparison(comparison);
+    };
     auto handleLaunch = [&](const LaunchRequest& request) {
         if (request.hasContextAction()) {
-            const bool folderAction = request.contextAction.endsWith("folder");
-            const bool selectLeft = request.contextAction.startsWith("select-left-");
-            const QFileInfo selected(request.contextPath);
-            if ((folderAction && !selected.isDir()) || (!folderAction && !selected.isFile())) {
-                window.statusBar()->showMessage(folderAction ? "Select a folder for this action"
-                                                             : "Select a file for this action", 10000);
-                focusWindow();
-                return;
-            }
-            if (selectLeft) {
-                preferences.setValue("context/leftKind", folderAction ? "folder" : "file");
-                preferences.setValue("context/leftPath", request.contextPath);
-                if (folderAction) {
-                    openBlankFolderCompare();
-                    if (auto* session = currentSession()) session->setPaths(request.contextPath, QString());
-                }
-                window.statusBar()->showMessage("Selected left " + QString(folderAction ? "folder: " : "file: ") +
-                                                    QDir::toNativeSeparators(request.contextPath), 10000);
-                focusWindow();
-                return;
-            }
-
-            const QString expectedKind = folderAction ? "folder" : "file";
-            const QString leftKind = preferences.value("context/leftKind").toString();
-            const QString leftPath = preferences.value("context/leftPath").toString();
-            if (leftKind != expectedKind || leftPath.isEmpty()) {
-                window.statusBar()->showMessage("Select a left " + expectedKind + " first", 10000);
-                focusWindow();
-                return;
-            }
-            LaunchRequest comparison;
-            comparison.left = leftPath;
-            comparison.right = request.contextPath;
-            dispatchComparison(comparison);
+            handleContextAction(request);
             return;
         }
         if (!request.hasPaths() && request.compareType.isEmpty()) {
-            openBlankFolderCompare();
+            focusWindow();   // plain start (or a second `openbc`): Home is already the only tab
             return;
         }
         dispatchComparison(request);

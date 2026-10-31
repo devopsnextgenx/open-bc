@@ -6,7 +6,8 @@
 //
 // OptionsStore: the single owner of the *committed* options.
 //
-// MOCK STAGE (except syntaxMappings, see below): nothing here talks to the backend yet. The dialog edits a copy
+// PERSISTENCE: Appearance and syntaxMappings are saved/loaded (preferences.ini); the other pages are
+// still the mock described below: nothing here talks to the backend yet. The dialog edits a copy
 // of AppOptions; OK/Apply hands it to OptionsStore::commit(), which keeps it
 // in memory and notifies listeners. The two seams to fill in later are
 // clearly marked:
@@ -24,6 +25,9 @@
 #pragma once
 
 #include <QColor>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSettings>
 #include <QList>
 #include <QMap>
 #include <QString>
@@ -195,7 +199,8 @@ class OptionsStore {
 public:
     using Listener = std::function<void(const AppOptions&)>;
 
-    OptionsStore() { load(); }
+    // `preferences` (preferences.ini) must outlive the store; null = defaults only, nothing saved.
+    explicit OptionsStore(QSettings* preferences = nullptr) : preferences_(preferences) { load(); }
 
     const AppOptions& options() const { return options_; }
 
@@ -210,23 +215,69 @@ public:
         for (const auto& listener : listeners_) listener(options_);
     }
 
-    // Subscribe to "options changed" (tabs, theme, backups, ...). Nothing
-    // subscribes yet - this is the hook for the real configuration reload.
+    // Subscribe to "options changed" (theme, fonts, colours, ...). Called after every commit.
     void addListener(Listener listener) { listeners_.push_back(std::move(listener)); }
 
-    // TODO(options): read the saved profile from preferences.ini; fall back
-    // to AppOptions{} defaults for any missing key. Mock: defaults only, except the syntax
-    // mappings, which come from the real profile.
+    // Appearance > Preview: the dialog asks the app to show a theme without committing it.
+    // Pass the committed theme to revert. Set by the app (main_window.h).
+    std::function<void(ThemeChoice)> previewTheme;
+
+    // Reads the saved profile from preferences.ini; missing keys keep the AppOptions{} defaults.
+    // Only Appearance is persisted so far (see options.md); the other pages stay in-memory.
     void load() {
         options_ = AppOptions{};
         options_.syntaxMappings = SyntaxMappingStore::instance().mappings();
+        if (!preferences_) return;
+        QSettings& p = *preferences_;
+        if (p.contains("appearance/theme")) {
+            options_.theme = static_cast<ThemeChoice>(qBound(0, p.value("appearance/theme").toInt(), 2));
+        } else if (p.contains("theme/dark")) {   // before Options existed: View > Dark Theme
+            options_.theme = p.value("theme/dark").toBool() ? ThemeChoice::Dark : ThemeChoice::Light;
+        }
+        options_.useSystemFont = p.value("appearance/useDefaultFont", options_.useSystemFont).toBool();
+        options_.customFont = p.value("appearance/customFont").toString();
+        options_.colorFoldersToReflectContent =
+            p.value("appearance/colorFolders", options_.colorFoldersToReflectContent).toBool();
+        options_.useGradientForCenterBackground =
+            p.value("appearance/gradientCenter", options_.useGradientForCenterBackground).toBool();
+        options_.useStripes = p.value("appearance/stripes", options_.useStripes).toBool();
+        const QJsonObject colors =
+            QJsonDocument::fromJson(p.value("appearance/colors").toString().toUtf8()).object();
+        for (auto it = colors.begin(); it != colors.end(); ++it) {
+            const QJsonObject o = it.value().toObject();
+            ItemColors c;
+            c.text = QColor(o.value("text").toString());
+            c.background = QColor(o.value("background").toString());
+            c.folderInfo = QColor(o.value("info").toString());
+            if (c.text.isValid() && c.background.isValid() && c.folderInfo.isValid())
+                options_.colors.insert(it.key(), c);
+        }
     }
 
-    // TODO(options): write options_ to the user profile in preferences.ini.
-    // Mock: intentionally a no-op so nothing is written to disk yet.
-    void persist() {}
+    // Writes the saved profile to preferences.ini (Appearance only, see load()).
+    void persist() {
+        if (!preferences_) return;
+        QSettings& p = *preferences_;
+        p.setValue("appearance/theme", static_cast<int>(options_.theme));
+        p.setValue("appearance/useDefaultFont", options_.useSystemFont);
+        p.setValue("appearance/customFont", options_.customFont);
+        p.setValue("appearance/colorFolders", options_.colorFoldersToReflectContent);
+        p.setValue("appearance/gradientCenter", options_.useGradientForCenterBackground);
+        p.setValue("appearance/stripes", options_.useStripes);
+        QJsonObject colors;
+        for (auto it = options_.colors.constBegin(); it != options_.colors.constEnd(); ++it) {
+            colors.insert(it.key(), QJsonObject{{"text", it.value().text.name(QColor::HexArgb)},
+                                                {"background", it.value().background.name(QColor::HexArgb)},
+                                                {"info", it.value().folderInfo.name(QColor::HexArgb)}});
+        }
+        p.setValue("appearance/colors",
+                   QString::fromUtf8(QJsonDocument(colors).toJson(QJsonDocument::Compact)));
+        p.remove("theme/dark");   // superseded by appearance/theme
+        p.sync();
+    }
 
 private:
+    QSettings* preferences_ = nullptr;
     AppOptions options_;
     std::vector<Listener> listeners_;
 };

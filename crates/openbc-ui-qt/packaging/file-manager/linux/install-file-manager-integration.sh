@@ -40,7 +40,8 @@ cfg_dir="${XDG_CONFIG_HOME:-$HOME/.config}/openbc"
 if [ "$uninstall" = 1 ]; then
     rm -f "$bin_dir/openbc-fm" "$naut_dir/openbc-nautilus.py" "$cfg_dir/launcher" \
           "$kio_dir/openbc-compare-folders.desktop" "$kio_dir/openbc-compare-files.desktop" \
-          "$kio_dir/openbc-compare-two.desktop"
+          "$kio_dir/openbc-compare-two.desktop" \
+          "$kio_dir/openbc-compare-to-left-folder.desktop" "$kio_dir/openbc-compare-to-left-file.desktop"
     echo "OpenBC file-manager integration removed. Restart Nautilus with: nautilus -q"
     exit 0
 fi
