@@ -1,5 +1,23 @@
 # OpenBC
 
+## Support the Project
+
+OpenBC is built with passion as a free, open-source alternative to commercial comparison tools. Maintaining the codebase, improving performance, adding new filesystem adapters, and polishing the Qt interface takes a lot of time and dedication. 
+
+If OpenBC has saved you time, helped you review code, or streamlined your workflows, please consider supporting its continued development! Your contributions help keep the project alive and growing.
+
+<p align="left">
+  <a href="https://paypal.me/AmitKshirsagar13" target="_blank">
+    <img src="https://img.shields.io/badge/Donate-PayPal-00457C?style=for-the-badge&logo=paypal&logoColor=white" alt="Donate with PayPal" />
+  </a>
+  &nbsp;&nbsp;
+  <a href="https://ko-fi.com/devopsnextgenx" target="_blank">
+    <img src="https://img.shields.io/badge/Support-Ko--fi-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white" alt="Support on Ko-fi" />
+  </a>
+</p>
+
+*Thank you for helping keep OpenBC open, fast, and free for everyone!*
+
 ## OpenBC image compare
 
 Picture Compare tab (Tol / Range / Blend, offset drag, zoom, 9x9 pixel details, auto-resize)
