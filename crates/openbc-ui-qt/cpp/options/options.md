@@ -28,7 +28,9 @@ The **Java Source** toggle switches between decompiled source and a hex dump. In
 or configure a decompiler executable/JAR and Java binary in **Tools > Options > Archive Types**.
 The adapter checks the saved settings for each decompilation. `CFR_JAR` / `OPENBC_CFR_JAR` and
 Vineflower's `VINEFLOWER_JAR` / `OPENBC_VINEFLOWER_JAR` remain supported as environment fallbacks.
-JAR-based decompilers require Java through `PATH`, `JAVA_HOME`, or the configured Java Runtime path.
+JAR-based decompilers use Java through `PATH`, `JAVA_HOME`, or the configured Java Runtime path.
+The Flatpak package includes a compact Java runtime and configures it as `JAVA_HOME` for
+decompilation when a host Java path is not available inside the sandbox.
 
 To implement a page: (1) load/persist its fields in `OptionsStore`, (2) add a listener (or consume
 `optionsStore.options()`) where the behaviour lives, (3) move its row in `options_status.h` and below.

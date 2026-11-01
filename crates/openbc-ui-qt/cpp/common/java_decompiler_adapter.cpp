@@ -50,6 +50,16 @@ QString packagedCfrPath() {
     return QFileInfo(candidate).absoluteFilePath();
 }
 
+QString packagedJavaPath() {
+    const QString flatpakPath = QStringLiteral("/app/lib/openbc-java/bin/java");
+    if (QFileInfo(flatpakPath).isFile()) return flatpakPath;
+
+    const QDir applicationDirectory(QCoreApplication::applicationDirPath());
+    const QString candidate =
+        applicationDirectory.filePath(QStringLiteral("../lib/openbc-java/bin/java"));
+    return QFileInfo(candidate).isFile() ? QFileInfo(candidate).absoluteFilePath() : QString();
+}
+
 QString executablePath(const QString& configured) {
     const QString requested = configured.trimmed();
     if (requested.isEmpty()) return {};
@@ -81,7 +91,9 @@ QString executablePath(const QString& configured) {
 
 QString configuredJava(const JavaDecompilerConfiguration& configuration) {
     const QString configured = configuration.javaBinPath.trimmed();
-    return executablePath(configured.isEmpty() ? QStringLiteral("java") : configured);
+    const QString executable =
+        executablePath(configured.isEmpty() ? QStringLiteral("java") : configured);
+    return executable.isEmpty() ? packagedJavaPath() : executable;
 }
 
 QString compactError(const QByteArray& text) {

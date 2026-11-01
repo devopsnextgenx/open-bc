@@ -10,6 +10,7 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.openjdk
 command: openbc
 finish-args:
+  - --env=JAVA_HOME=/app/lib/openbc-java
   - --share=ipc
   - --socket=wayland
   - --socket=fallback-x11
@@ -51,6 +52,25 @@ modules:
         }
         install -Dm0644 "$(find_license LICENSE-MIT)" "$FLATPAK_DEST/share/licenses/$FLATPAK_ID/openbc/LICENSE-MIT"
         install -Dm0644 "$(find_license LICENSE-APACHE)" "$FLATPAK_DEST/share/licenses/$FLATPAK_ID/openbc/LICENSE-APACHE"
+        java_bin=/usr/lib/sdk/openjdk/bin/java
+        if [ ! -x "$java_bin" ]; then
+          echo "ERROR: the OpenJDK SDK extension did not provide java" >&2
+          exit 1
+        fi
+        java_home="$(dirname "$(dirname "$(readlink -f "$java_bin")")")"
+        if [ ! -x "$java_home/bin/jlink" ]; then
+          echo "ERROR: the OpenJDK SDK extension did not provide jlink" >&2
+          exit 1
+        fi
+        "$java_home/bin/jlink" \
+          --add-modules java.base,java.logging \
+          --strip-debug \
+          --no-header-files \
+          --no-man-pages \
+          --compress=2 \
+          --output "$FLATPAK_DEST/lib/openbc-java"
+        install -d "$FLATPAK_DEST/share/licenses/$FLATPAK_ID/openjdk"
+        cp -a "$java_home/legal/." "$FLATPAK_DEST/share/licenses/$FLATPAK_ID/openjdk/"
     build-options:
       append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/openjdk/bin
       env:
