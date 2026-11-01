@@ -152,6 +152,8 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     #endif
     QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);   // <-- new, must precede QApplication
     QApplication application(argc, argv);
+    application.setOrganizationName(QStringLiteral("io.github.devopsnextgenx"));
+    application.setApplicationName(QStringLiteral("OpenBC"));
     // Wayland app_id / X11 class. MUST equal the .desktop file name without ".desktop" and the
     // Flatpak app-id, or GNOME cannot tie this window to its launcher and shows a generic dock icon.
     QGuiApplication::setDesktopFileName(QStringLiteral("io.github.devopsnextgenx.open-bc"));

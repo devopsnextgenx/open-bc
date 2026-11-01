@@ -37,7 +37,7 @@ inline constexpr PageStatus kPages[] = {
     {"File Operations", Status::InProgress, "Work in progress: changes are not saved or applied yet."},
     {"Commands", Status::InProgress, "Work in progress: changes are not saved or applied yet."},
     {"Tweaks", Status::InProgress, "Work in progress: changes are not saved or applied yet."},
-    {"Archive Types", Status::Pending, "Pending: not designed yet."},
+    {"Archive Types", Status::Implemented, "Saved to preferences.ini and applied to Java decompilation."},
     {"Open With", Status::Pending, "Pending: not designed yet."},
 };
 

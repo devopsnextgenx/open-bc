@@ -6,16 +6,14 @@
 // Pages: Startup, Tabs, Appearance, Text Editing, Syntax Highlighting, Next Difference, Backups,
 // File Operations, Archive Types, Commands, Open With, Tweaks.
 // The page list is grouped by completion status (options/options_status.h): IMPLEMENTED, IN PROGRESS
-// and PENDING, with a separator row per group and a banner on every unfinished page. Archive Types
-// and Open With have no design yet - they are placeholders. Progress is documented in
+// and PENDING, with a separator row per group and a banner on every unfinished page. Open With
+// has no design yet - it is a placeholder. Progress is documented in
 // crates/openbc-ui-qt/cpp/options/options.md.
 //
 // Editing model: the dialog works on a private copy of AppOptions (`draft_`).
 // Every control writes straight into that copy through the small bind helpers
 // below. OK/Apply pass the copy to OptionsStore::commit(); Cancel just drops
-// it. So the committed options are never half-edited. Today commit() only
-// keeps the values in memory (see app_options.h); wiring real persistence and
-// live reload happens in OptionsStore, not here.
+// it. So the committed options are never half-edited.
 //
 // Like the other dialogs in this tree it is header-only and uses lambdas
 // instead of Q_OBJECT slots.
@@ -74,6 +72,7 @@
 #include "options/options_status.h"
 #include "options/options_icons.h"
 #include "options/text_font.h"
+#include "common/java_decompiler_adapter.h"
 
 namespace openbc::app {
 
@@ -194,7 +193,7 @@ public:
             {"Next Difference", buildNextDifference()},
             {"Backups", buildBackups()},
             {"File Operations", buildFileOperations()},
-            {"Archive Types", buildPlaceholder("Archive Types")},
+            {"Archive Types", buildArchiveTypes()},
             {"Commands", buildCommands()},
             {"Open With", buildPlaceholder("Open With")},
             {"Tweaks", buildTweaks()},
@@ -1074,6 +1073,101 @@ private:
         v->addWidget(note("Actions performed on folders that contain items hidden by display or file "
                           "filters can optionally affect the hidden items."));
         v->addWidget(check("Include &hidden items by default", &draft_.includeHiddenItemsByDefault));
+        v->addStretch(1);
+        return page;
+    }
+
+    // ---- Archive Types ---------------------------------------------------
+    QWidget* buildArchiveTypes() {
+        QVBoxLayout* v;
+        auto* page = pageShell(&v);
+        v->addWidget(heading("Java Decompiler"));
+        auto* enabled = check("Enable Java `.class` and `.jar` decompilation",
+                              &draft_.javaDecompilerEnabled);
+        v->addWidget(enabled);
+
+        auto* jarPath = new QLineEdit(draft_.decompilerJarPath);
+        jarPath->setPlaceholderText("Bundled CFR or cfr executable on PATH");
+        auto* browseJar = new QPushButton("Browse...");
+        auto* decompilerRow = new QHBoxLayout;
+        decompilerRow->addWidget(jarPath, 1);
+        decompilerRow->addWidget(browseJar);
+        v->addWidget(new QLabel("Decompiler executable or JAR:"));
+        v->addLayout(decompilerRow);
+
+        auto* javaPath = new QLineEdit(draft_.javaBinPath);
+        javaPath->setPlaceholderText("java (from PATH)");
+        auto* browseJava = new QPushButton("Browse...");
+        auto* javaRow = new QHBoxLayout;
+        javaRow->addWidget(javaPath, 1);
+        javaRow->addWidget(browseJava);
+        v->addWidget(new QLabel("Java Runtime executable:"));
+        v->addLayout(javaRow);
+
+        auto* test = new QPushButton("Test Decompiler");
+        auto* testResult = new QLabel;
+        testResult->setWordWrap(true);
+        auto* testRow = new QHBoxLayout;
+        testRow->addWidget(test);
+        testRow->addWidget(testResult, 1);
+        v->addLayout(testRow);
+
+        const auto updateDraft = [this](const QString& path, QString AppOptions::*field) {
+            draft_.*field = path;
+            markDirty();
+        };
+        connect(jarPath, &QLineEdit::textChanged, this,
+                [updateDraft](const QString& path) {
+                    updateDraft(path, &AppOptions::decompilerJarPath);
+                });
+        connect(javaPath, &QLineEdit::textChanged, this,
+                [updateDraft](const QString& path) {
+                    updateDraft(path, &AppOptions::javaBinPath);
+                });
+        connect(browseJar, &QPushButton::clicked, this, [this, jarPath]() {
+            const QString path = QFileDialog::getOpenFileName(
+                this, "Select Java decompiler", jarPath->text(),
+                "JAR files (*.jar);;Executables and all files (*)");
+            if (!path.isEmpty()) jarPath->setText(path);
+        });
+        connect(browseJava, &QPushButton::clicked, this, [this, javaPath]() {
+#ifdef Q_OS_WIN
+            const QString filter = "Java executable (java.exe);;Executables and all files (*)";
+#else
+            const QString filter = "Executables and all files (*)";
+#endif
+            const QString path = QFileDialog::getOpenFileName(
+                this, "Select Java Runtime", javaPath->text(), filter);
+            if (!path.isEmpty()) javaPath->setText(path);
+        });
+        connect(test, &QPushButton::clicked, this,
+                [jarPath, javaPath, testResult]() {
+                    JavaDecompilerConfiguration configuration;
+                    configuration.decompilerPath = jarPath->text().trimmed();
+                    configuration.javaBinPath = javaPath->text().trimmed();
+                    QString error;
+                    if (JavaDecompilerAdapter::testConfiguration(configuration, &error)) {
+                        testResult->setText("Decompiler is available and responded successfully.");
+                        testResult->setStyleSheet("color: palette(text);");
+                    } else {
+                        testResult->setText(error);
+                        testResult->setStyleSheet("color: #e06c75;");
+                    }
+                });
+        connect(enabled, &QCheckBox::toggled, this, [this](bool checked) {
+            draft_.javaDecompilerEnabled = checked;
+            markDirty();
+        });
+
+        const auto updateEnabledControls = [enabled, jarPath, browseJar, javaPath, browseJava]() {
+            const bool active = enabled->isChecked();
+            jarPath->setEnabled(active);
+            browseJar->setEnabled(active);
+            javaPath->setEnabled(active);
+            browseJava->setEnabled(active);
+        };
+        connect(enabled, &QCheckBox::toggled, this, updateEnabledControls);
+        updateEnabledControls();
         v->addStretch(1);
         return page;
     }

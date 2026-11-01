@@ -87,6 +87,29 @@ if command -v sccache >/dev/null 2>&1; then export RUSTC_WRAPPER=sccache; fi
 
 BUILD_DIR="build/$PLATFORM"      # separate dirs: a Linux and a Windows tree can share a checkout
 OUT_DIR="$BUILD_DIR/packages"
+CFR_VERSION=0.152
+CFR_SHA256=f686e8f3ded377d7bc87d216a90e9e9512df4156e75b06c655a16648ae8765b2
+CFR_JAR_FILE="$ROOT/$BUILD_DIR/java/cfr.jar"
+
+ensure_cfr_jar() {
+  local jar="$CFR_JAR_FILE" temporary="${CFR_JAR_FILE}.part"
+  if $DRY; then
+    echo "--- would download CFR ${CFR_VERSION} to $jar"
+    return
+  fi
+  mkdir -p "$(dirname "$jar")"
+  if [ ! -f "$jar" ]; then
+    echo "--- downloading CFR ${CFR_VERSION}"
+    curl -fsSL --retry 3 \
+      "https://repo.maven.apache.org/maven2/org/benf/cfr/${CFR_VERSION}/cfr-${CFR_VERSION}.jar" \
+      -o "$temporary"
+    mv "$temporary" "$jar"
+  fi
+  printf '%s  %s\n' "$CFR_SHA256" "$jar" | sha256sum -c - >/dev/null || {
+    echo "CFR checksum validation failed: $jar" >&2
+    return 1
+  }
+}
 
 # ---- Dynamic Git Tag Version Resolution -------------------------------------------------------
 RAW_TAG="${OPENBC_TAG:-$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")}"
@@ -107,13 +130,16 @@ for f in "${FORMAT_LIST[@]:-}"; do
 done
 
 if $NEED_HOST_BUILD; then
+  ensure_cfr_jar
   echo "=== Building openbc ($PLATFORM, Release)"
   if [ ! -f "$BUILD_DIR/build.ninja" ] && [ ! -f "$BUILD_DIR/Makefile" ]; then
     if command -v ninja >/dev/null 2>&1; then GEN=(-G Ninja); else GEN=(); fi
-    run cmake -B "$BUILD_DIR" "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release -DCPACK_PACKAGE_VERSION="$VERSION"
+    run cmake -B "$BUILD_DIR" "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release \
+      -DCPACK_PACKAGE_VERSION="$VERSION" -DOPENBC_CFR_JAR_FILE="$CFR_JAR_FILE"
   else
     # Re-run configuration if version/tag changes on subsequent local builds
-    run cmake -B "$BUILD_DIR" -DCPACK_PACKAGE_VERSION="$VERSION"
+    run cmake -B "$BUILD_DIR" -DCPACK_PACKAGE_VERSION="$VERSION" \
+      -DOPENBC_CFR_JAR_FILE="$CFR_JAR_FILE"
   fi
   run cmake --build "$BUILD_DIR" --target openbc openbc-depcheck
 else
@@ -171,7 +197,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: ${arch}
-Depends: libqt6widgets6 (>= 6.0), libqt6network6 (>= 6.0), libqt6opengl6 (>= 6.0), libqt6openglwidgets6 (>= 6.0), libqt6multimedia6 (>= 6.0), libqt6multimediawidgets6 (>= 6.0), python3-nautilus, zlib1g, liblzma5, libssl3
+Depends: libqt6widgets6 (>= 6.0), libqt6network6 (>= 6.0), libqt6opengl6 (>= 6.0), libqt6openglwidgets6 (>= 6.0), libqt6multimedia6 (>= 6.0), libqt6multimediawidgets6 (>= 6.0), python3-nautilus, zlib1g, liblzma5, libssl3, default-jre-headless
 Maintainer: OpenBC Team <devopsnexegenx@gmail.com>
 Description: OpenBC File and Directory Comparison Tool
  OpenBC is an open-source comparison tool integrated with Rust backends and Qt6 GUI.
@@ -193,7 +219,7 @@ Release:        1
 Summary:        OpenBC File and Directory Comparison Tool
 License:        Proprietary
 AutoReqProv:    yes
-Requires:       qt6-qtbase-gui, openssl-libs, zlib, xz-libs, qt6-qtmultimedia, hicolor-icon-theme
+Requires:       qt6-qtbase-gui, openssl-libs, zlib, xz-libs, qt6-qtmultimedia, hicolor-icon-theme, java-21-openjdk-headless
 Recommends:     nautilus-python
 
 %description
@@ -218,6 +244,7 @@ update-desktop-database -q %{_datadir}/applications >/dev/null 2>&1 || :
 /usr/share/icons/hicolor/*/apps/io.github.devopsnextgenx.open-bc.png
 /usr/bin/openbc-install-nautilus
 /usr/bin/openbc-install-dolphin
+/usr/share/licenses/openbc/CFR-LICENSE.txt
 /usr/share/openbc/
 /usr/share/nautilus-python/extensions/openbc.py
 /usr/share/kio/servicemenus/openbc-compare-*.desktop
@@ -483,7 +510,7 @@ pkg_msi() {
   echo "=== msi -> $out"
   run rm -rf "$stage" "$wix"
   run mkdir -p "$stage" "$wix"
-  run cp "$BUILD_DIR/openbc.exe" "$BUILD_DIR/openbc-depcheck.exe" "$stage/"
+  run cmake --install "$BUILD_DIR" --prefix "$stage"
 
   echo "--- windeployqt (Qt DLLs + platforms/qwindows.dll)"
   local WDQ=""
