@@ -70,6 +70,14 @@ char* openbc_engine_compare_files(
     int32_t right_session_id, const unsigned char* right_path, size_t right_path_length,
     uint8_t* equal);
 
+// Archives as folders (see common/archive_support.h). Names only, no I/O.
+// 1 when the file name should be offered as a folder (zip, jar, 7z, rar, tar.gz, ...), else 0.
+int32_t openbc_archive_is_archive_name(const unsigned char* name, size_t name_length);
+// Number of path components that look like archive files (> 0: inside, or is, an archive).
+int32_t openbc_archive_depth(const unsigned char* path, size_t path_length);
+// JSON array of the extensions offered as folders. Free with openbc_vfs_string_destroy.
+char* openbc_archive_extensions(char** extensions);
+
 // Free a string returned by any of the functions above.
 void openbc_vfs_string_destroy(char* value);
 

@@ -59,6 +59,7 @@
 #include "common/file_change_controller.h"
 #include "style/qt_style.h"
 #include "options/text_font.h"
+#include "common/archive_support.h"
 #include "remote/remote_profile_store.h"
 #include "remote/remote_vfs_bridge.h"
 #include "viewers/text/syntax_highlighter.h"
@@ -1138,6 +1139,11 @@ private:
                                          "Remote files must be downloaded before opening in a local application.");
                 return;
             }
+            if (archives::isVirtual(path)) {
+                QMessageBox::information(this, "Open With",
+                                         "Files inside an archive must be extracted before opening in a local application.");
+                return;
+            }
             if (chosen == openDefault) {
                 QDesktopServices::openUrl(QUrl::fromLocalFile(path));
             } else {
@@ -1711,7 +1717,8 @@ private:
         // profile struct, not RemoteProfileStore itself.
         RemoteProfile remoteProfile;
         const bool isRemote = RemoteProfileStore::findProfileForPath(path, &remoteProfile);
-        QThreadPool::globalInstance()->start([view, left, path, isRemote, remoteProfile]() {
+        const bool isVirtual = !isRemote && archives::isVirtual(path);  // inside an archive
+        QThreadPool::globalInstance()->start([view, left, path, isRemote, isVirtual, remoteProfile]() {
             bool opened = false;
             QString text;
             QString openError;
@@ -1719,6 +1726,10 @@ private:
                 QByteArray bytes;
                 opened = sharedVfsBridge().remoteReadFile(
                     remoteProfile, remoteRelativePath(path, remoteProfile), &bytes, &openError);
+                if (opened) text = QString::fromUtf8(bytes);
+            } else if (isVirtual) {
+                QByteArray bytes;
+                opened = sharedVfsBridge().localReadFile(path, &bytes, &openError);
                 if (opened) text = QString::fromUtf8(bytes);
             } else {
                 QFile file(path);

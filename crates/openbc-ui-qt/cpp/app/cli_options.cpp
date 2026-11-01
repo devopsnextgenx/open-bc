@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <cstdio>
 
+#include "common/archive_support.h"
 #include "common/file_kinds.h"
 
 #ifdef _WIN32
@@ -130,6 +131,8 @@ QString resolveLaunchKind(const LaunchRequest& request, QString* error) {
         }
         return "folder-compare";
     }
+    // Two archives (zip, 7z, tar.gz, ...) compare as folders.
+    if (archives::bothArchives(l, r)) return "folder-compare";
     const ViewerKind a = classifyFilePath(l);
     const ViewerKind b = r.isEmpty() ? a : classifyFilePath(r);
     ViewerKind chosen = ViewerKind::Text;

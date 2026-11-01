@@ -60,6 +60,7 @@
 #include <functional>
 #include <memory>
 
+#include "common/archive_support.h"
 #include "common/compare_extensions.h"
 #include "common/file_kinds.h"
 #include "common/path_selector.h"
@@ -253,6 +254,17 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
           (!entry.right.isDir && entry.right.exists &&
            !options.filter.matches(row.name))) {
         continue;
+      }
+      // A differing archive pair (zip, 7z, tar.gz, ...) is shown as a folder pair. Archives that
+      // look equal, and archives inside archives, stay plain files so a compare never unpacks
+      // everything it walks past; a double-click still opens them (see openTextCompare).
+      if (options.archivesAsFolders && entry.left.exists && entry.right.exists &&
+          !entry.left.isDir && !entry.right.isDir && !entry.left.isLink &&
+          !entry.right.isLink && row.status != "equal" &&
+          archives::isArchiveName(row.name) && archives::depth(leftPath) == 0 &&
+          archives::depth(rightPath) == 0) {
+        entry.left.isDir = entry.right.isDir = true;
+        entry.left.attrs = entry.right.attrs = "D";
       }
       entry.recurse =
           (entry.left.exists && entry.left.isDir && !entry.left.isLink) ||
@@ -835,7 +847,8 @@ public:
     return {compareAction_, refreshAction_,     swapAction_,
             nullptr,        selectLeftAction_,  selectRightAction_,
             nullptr,        contentsAction_,    timestampsAction_,
-            nullptr,        filterApplyAction_, filterClearAction_};
+            archivesAction_, nullptr,           filterApplyAction_,
+            filterClearAction_};
   }
   QList<QAction *> editMenuItems() const { return {editSelectionAction_}; }
   QList<QAction *> searchMenuItems() const { return {findAction_}; }
@@ -887,6 +900,7 @@ public:
     modeCombo_->setCurrentIndex(other.modeCombo_->currentIndex());
     contentsAction_->setChecked(other.contentsAction_->isChecked());
     timestampsAction_->setChecked(other.timestampsAction_->isChecked());
+    archivesAction_->setChecked(other.archivesAction_->isChecked());
     filterCombo_->setEditText(other.filterCombo_->currentText());
     for (int i = 0; i < kPairClassCount; ++i) {
       showActions_[i]->setChecked(other.showActions_[i]->isChecked());
@@ -953,14 +967,16 @@ public:
     const bool rightRemote =
         !right.isEmpty() &&
         RemoteProfileStore::findProfileForPath(right, &rightProfile);
-    if (!left.isEmpty() && !leftRemote && !QFileInfo(left).isDir()) {
+    if (!left.isEmpty() && !leftRemote && !QFileInfo(left).isDir() &&
+        !archives::acceptsAsFolder(left)) {
       pendingView_.valid = false;
       leftTree_->clear();
       rightTree_->clear();
       log("Left folder not found: " + QDir::toNativeSeparators(left));
       return;
     }
-    if (!right.isEmpty() && !rightRemote && !QFileInfo(right).isDir()) {
+    if (!right.isEmpty() && !rightRemote && !QFileInfo(right).isDir() &&
+        !archives::acceptsAsFolder(right)) {
       pendingView_.valid = false;
       leftTree_->clear();
       rightTree_->clear();
@@ -978,6 +994,7 @@ public:
     CompareOptions options;
     options.checkContent = contentsAction_->isChecked();
     options.ignoreTimestamps = timestampsAction_->isChecked();
+    options.archivesAsFolders = archivesAction_->isChecked();
     options.filter = NameFilter::parse(filterCombo_->currentText());
 
     run_ = makeRun(leftTree_, rightTree_, std::move(options));
@@ -1127,6 +1144,13 @@ private:
         new QAction(icons::glyph(Glyph::Timestamps), "Ignore timestamps", this);
     timestampsAction_->setCheckable(true);
     timestampsAction_->setToolTip("Ignore modification times when comparing");
+    archivesAction_ = new QAction(icons::glyph(Glyph::FolderOpen),
+                                  "Open archives as folders", this);
+    archivesAction_->setCheckable(true);
+    archivesAction_->setChecked(true); // before the toggled connection: no refresh at startup
+    archivesAction_->setToolTip(
+        "Show archives (zip, 7z, rar, tar.gz, ...) as folders: differing ones expand "
+        "automatically, any archive opens in place on double-click");
 
     filterApplyAction_ =
         new QAction(icons::glyph(Glyph::Filter), "Apply filter", this);
@@ -1268,6 +1292,7 @@ private:
     toolbar_->addSeparator();
     toolbar_->addAction(contentsAction_);
     toolbar_->addAction(timestampsAction_);
+    toolbar_->addAction(archivesAction_);
     toolbar_->addSeparator();
     toolbar_->addWidget(new QLabel("Compare:", toolbar_));
     modeCombo_ = new QComboBox(toolbar_);
@@ -1401,6 +1426,10 @@ private:
       log(checked ? "Ignoring timestamps" : "Timestamps are compared");
       refresh();
     });
+    connect(archivesAction_, &QAct::toggled, this, [this](bool checked) {
+      log(checked ? "Archives open as folders" : "Archives are plain files");
+      refresh();
+    });
 
     connect(filterApplyAction_, &QAct::triggered, this, [this]() {
       log("Applied filter: " + filterCombo_->currentText());
@@ -1459,8 +1488,42 @@ private:
     }
   }
 
+  // Double-clicking an archive file (zip, 7z, tar.gz, ...) opens it in place: both rows become
+  // folder rows and the contents load lazily through the same path as any other folder, so you
+  // keep exploring in this tree. Works for archives that compared equal and for archives nested
+  // inside archives, which are not expanded automatically.
+  bool expandArchiveRow(QTreeWidget *tree, QTreeWidgetItem *item) {
+    if (!run_ || run_->cancelled.load() || !item)
+      return false;
+    QTreeWidget *other = tree == leftTree_ ? rightTree_ : leftTree_;
+    QTreeWidgetItem *counterpart = pairedItem(item, other);
+    auto isArchiveRow = [](const QTreeWidgetItem *row) {
+      if (!row || row->data(0, kIsDirRole).toBool())
+        return false;
+      const QString path = row->data(0, kPathRole).toString();
+      return !path.isEmpty() && archives::isArchiveName(QFileInfo(path).fileName());
+    };
+    if (!isArchiveRow(item) && !isArchiveRow(counterpart))
+      return false;
+    // A counterpart that is some other kind of file is left alone; loadFolderLevel then treats
+    // the pair as mismatched, like a folder facing a file.
+    for (QTreeWidgetItem *row : {item, counterpart}) {
+      if (isArchiveRow(row))
+        convertToFolderRow(row);
+    }
+    loadFolderLevel(tree, other, item);
+    item->setExpanded(true);
+    if (counterpart)
+      counterpart->setExpanded(true);
+    log("Opened archive: " + item->data(0, kPathRole).toString());
+    return true;
+  }
+
   void openTextCompare(QTreeWidget *tree, QTreeWidgetItem *item) {
     if (!item || item->data(0, kIsDirRole).toBool()) {
+      return;
+    }
+    if (archivesAction_->isChecked() && expandArchiveRow(tree, item)) {
       return;
     }
     const bool isLeft = tree == leftTree_;
@@ -1534,6 +1597,13 @@ private:
                   readError)) {
             return false;
           }
+          *text = QString::fromUtf8(bytes);
+          return true;
+        }
+        if (archives::isVirtual(path)) { // inside an archive: read through the VFS
+          QByteArray bytes;
+          if (!sharedVfsBridge().localReadFile(path, &bytes, readError))
+            return false;
           *text = QString::fromUtf8(bytes);
           return true;
         }
@@ -1659,7 +1729,13 @@ private:
     log("Opening " + what +
         " comparison: " + QDir::toNativeSeparators(leftPath) + " <-> " +
         QDir::toNativeSeparators(rightPath));
-    if (!leftRemote && !rightRemote) {
+    // Files inside archives are copied to a temp file like remote ones: the viewers need a real
+    // file on disk.
+    const bool leftVirtual =
+        !leftRemote && !leftPath.isEmpty() && archives::isVirtual(leftPath);
+    const bool rightVirtual =
+        !rightRemote && !rightPath.isEmpty() && archives::isVirtual(rightPath);
+    if (!leftRemote && !rightRemote && !leftVirtual && !rightVirtual) {
       if (const auto &open = this->*callback)
         open(leftPath, rightPath);
       return;
@@ -1680,11 +1756,16 @@ private:
                        const RemoteProfile &profile, const QString &sub,
                        QString *local) {
         *local = path;
-        if (path.isEmpty() || !remote)
+        const bool virt = !remote && archives::isVirtual(path);
+        if (path.isEmpty() || (!remote && !virt))
           return true;
         QByteArray bytes;
-        if (!sharedVfsBridge().remoteReadFile(
-                profile, remoteRelativePath(path, profile), &bytes, &error)) {
+        const bool read =
+            remote ? sharedVfsBridge().remoteReadFile(
+                         profile, remoteRelativePath(path, profile), &bytes,
+                         &error)
+                   : sharedVfsBridge().localReadFile(path, &bytes, &error);
+        if (!read) {
           error = "Could not download " + path + " (" + error + ")";
           return false;
         }
@@ -3015,6 +3096,7 @@ private:
   QAction *collapseAllAction_ = nullptr;
   QAction *contentsAction_ = nullptr;
   QAction *timestampsAction_ = nullptr;
+  QAction *archivesAction_ = nullptr;
   QAction *filterApplyAction_ = nullptr;
   QAction *filterClearAction_ = nullptr;
   QAction *consoleAction_ = nullptr;

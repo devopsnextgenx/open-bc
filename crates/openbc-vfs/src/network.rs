@@ -86,6 +86,10 @@ impl NetworkVfs {
 
 #[async_trait]
 impl AsyncVfs for NetworkVfs {
+    fn local_path(&self, path: &EntryPath) -> Option<std::path::PathBuf> {
+        self.inner.local_path(path)
+    }
+
     async fn read_dir(&self, path: &EntryPath) -> Result<Vec<DirectoryEntry>, VfsError> {
         self.inner.read_dir(path).await
     }

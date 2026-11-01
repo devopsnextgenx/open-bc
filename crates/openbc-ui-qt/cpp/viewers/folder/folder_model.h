@@ -122,6 +122,8 @@ private:
 struct CompareOptions {
     bool checkContent = false;
     bool ignoreTimestamps = false;
+    // Show differing archive pairs (zip, 7z, tar.gz, ...) as expandable folders.
+    bool archivesAsFolders = true;
     NameFilter filter;
 };
 
@@ -210,6 +212,19 @@ inline QTreeWidgetItem* addRow(QTreeWidget* tree, const SideInfo& side, RowStatu
         applyRowStyle(item, status, side.isDir);
     }
     return item;
+}
+
+// Turns an archive FILE row (zip, 7z, tar.gz, ...) into an expandable folder row. Its children are
+// not loaded yet (kChildrenLoadedRole = false): the viewer's normal lazy path lists them when the
+// row is expanded, exactly like a folder that was not recursed into.
+inline void convertToFolderRow(QTreeWidgetItem* item) {
+    item->setData(0, kIsDirRole, true);
+    item->setData(0, kChildrenLoadedRole, false);
+    item->setData(0, kFolderStatusMaskRole, 0);
+    item->setText(3, QString());
+    item->setIcon(0, icons::folderIconForMask(0));
+    item->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
+    applyRowStyle(item, static_cast<RowStatus>(item->data(0, kStatusRole).toInt()), true);
 }
 
 inline QTreeWidgetItem* pairedItem(QTreeWidgetItem* item, QTreeWidget* otherTree) {

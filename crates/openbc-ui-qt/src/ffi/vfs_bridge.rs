@@ -754,6 +754,53 @@ fn read_inner(session_id: i32, path: &str) -> Result<Vec<u8>, String> {
         .map_err(vfs_error_message)
 }
 
+// ------------------------------------------------------------------------------------------
+// Archives as folders. The extension table lives in `openbc_vfs::archive` (never duplicate it in
+// C++). Paths that go *through* an archive (`/a/x.zip/src/f.rs`) already work with every
+// `openbc_vfs_*` / `openbc_engine_*` function above, because each session's provider is wrapped in
+// `ArchiveAwareVfs`; the functions below only tell the UI which names are worth offering as folders.
+// ------------------------------------------------------------------------------------------
+
+/// 1 when the file name should be offered as a folder (zip, jar, 7z, rar, tar.gz, ...), else 0.
+/// Name only: no I/O. Zip-based documents (docx, xlsx, epub...) answer 0 on purpose.
+#[no_mangle]
+pub extern "C" fn openbc_archive_is_archive_name(name: *const u8, name_length: usize) -> i32 {
+    let name = unsafe { crate::input_text(name, name_length) };
+    i32::from(archive_name_check(&name))
+}
+
+/// Number of path components that look like archive files (lexical, no I/O). Greater than 0 means
+/// the path is inside an archive or is one, so the UI can avoid auto-expanding nested archives.
+#[no_mangle]
+pub extern "C" fn openbc_archive_depth(path: *const u8, path_length: usize) -> i32 {
+    let path = unsafe { crate::input_text(path, path_length) };
+    archive_depth_check(&path)
+}
+
+/// JSON array of the extensions offered as folders (lower-case, no dot). Free with
+/// `openbc_vfs_string_destroy`. Writes `[]` when this build has no archive support.
+#[no_mangle]
+pub extern "C" fn openbc_archive_extensions(extensions: *mut *mut c_char) -> *mut c_char {
+    if !extensions.is_null() {
+        let list = archive_extension_list();
+        let json = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
+        unsafe { *extensions = error_string(json) };
+    }
+    ok_string()
+}
+
+fn archive_name_check(name: &str) -> bool {
+    openbc_vfs::archive_is_name(name)
+}
+
+fn archive_depth_check(path: &str) -> i32 {
+    i32::try_from(openbc_vfs::archive_path_depth(std::path::Path::new(path))).unwrap_or(i32::MAX)
+}
+
+fn archive_extension_list() -> Vec<&'static str> {
+    openbc_vfs::archive_folder_extensions()
+}
+
 /// Free a string returned by the VFS FFI.
 #[no_mangle]
 pub unsafe extern "C" fn openbc_vfs_string_destroy(value: *mut c_char) {
@@ -805,6 +852,55 @@ mod tests {
         super::openbc_vfs_disconnect(id);
         let _ = fs::remove_file(dir.join("hello.txt"));
         let _ = fs::remove_dir(&dir);
+    }
+
+    fn fixture(name: &str) -> String {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../openbc-vfs/tests/fixtures")
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn archive_paths_work_through_the_session_functions() {
+        let session = connect_inner(r#"{"protocol":"local","mountPath":"/"}"#).unwrap();
+        let zip = fixture("sample.zip");
+        let listing = super::list_inner(session, &zip).unwrap();
+        assert!(listing.contains("readme.txt") && listing.contains("src"), "{listing}");
+        assert!(!super::stat_inner(session, &zip).unwrap(), "the archive itself stays a file");
+        assert!(super::stat_inner(session, &format!("{zip}/src")).unwrap());
+        assert_eq!(super::read_inner_engine(session, &format!("{zip}/src/main.rs")).unwrap(), b"fn main() {}\n");
+        // Writing inside an archive is refused instead of touching the outer filesystem.
+        let err = super::write_inner(session, &format!("{zip}/new.txt"), b"x").unwrap_err();
+        assert!(err.contains("read-only"), "{err}");
+        openbc_vfs_disconnect(session);
+    }
+
+    #[test]
+    fn engine_compares_two_different_archive_formats_as_folders() {
+        let session = connect_inner(r#"{"protocol":"local","mountPath":"/"}"#).unwrap();
+        let (zip, tgz) = (fixture("sample.zip"), fixture("sample.tar.gz"));
+        // Same contents, different container: content check must say every file is equal.
+        let rows = compare_folder_inner(session, &zip, session, &tgz, true, true, true, false).unwrap();
+        let rows: serde_json::Value = serde_json::from_str(&rows).unwrap();
+        let by_name = |n: &str| rows.as_array().unwrap().iter().find(|r| r["name"] == n).unwrap().clone();
+        assert_eq!(by_name("readme.txt")["status"], "equal");
+        assert!(by_name("src")["left"]["isDir"].as_bool().unwrap());
+        // One level down, still inside both archives.
+        let inner = compare_folder_inner(session, &format!("{zip}/data"), session, &format!("{tgz}/data"), true, true, true, false).unwrap();
+        assert!(inner.contains("blob.bin") && inner.contains("\"equal\""), "{inner}");
+        // 7z vs rar vs a real folder on the other side.
+        assert!(super::compare_files_inner(session, &format!("{}/readme.txt", fixture("sample.7z")), session, &format!("{}/readme.txt", fixture("sample.rar"))).unwrap());
+        openbc_vfs_disconnect(session);
+    }
+
+    #[test]
+    fn archive_name_ffi_helpers() {
+        assert!(super::archive_name_check("a.tar.gz") && super::archive_name_check("lib.JAR"));
+        assert!(!super::archive_name_check("report.docx") && !super::archive_name_check("libc.so"));
+        assert_eq!(super::archive_depth_check("/a/x.zip/y.7z/f.txt"), 2);
+        assert!(super::archive_extension_list().contains(&"7z"));
     }
 
     #[test]

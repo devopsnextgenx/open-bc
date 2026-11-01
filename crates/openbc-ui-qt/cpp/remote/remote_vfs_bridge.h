@@ -271,6 +271,26 @@ public:
         return true;
     }
 
+    // Reads a local-style path through the local VFS session. Unlike QFile this also resolves paths
+    // that pass through archives (/data/x.zip/src/main.rs). Small-file semantics, like remoteReadFile.
+    bool localReadFile(const QString& path, QByteArray* out, QString* error) {
+        if (!ensureLocalConnected(error)) return false;
+        const QByteArray pathBytes = path.toUtf8();
+        size_t length = 0;
+        char* errorRaw = nullptr;
+        unsigned char* data = openbc_engine_read_file(
+            localSessionId(), reinterpret_cast<const unsigned char*>(pathBytes.constData()),
+            static_cast<size_t>(pathBytes.size()), &length, &errorRaw);
+        vfs_detail::FfiString err(errorRaw);
+        if (!data) {
+            if (error) *error = err.isNull() ? QStringLiteral("read failed") : err.toQString();
+            return false;
+        }
+        if (out) *out = QByteArray(reinterpret_cast<const char*>(data), static_cast<int>(length));
+        openbc_vfs_buffer_destroy(data, length);
+        return true;
+    }
+
     bool remoteWriteFile(const RemoteProfile& profile, const QString& path,
                          const QByteArray& bytes, QString* error) {
         if (!ensureConnected(profile, error)) return false;

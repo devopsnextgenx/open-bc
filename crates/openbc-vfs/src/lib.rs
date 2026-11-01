@@ -3,10 +3,56 @@
 use async_trait::async_trait;
 use openbc_core::{DirectoryEntry, EntryMetadata, EntryPath, FolderMetadata};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "archive-core")]
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+#[cfg(feature = "archive-core")]
+pub mod archive;
 pub mod observe;
+
+/// True when the UI should offer this file name as a folder (zip, jar, 7z, rar, tar.gz, ...).
+/// Always available: reports false when the build has no archive support.
+#[must_use]
+pub fn archive_is_name(name: &str) -> bool {
+    #[cfg(feature = "archive-core")]
+    {
+        archive::is_archive_name(name)
+    }
+    #[cfg(not(feature = "archive-core"))]
+    {
+        let _ = name;
+        false
+    }
+}
+
+/// Number of path components that look like archive files (lexical, no I/O).
+#[must_use]
+pub fn archive_path_depth(path: &Path) -> usize {
+    #[cfg(feature = "archive-core")]
+    {
+        archive::archive_depth(path)
+    }
+    #[cfg(not(feature = "archive-core"))]
+    {
+        let _ = path;
+        0
+    }
+}
+
+/// Extensions offered as folders; empty when the build has no archive support.
+#[must_use]
+pub fn archive_folder_extensions() -> Vec<&'static str> {
+    #[cfg(feature = "archive-core")]
+    {
+        archive::folder_extensions()
+    }
+    #[cfg(not(feature = "archive-core"))]
+    {
+        Vec::new()
+    }
+}
 pub mod resolve;
 #[cfg(feature = "sftp")]
 pub mod sftp;
@@ -64,6 +110,13 @@ pub trait AsyncVfs: Send + Sync {
                 source,
             })?;
         Ok((bytes.len() as u64 <= limit).then_some(bytes))
+    }
+
+    /// The real on-disk path of `path` when this provider is backed by the local filesystem,
+    /// so archive support can read a local archive in place instead of copying it. Providers
+    /// that are not (SFTP, FTP, archives) keep the default `None`.
+    fn local_path(&self, _path: &EntryPath) -> Option<PathBuf> {
+        None
     }
 
     /// Replace a file's contents with the supplied bytes.
@@ -215,6 +268,10 @@ impl AsyncVfs for LocalVfs {
         Ok(Box::new(file))
     }
 
+    fn local_path(&self, path: &EntryPath) -> Option<PathBuf> {
+        Some(self.resolve(path))
+    }
+
     async fn write_file(&self, path: &EntryPath, bytes: &[u8]) -> Result<(), VfsError> {
         let resolved = self.resolve(path);
         tokio::fs::write(&resolved, bytes)
@@ -344,15 +401,20 @@ impl ConnectionProfile {
 /// callers only ever depend on [`AsyncVfs`] and never on a concrete
 /// provider type.
 pub async fn build_vfs(profile: ConnectionProfile) -> Result<Box<dyn AsyncVfs>, VfsError> {
-    match profile {
-        ConnectionProfile::Local { root } => Ok(Box::new(LocalVfs::new(root))),
+    let vfs: Box<dyn AsyncVfs> = match profile {
+        ConnectionProfile::Local { root } => Box::new(LocalVfs::new(root)),
         #[cfg(feature = "sftp")]
-        ConnectionProfile::Sftp(config) => Ok(Box::new(sftp::SftpVfs::connect(config).await?)),
+        ConnectionProfile::Sftp(config) => Box::new(sftp::SftpVfs::connect(config).await?),
         #[cfg(feature = "ftp")]
-        ConnectionProfile::Ftp(config) => Ok(Box::new(ftp::FtpVfs::connect(config).await?)),
+        ConnectionProfile::Ftp(config) => Box::new(ftp::FtpVfs::connect(config).await?),
         #[cfg(feature = "network")]
-        ConnectionProfile::Network(config) => Ok(Box::new(network::NetworkVfs::open(config).await?)),
-    }
+        ConnectionProfile::Network(config) => Box::new(network::NetworkVfs::open(config).await?),
+    };
+    // Paths may pass through archive files (`/a/x.zip/inner/f.txt`); see the `archive` module.
+    // Paths with no archive file in them are forwarded untouched.
+    #[cfg(feature = "archive-core")]
+    let vfs: Box<dyn AsyncVfs> = Box::new(archive::ArchiveAwareVfs::new(Arc::from(vfs), archive::ArchiveOptions::default()));
+    Ok(vfs)
 }
 
 #[cfg(all(test, unix))]
