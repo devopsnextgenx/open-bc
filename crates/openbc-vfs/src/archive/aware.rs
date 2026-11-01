@@ -185,7 +185,39 @@ impl AsyncVfs for ArchiveAwareVfs {
     async fn write_file(&self, path: &EntryPath, bytes: &[u8]) -> Result<(), VfsError> {
         match self.route(path, false).await? {
             None => self.inner.write_file(path, bytes).await,
-            Some(_) => Err(read_only("write_file (archives are read-only)")),
+            Some(r) => {
+                r.vfs.stat(&r.rest).await?;
+                let Some(local_archive) = self.inner.local_path(&EntryPath(r.archive.clone())) else {
+                    return Err(read_only("write_file (only local archive members can be saved)"));
+                };
+                let container = r.archive.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                if super::classify_name(container).is_none_or(|class| class.container != super::Container::Zip) {
+                    return Err(read_only("write_file (only ZIP archive members can be saved)"));
+                }
+                if super::archive_depth(&r.rest.0) > 0 {
+                    return Err(read_only("write_file (nested archive members cannot be saved)"));
+                }
+                let key = super::key_of(&r.rest).ok_or_else(|| super::not_found("write_file", &path.0))?;
+                #[cfg(feature = "archive-zip")]
+                {
+                    let bytes = bytes.to_vec();
+                    tokio::task::spawn_blocking(move || super::backends::replace_zip_entry(&local_archive, &key, &bytes))
+                        .await
+                        .map_err(|e| VfsError::Io {
+                            operation: "write_file",
+                            path: path.0.clone(),
+                            source: std::io::Error::other(e),
+                        })?
+                        .map_err(|source| VfsError::Io { operation: "write_file", path: path.0.clone(), source })?;
+                    self.mounts.lock().unwrap_or_else(|p| p.into_inner()).remove(&r.archive);
+                    Ok(())
+                }
+                #[cfg(not(feature = "archive-zip"))]
+                {
+                    let _ = (local_archive, key, bytes);
+                    Err(read_only("write_file (this build has no ZIP support)"))
+                }
+            }
         }
     }
 
@@ -215,5 +247,39 @@ impl AsyncVfs for ArchiveAwareVfs {
             None => self.inner.remove_dir(path).await,
             Some(_) => Err(read_only("remove_dir (archives are read-only)")),
         }
+    }
+}
+
+#[cfg(all(test, feature = "archive-zip"))]
+mod tests {
+    use std::io::Write;
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::LocalVfs;
+
+    #[tokio::test]
+    async fn save_rewrites_zip_member_and_refreshes_mounted_archive() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("source.zip");
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("src/diff_algorithms.h", options).unwrap();
+        writer.write_all(b"old contents").unwrap();
+        writer.start_file("keep.txt", options).unwrap();
+        writer.write_all(b"keep this").unwrap();
+        writer.finish().unwrap();
+
+        let vfs: Arc<dyn AsyncVfs> = Arc::new(LocalVfs::new("/"));
+        let vfs = ArchiveAwareVfs::new(vfs, ArchiveOptions::default());
+        let member = EntryPath(archive_path.join("src/diff_algorithms.h"));
+
+        assert_eq!(vfs.read_file_limited(&member, 1024).await.unwrap().unwrap(), b"old contents");
+        vfs.write_file(&member, b"updated contents").await.unwrap();
+
+        assert_eq!(vfs.read_file_limited(&member, 1024).await.unwrap().unwrap(), b"updated contents");
+        let kept = EntryPath(archive_path.join("keep.txt"));
+        assert_eq!(vfs.read_file_limited(&kept, 1024).await.unwrap().unwrap(), b"keep this");
     }
 }

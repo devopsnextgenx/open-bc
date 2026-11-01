@@ -15,6 +15,44 @@ use super::{classify_name, ArchiveOptions, Backend, Container};
 type Opened = (Index, Box<dyn Backend>);
 type Res<T> = Result<T, String>;
 
+#[cfg(feature = "archive-zip")]
+pub(super) fn replace_zip_entry(archive_path: &Path, entry_path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let metadata = std::fs::metadata(archive_path)?;
+    let parent = archive_path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let mut archive = zip::ZipArchive::new(File::open(archive_path)?).map_err(std::io::Error::other)?;
+    let mut writer = zip::ZipWriter::new(temporary.reopen()?);
+    writer.set_raw_comment(archive.comment().to_vec().into_boxed_slice()).map_err(std::io::Error::other)?;
+
+    let mut found = false;
+    for index in 0..archive.len() {
+        let entry = archive.by_index_raw(index).map_err(std::io::Error::other)?;
+        let name = entry.name().ok().as_deref().and_then(normalize_entry_name);
+        if name.as_deref() == Some(entry_path) {
+            if entry.is_dir() || entry.is_symlink() {
+                return Err(std::io::Error::other("archive member is not a regular file"));
+            }
+            found = true;
+            continue;
+        }
+        writer.raw_copy_file(entry).map_err(std::io::Error::other)?;
+    }
+    if !found {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "archive member does not exist"));
+    }
+    drop(archive);
+
+    writer
+        .start_file(entry_path, zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated))
+        .map_err(std::io::Error::other)?;
+    std::io::Write::write_all(&mut writer, bytes)?;
+    let output = writer.finish().map_err(std::io::Error::other)?;
+    output.sync_all()?;
+    std::fs::set_permissions(temporary.path(), metadata.permissions())?;
+    temporary.persist(archive_path).map_err(|error| error.error)?;
+    Ok(())
+}
+
 macro_rules! gated {
     ($feature:literal, $what:literal, $body:expr) => {{
         #[cfg(feature = $feature)]

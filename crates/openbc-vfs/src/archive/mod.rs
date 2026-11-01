@@ -1,7 +1,7 @@
 //! Archives as folders.
 //!
-//! * [`ArchiveVfs`] - one opened archive as a read-only [`AsyncVfs`]. Paths are relative to the
-//!   archive root. One backend per format (`backends`), all behind their own cargo feature.
+//! * [`ArchiveVfs`] - one opened archive as an [`AsyncVfs`]. Paths are relative to the archive
+//!   root. One backend per format (`backends`), all behind their own cargo feature.
 //! * [`ArchiveAwareVfs`] - a decorator for ANY provider (local, SFTP, network, even another
 //!   archive) that lets paths pass *through* archive files: `/data/x.zip/src/main.rs` resolves,
 //!   and archives nest (`/data/x.zip/inner.7z/a.txt`). Everything above the VFS (folder compare,
@@ -19,7 +19,8 @@
 //! are first copied to a temp file (capped). Compressed tarballs, single-file compressions, 7z
 //! and rar are expanded once into a per-archive temp folder (capped) because they cannot be read
 //! randomly; zip, plain tar, cab and ar are read in place. Temp folders are removed when the
-//! archive is closed; a hard crash can leave `openbc-archive-*` folders behind.
+//! archive is closed; a hard crash can leave `openbc-archive-*` folders behind. Save-in-place is
+//! supported for members of local ZIP archives; other archive formats remain read-only.
 
 mod aware;
 mod backends;

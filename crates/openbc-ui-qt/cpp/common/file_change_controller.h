@@ -30,6 +30,7 @@
 
 #include "backend/backend_channel.h"
 #include "backend/compare_backend_api.h"
+#include "common/archive_support.h"
 #include "common/file_change_banner.h"
 #include "common/remote_selector.h"
 
@@ -102,6 +103,10 @@ private:
     void startWatch(std::uint8_t side) {
         const QString& path = paths_[side];
         const bool isDirectory = directory_[side];
+        if (archives::isVirtual(path)) {
+            openbc_watch_clear(session_, side);
+            return;
+        }
         RemoteProfile profile;
         const bool hasProfile = RemoteProfileStore::findProfileForPath(path, &profile);
         // Mounted network drives are remote too: watching them as local paths would poll the share

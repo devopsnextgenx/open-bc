@@ -1788,18 +1788,21 @@ private:
     // `done` (optional) is called exactly once: immediately for local files, after the write for remote ones.
     void saveSide(bool left, SaveDone done = {}) {
         const QString& path = left ? leftPath_ : rightPath_;
+        const bool isVirtual = archives::isVirtual(path);
         RemoteProfile remoteProfile;
-        if (RemoteProfileStore::findProfileForPath(path, &remoteProfile)) {
+        const bool isRemote = RemoteProfileStore::findProfileForPath(path, &remoteProfile);
+        if (isRemote || isVirtual) {
             const QString contents = (left ? leftOriginal_ : rightOriginal_).join('\n');
             const QByteArray bytes = contents.toUtf8();
-            const QString relativePath = remoteRelativePath(path, remoteProfile);
+            const QString relativePath = isRemote ? remoteRelativePath(path, remoteProfile) : path;
             const QPointer<TextCompareViewer> view(this);
             status_->setText("Saving " + QFileInfo(relativePath).fileName() + "...");
             QThreadPool::globalInstance()->start([view, left, path, remoteProfile, relativePath,
-                                                  contents, bytes, done]() {
+                                                  isRemote, contents, bytes, done]() {
                 QString error;
-                const bool saved = sharedVfsBridge().remoteWriteFile(
-                    remoteProfile, relativePath, bytes, &error);
+                const bool saved = isRemote
+                    ? sharedVfsBridge().remoteWriteFile(remoteProfile, relativePath, bytes, &error)
+                    : sharedVfsBridge().localWriteFile(relativePath, bytes, &error);
                 QMetaObject::invokeMethod(qApp, [view, left, path, contents, saved, error, done]() {
                     if (!view) { if (done) done(false, "The tab was closed."); return; }
                     if (!saved) {

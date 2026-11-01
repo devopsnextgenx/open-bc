@@ -116,12 +116,30 @@ async fn hostile_entry_names_never_surface() {
 }
 
 #[tokio::test]
-async fn archives_are_read_only() {
+async fn archive_structure_operations_remain_read_only() {
     let v = vfs();
-    assert!(matches!(v.write_file(&p("sample.zip/x.txt"), b"x").await, Err(VfsError::Unsupported(_))));
     assert!(matches!(v.create_dir(&p("sample.zip/d")).await, Err(VfsError::Unsupported(_))));
     assert!(matches!(v.remove_file(&p("sample.zip/readme.txt")).await, Err(VfsError::Unsupported(_))));
     assert!(matches!(v.rename(&p("sample.zip/readme.txt"), &p("sample.zip/r2")).await, Err(VfsError::Unsupported(_))));
+}
+
+#[cfg(feature = "archive-zip")]
+#[tokio::test]
+async fn local_zip_members_can_be_saved_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fixtures().join("sample.zip"), dir.path().join("sample.zip")).unwrap();
+    let v = ArchiveAwareVfs::new(Arc::new(LocalVfs::new(dir.path())), ArchiveOptions::default());
+
+    v.write_file(&p("sample.zip/src/main.rs"), b"fn changed() {}\n").await.unwrap();
+
+    assert_eq!(text(&v, "sample.zip/src/main.rs").await, "fn changed() {}\n");
+    assert_eq!(text(&v, "sample.zip/readme.txt").await, "hello archive\n");
+}
+
+#[tokio::test]
+async fn non_zip_archive_members_remain_read_only() {
+    let v = vfs();
+    assert!(matches!(v.write_file(&p("sample.tar/readme.txt"), b"x").await, Err(VfsError::Unsupported(_))));
 }
 
 #[tokio::test]

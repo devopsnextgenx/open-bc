@@ -291,6 +291,21 @@ public:
         return true;
     }
 
+    bool localWriteFile(const QString& path, const QByteArray& bytes, QString* error) {
+        if (!ensureLocalConnected(error)) return false;
+        const QByteArray pathBytes = path.toUtf8();
+        vfs_detail::FfiString err(openbc_engine_write_file(
+            localSessionId(), reinterpret_cast<const unsigned char*>(pathBytes.constData()),
+            static_cast<size_t>(pathBytes.size()),
+            reinterpret_cast<const unsigned char*>(bytes.constData()),
+            static_cast<size_t>(bytes.size())));
+        if (!err.isNull()) {
+            if (error) *error = err.toQString();
+            return false;
+        }
+        return true;
+    }
+
     bool remoteWriteFile(const RemoteProfile& profile, const QString& path,
                          const QByteArray& bytes, QString* error) {
         if (!ensureConnected(profile, error)) return false;
