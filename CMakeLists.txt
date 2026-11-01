@@ -151,7 +151,7 @@ if(WIN32)
     configure_file("${CMAKE_CURRENT_SOURCE_DIR}/resources/openbc.rc.in" "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc" @ONLY)
     target_sources(openbc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/openbc.rc")
     set_target_properties(openbc PROPERTIES WIN32_EXECUTABLE TRUE)
-    target_link_libraries(openbc PRIVATE ws2_32 userenv advapi32 ntdll)
+    target_link_libraries(openbc PRIVATE ws2_32 userenv advapi32 ntdll powrprof)
     # Console build of the checker so output shows in cmd.exe
     set_target_properties(openbc-depcheck PROPERTIES WIN32_EXECUTABLE FALSE)
 
