@@ -40,8 +40,11 @@
 #include <QStringList>
 #include <QStyle>
 #include <QTextBlock>
+#include <QTextBlockFormat>
 #include <QTextCursor>
 #include <QTextEdit>
+#include <QTextFormat>
+#include <QTextLayout>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -332,6 +335,11 @@ private:
         rightInline_ = diffs.second;
     }
 
+    static void setEditorText(LineNumberEditor* editor, const QString& text) {
+        editor->setPlainText(text);
+        editor->applyEditorFont(TextFont::instance().font());
+    }
+
     static QPair<QVector<QVector<CharSegment>>, QVector<QVector<CharSegment>>>
     computeInlineDiffsForRows(const QVector<TextDiffLine>& rows, const QString& sessionId) {
         QPair<QVector<QVector<CharSegment>>, QVector<QVector<CharSegment>>> result;
@@ -356,8 +364,8 @@ private:
         applyingProgrammaticUpdate_ = true;
         leftHighlighter_->setDeferred(true);
         rightHighlighter_->setDeferred(true);
-        leftEditor_->setPlainText(leftRaw_.isNull() ? leftOriginal_.join('\n') : leftRaw_);
-        rightEditor_->setPlainText(rightRaw_.isNull() ? rightOriginal_.join('\n') : rightRaw_);
+        setEditorText(leftEditor_, leftRaw_.isNull() ? leftOriginal_.join('\n') : leftRaw_);
+        setEditorText(rightEditor_, rightRaw_.isNull() ? rightOriginal_.join('\n') : rightRaw_);
         leftEditor_->setLineNumbers(QVector<int>::fromList(
             [&]() { QList<int> values; for (int i = 1; i <= leftOriginal_.size(); ++i) values << i; return values; }()));
         rightEditor_->setLineNumbers(QVector<int>::fromList(
@@ -463,8 +471,8 @@ private:
         }
 
         applyingProgrammaticUpdate_ = true;
-        leftEditor_->setPlainText(leftLines.join('\n'));
-        rightEditor_->setPlainText(rightLines.join('\n'));
+        setEditorText(leftEditor_, leftLines.join('\n'));
+        setEditorText(rightEditor_, rightLines.join('\n'));
         leftStructurallyEdited_ = false;
         rightStructurallyEdited_ = false;
         leftEditor_->document()->setModified(false);
@@ -482,6 +490,7 @@ private:
         rightEditor_->setInlineDiffs(rightInline_);
         leftHighlighter_->refreshInlineDiffs();
         rightHighlighter_->refreshInlineDiffs();
+        synchronizeJavaDiffRowHeights();
         applyingProgrammaticUpdate_ = false;
         leftHighlighter_->setDeferred(false);
         rightHighlighter_->setDeferred(false);
@@ -747,15 +756,20 @@ private:
 
         // Font and diff colours come from Tools > Options > Appearance; re-applied on every change.
         TextFont::instance().subscribe(this, [this]() {
+            const bool wasApplyingProgrammaticUpdate = applyingProgrammaticUpdate_;
+            applyingProgrammaticUpdate_ = true;
+            clearJavaDiffRowHeights();
             const QFont editorFont = TextFont::instance().font();
             leftEditor_->applyEditorFont(editorFont);
             rightEditor_->applyEditorFont(editorFont);
+            synchronizeJavaDiffRowHeights();
             if (!rows_.isEmpty()) {
                 computeDiffSelections(rows_);
                 updateExtraSelections();
             }
             leftEditor_->viewport()->update();
             rightEditor_->viewport()->update();
+            applyingProgrammaticUpdate_ = wasApplyingProgrammaticUpdate;
         });
 
         syntaxStyleMenu_ = new QMenu("Syntax & Style", this);
@@ -1016,6 +1030,11 @@ private:
             const auto mode = checked ? QPlainTextEdit::WidgetWidth : QPlainTextEdit::NoWrap;
             leftEditor_->setLineWrapMode(mode);
             rightEditor_->setLineWrapMode(mode);
+            const bool wasApplyingProgrammaticUpdate = applyingProgrammaticUpdate_;
+            applyingProgrammaticUpdate_ = true;
+            if (checked) clearJavaDiffRowHeights();
+            else synchronizeJavaDiffRowHeights();
+            applyingProgrammaticUpdate_ = wasApplyingProgrammaticUpdate;
         });
         connect(copyAction_, &QAction::triggered, this, [this]() {
             const bool fromLeft = !rightEditor_->hasFocus();
@@ -1529,6 +1548,69 @@ private:
         return result;
     }
 
+    bool shouldSynchronizeJavaDiffRowHeights() const {
+        return classFileCompare_ && decompileJavaAction_ && decompileJavaAction_->isChecked() &&
+               formatAction_ && !formatAction_->isChecked();
+    }
+
+    void clearJavaDiffRowHeights() {
+        if (!classFileCompare_) return;
+        const auto clear = [](LineNumberEditor* editor) {
+            QTextCursor cursor(editor->document());
+            cursor.beginEditBlock();
+            for (QTextBlock block = editor->document()->begin(); block.isValid();
+                 block = block.next()) {
+                QTextBlockFormat format = block.blockFormat();
+                if (!format.hasProperty(QTextFormat::LineHeight)) continue;
+                format.clearProperty(QTextFormat::LineHeight);
+                cursor.setPosition(block.position());
+                cursor.setBlockFormat(format);
+            }
+            cursor.endEditBlock();
+        };
+        clear(leftEditor_);
+        clear(rightEditor_);
+    }
+
+    void synchronizeJavaDiffRowHeights() {
+        if (!shouldSynchronizeJavaDiffRowHeights()) return;
+        const int rowCount = qMin(rows_.size(),
+                                  qMin(leftEditor_->document()->blockCount(),
+                                       rightEditor_->document()->blockCount()));
+        QVector<qreal> sharedHeights;
+        sharedHeights.reserve(rowCount);
+        for (int row = 0; row < rowCount; ++row) {
+            const QTextBlock leftBlock = leftEditor_->document()->findBlockByNumber(row);
+            const QTextBlock rightBlock = rightEditor_->document()->findBlockByNumber(row);
+            const QTextLayout* leftLayout = leftBlock.layout();
+            const QTextLayout* rightLayout = rightBlock.layout();
+            const qreal leftHeight = leftLayout && leftLayout->lineCount() > 0
+                                         ? leftLayout->lineAt(0).height()
+                                         : 0.0;
+            const qreal rightHeight = rightLayout && rightLayout->lineCount() > 0
+                                          ? rightLayout->lineAt(0).height()
+                                          : 0.0;
+            const qreal sharedHeight = qMax(leftHeight, rightHeight);
+            sharedHeights.push_back(sharedHeight);
+        }
+
+        const auto setHeights = [&sharedHeights](LineNumberEditor* editor) {
+            QTextCursor cursor(editor->document());
+            cursor.beginEditBlock();
+            for (int row = 0; row < sharedHeights.size(); ++row) {
+                if (sharedHeights[row] <= 0.0) continue;
+                const QTextBlock block = editor->document()->findBlockByNumber(row);
+                QTextBlockFormat format = block.blockFormat();
+                format.setLineHeight(sharedHeights[row], QTextBlockFormat::FixedHeight);
+                cursor.setPosition(block.position());
+                cursor.setBlockFormat(format);
+            }
+            cursor.endEditBlock();
+        };
+        setHeights(leftEditor_);
+        setHeights(rightEditor_);
+    }
+
     struct CursorSnapshot {
         int block = 0;
         int column = 0;
@@ -1642,8 +1724,8 @@ private:
         }
 
         applyingProgrammaticUpdate_ = true;
-        leftEditor_->setPlainText(leftLines.join('\n'));
-        rightEditor_->setPlainText(rightLines.join('\n'));
+        setEditorText(leftEditor_, leftLines.join('\n'));
+        setEditorText(rightEditor_, rightLines.join('\n'));
         leftStructurallyEdited_ = false;
         rightStructurallyEdited_ = false;
         leftEditor_->document()->setModified(false);
@@ -1662,6 +1744,7 @@ private:
         rightEditor_->setInlineDiffs(rightInline_);
         leftHighlighter_->refreshInlineDiffs();
         rightHighlighter_->refreshInlineDiffs();
+        synchronizeJavaDiffRowHeights();
         applyingProgrammaticUpdate_ = false;
         computeDiffSelections(rows_);
         miniMap_->setRows(rows_);

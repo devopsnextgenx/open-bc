@@ -25,6 +25,7 @@
 #include <QScrollBar>
 #include <QSet>
 #include <QStringList>
+#include <QTextCharFormat>
 #include <QTextDocument>
 #include <QTextBlock>
 #include <QTextLayout>
@@ -286,7 +287,16 @@ protected:
 
     // Applies the Text Compare font (options/text_font.h) and keeps tab stops and gutters in step.
     void applyEditorFont(const QFont& editorFont) {
+        const bool wasModified = document()->isModified();
         setFont(editorFont);
+        document()->setDefaultFont(editorFont);
+        QTextCharFormat format;
+        format.setFontFamily(editorFont.family());
+        if (editorFont.pointSizeF() > 0) format.setFontPointSize(editorFont.pointSizeF());
+        QTextCursor cursor(document());
+        cursor.select(QTextCursor::Document);
+        cursor.mergeCharFormat(format);
+        document()->setModified(wasModified);
         setTabStopDistance(fontMetrics().horizontalAdvance(' ') * 4);
         updateMarginWidths();
         viewport()->update();
