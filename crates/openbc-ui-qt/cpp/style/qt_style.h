@@ -378,12 +378,12 @@ inline QString applicationStyleSheet(Theme theme = Theme::Dark) {
         QToolBar#textCompareToolbar QToolButton:hover { background: #4d4d4d; border-color: #5f5f5f; }
         QToolBar#textCompareToolbar QToolButton:checked { background: #232323; border-color: #232323; }
         QFrame#diffLinePreview { background: #232323; border: 0; border-top: 1px solid #505050; }
-        QFrame#diffLinePreview QLabel { font-family: "Consolas", "Courier New", monospace; }
+        QFrame#diffLinePreview QLabel { font-family: "DejaVu Sans Mono", monospace; }
         QLineEdit#previewText {
-            font-family: "Consolas", "Courier New", monospace; border-radius: 0;
+            font-family: "DejaVu Sans Mono", monospace; border-radius: 0;
         }
         QLabel#previewLineNo {
-            font-family: "Consolas", "Courier New", monospace; color: #8b90a6;
+            font-family: "DejaVu Sans Mono", monospace; color: #8b90a6;
             background: #1b1b1b; padding: 0 6px; border: 1px solid transparent;
         }
 

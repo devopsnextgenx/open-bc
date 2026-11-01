@@ -82,6 +82,7 @@
 #include "common/remote_selector.h"
 #include "common/unsaved_changes_dialog.h"
 #include "common/file_change_controller.h"
+#include "common/compare_font.h"
 #include "style/qt_style.h"
 
 namespace openbc::app {
@@ -123,6 +124,7 @@ public:
         : QWidget(parent), leftPath_(leftPath), rightPath_(rightPath),
           channel_(this, &MediaCompareViewer::destroyHandle, [this](const BackendChannel::Event& event) { onEvent(event); }) {
         setObjectName("mediaCompareView");
+        setFont(defaultCompareFont());
         buildUi();
         changes_ = std::make_unique<FileChangeController>(this, [this](std::uint8_t) { reloadLatest(); }, /*wholeTab=*/true,
                                                           [this]() { return confirmDiscard(); });

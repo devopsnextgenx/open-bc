@@ -70,6 +70,7 @@
 #include "common/path_selector.h"
 #include "common/remote_selector.h"
 #include "common/file_change_controller.h"
+#include "common/compare_font.h"
 #include "style/qt_style.h"
 #include "viewers/picture/picture_compare_api.h"
 #include "viewers/picture/picture_extensions.h"
@@ -433,6 +434,7 @@ public:
                                 QWidget *parent = nullptr)
       : QWidget(parent), prefs_(preferences) {
     setFocusPolicy(Qt::StrongFocus);
+    setFont(defaultCompareFont());
     loadPreferences();
 
     auto *root = new QVBoxLayout(this);

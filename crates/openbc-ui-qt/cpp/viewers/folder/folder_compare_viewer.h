@@ -65,6 +65,7 @@
 #include "common/file_kinds.h"
 #include "common/path_selector.h"
 #include "common/file_change_controller.h"
+#include "common/java_class_support.h"
 #include "remote/remote_profile_store.h"
 #include "remote/remote_vfs_bridge.h"
 #include "style/qt_style.h"
@@ -1585,49 +1586,63 @@ private:
       QString leftText;
       QString rightText;
       QString error;
+      QString decompileWarning;
       auto readSide = [](const QString &path, bool remote,
                          const RemoteProfile &profile, QString *text,
-                         QString *readError) {
+                         QString *readError, QString *warning) {
         if (path.isEmpty())
           return true;
+        QByteArray bytes;
         if (remote) {
-          QByteArray bytes;
           if (!sharedVfsBridge().remoteReadFile(
                   profile, remoteRelativePath(path, profile), &bytes,
                   readError)) {
             return false;
           }
-          *text = QString::fromUtf8(bytes);
-          return true;
-        }
-        if (archives::isVirtual(path)) { // inside an archive: read through the VFS
-          QByteArray bytes;
+        } else if (archives::isVirtual(path)) { // inside an archive: read through the VFS
           if (!sharedVfsBridge().localReadFile(path, &bytes, readError))
             return false;
+        } else {
+          QFile file(path);
+          if (!file.open(QIODevice::ReadOnly)) {
+            *readError = file.errorString();
+            return false;
+          }
+          bytes = file.readAll();
+        }
+        if (isJavaClassFilePath(path)) {
+          QString decompiled;
+          QString decompileError;
+          if (decompileJavaClass(bytes, path, &decompiled, &decompileError)) {
+            *text = std::move(decompiled);
+          } else {
+            *text = QStringLiteral("// Java decompilation failed: ") + decompileError +
+                    QStringLiteral("\n// Showing the class-file bytes:\n") +
+                    javaClassByteDump(bytes);
+            if (!warning->isEmpty()) *warning += QLatin1Char('\n');
+            *warning += "Could not decompile " + path + ": " + decompileError +
+                        ". Use the Java Source toggle to view the class-file bytes.";
+          }
+        } else {
           *text = QString::fromUtf8(bytes);
-          return true;
         }
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly)) {
-          *readError = file.errorString();
-          return false;
-        }
-        *text = QString::fromUtf8(file.readAll());
         return true;
       };
       QString readError;
-      if (!readSide(leftPath, leftRemote, leftProfile, &leftText, &readError)) {
+      if (!readSide(leftPath, leftRemote, leftProfile, &leftText, &readError,
+                    &decompileWarning)) {
         error =
             "Could not open left file: " + leftPath + " (" + readError + ")";
       } else if (!readSide(rightPath, rightRemote, rightProfile, &rightText,
-                           &readError)) {
+                           &readError, &decompileWarning)) {
         error =
             "Could not open right file: " + rightPath + " (" + readError + ")";
       }
       QMetaObject::invokeMethod(
           qApp,
           [self, leftPath, rightPath, leftText = std::move(leftText),
-           rightText = std::move(rightText), error = std::move(error)]() {
+           rightText = std::move(rightText), error = std::move(error),
+           decompileWarning = std::move(decompileWarning)]() {
             if (!self) {
               return;
             }
@@ -1635,6 +1650,8 @@ private:
               self->log(error);
               return;
             }
+            if (!decompileWarning.isEmpty())
+              self->log(decompileWarning);
             if (self->onTextCompare) {
               self->onTextCompare(leftPath, rightPath, leftText, rightText);
             }

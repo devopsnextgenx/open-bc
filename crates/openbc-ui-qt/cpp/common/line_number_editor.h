@@ -121,6 +121,10 @@ public:
         viewport()->update();
     }
 
+    void setArrowsEnabled(bool enabled) {
+        if (arrowArea_) arrowArea_->setEnabled(enabled);
+    }
+
     std::function<void(int, int)> onArrowClicked;
 
     // ---- alignment-filler bookkeeping --------------------------------------

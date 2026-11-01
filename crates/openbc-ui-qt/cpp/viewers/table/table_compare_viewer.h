@@ -59,6 +59,7 @@
 #include "backend/backend_channel.h"
 #include "backend/compare_backend_api.h"
 #include "common/diff_algorithms.h"
+#include "common/compare_font.h"
 #include "common/diff_grid_common.h"
 #include "common/minimap.h"
 #include "style/qt_style.h"
@@ -180,6 +181,7 @@ public:
           channel_(this, &TableCompareViewer::destroyHandle,
                    [this](const BackendChannel::Event& event) { onEvent(event); }) {
         setObjectName("tableCompareView");
+        setFont(defaultCompareFont());
         buildUi();
         changes_ = std::make_unique<FileChangeController>(this, [this](std::uint8_t) { reloadLatest(); }, /*wholeTab=*/true,
                                                           [this]() { return confirmDiscard(); });

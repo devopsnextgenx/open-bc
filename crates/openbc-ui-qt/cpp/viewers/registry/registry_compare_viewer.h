@@ -51,6 +51,7 @@
 #include "backend/backend_channel.h"
 #include "backend/compare_backend_api.h"
 #include "common/diff_algorithms.h"
+#include "common/compare_font.h"
 #include "common/diff_grid_common.h"
 #include "common/minimap.h"
 #include "style/qt_style.h"
@@ -144,7 +145,7 @@ public:
 
         if (role == GroupRole) return firstRowOfGroup_.value(index.row(), -1);
         if (role == Qt::FontRole && column == Name && keyRow) {
-            QFont font = QApplication::font();
+            QFont font = defaultCompareFont();
             font.setBold(true);
             return font;
         }
@@ -227,6 +228,7 @@ public:
           channel_(this, &RegistryCompareViewer::destroyHandle,
                    [this](const BackendChannel::Event& event) { onEvent(event); }) {
         setObjectName("registryCompareView");
+        setFont(defaultCompareFont());
         buildUi();
         changes_ = std::make_unique<FileChangeController>(this, [this](std::uint8_t) { startSession(); }, /*wholeTab=*/true,
                                                           [this]() { return confirmDiscard(); });

@@ -96,6 +96,14 @@ public:
         applyStyle(bottomEdit_, bottomNumber_);
     }
 
+    void setEditingEnabled(bool enabled) {
+        editingEnabled_ = enabled;
+        if (!enabled) {
+            topEdit_->setReadOnly(true);
+            bottomEdit_->setReadOnly(true);
+        }
+    }
+
     // Fired once the user finishes editing (Enter, or clicking away). The
     // text passed back is exactly the line's content - no line-number prefix
     // is ever mixed into it, since the number was never part of the edited
@@ -107,7 +115,7 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override {
         auto* edit = qobject_cast<QLineEdit*>(watched);
         if (!edit) return QFrame::eventFilter(watched, event);
-        if (event->type() == QEvent::MouseButtonDblClick && edit->isReadOnly() &&
+        if (editingEnabled_ && event->type() == QEvent::MouseButtonDblClick && edit->isReadOnly() &&
             !edit->text().isEmpty()) {
             edit->setReadOnly(false);
             edit->setStyleSheet(edit->styleSheet() + "border:1px solid #6f9fdb;");
@@ -131,7 +139,7 @@ private:
     }
 
     void commitEdit(QLineEdit* edit) {
-        if (edit->isReadOnly()) return;
+        if (!editingEnabled_ || edit->isReadOnly()) return;
         edit->setReadOnly(true);
         applyStyle(topEdit_ == edit ? topEdit_ : bottomEdit_, topEdit_ == edit ? topNumber_ : bottomNumber_);
         if (edit == topEdit_ && onLeftEdited) {
@@ -147,6 +155,7 @@ private:
     QLineEdit* bottomEdit_ = nullptr;
     TextDiffLine row_;
     QString background_ = "transparent";
+    bool editingEnabled_ = true;
 };
 
 }  // namespace openbc::app

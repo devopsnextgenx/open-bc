@@ -34,6 +34,7 @@
 #include <QProcess>
 #include <QUuid>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QThreadPool>
 #include <QSplitter>
 #include <QStringList>
@@ -57,6 +58,8 @@
 #include "common/path_selector.h"
 #include "common/unsaved_changes_dialog.h"
 #include "common/file_change_controller.h"
+#include "common/compare_font.h"
+#include "common/java_class_support.h"
 #include "style/qt_style.h"
 #include "options/text_font.h"
 #include "common/archive_support.h"
@@ -73,9 +76,13 @@ public:
     TextCompareViewer(const QString& leftPath, const QString& rightPath,
                     const QString& leftText, const QString& rightText, QWidget* parent = nullptr)
         : QWidget(parent), leftPath_(leftPath), rightPath_(rightPath),
-                    leftRaw_(leftText), rightRaw_(rightText) {
+                    leftRaw_(leftText), rightRaw_(rightText),
+                    classFileCompare_(isJavaClassFilePath(leftPath) ||
+                                      isJavaClassFilePath(rightPath)) {
         setObjectName("textCompareView");
+        setFont(defaultCompareFont());
         buildUi();
+        updateClassFileUi(/*resetDecompileMode=*/false);
         // Per side: re-read just that file. The text was handed in by the caller, so the baseline for
         // the initial load is taken here (a change between that read and this line is not seen).
         changes_ = std::make_unique<FileChangeController>(
@@ -124,7 +131,7 @@ public:
     QList<QAction*> searchMenuItems() const { return {findAction_, nextSectionAction_, prevSectionAction_}; }
     QList<QAction*> viewMenuItems() const {
         return {showAllAction_, showDiffsAction_, contextAction_, minorAction_,
-                pixelMinimapAction_, formatAction_};
+                pixelMinimapAction_, formatAction_, decompileJavaAction_};
     }
     QAction* syntaxStyleMenuAction() const { return syntaxStyleMenu_->menuAction(); }
     QList<QAction*> actionsMenuItems() const { return {copyAction_, swapAction_, reloadAction_}; }
@@ -264,8 +271,52 @@ private:
     void applyLanguageHighlighting() {
         // Full file names, so names without an extension (Makefile, Dockerfile, .bashrc) and
         // multi-part suffixes (view.html.erb) resolve; the backend picks the matching rule.
-        leftHighlighter_->setLanguage(QFileInfo(leftPath_).fileName());
-        rightHighlighter_->setLanguage(QFileInfo(rightPath_).fileName());
+        const auto languageName = [this](const QString& path) {
+            if (decompileJavaAction_ && decompileJavaAction_->isChecked() &&
+                isJavaClassFilePath(path)) {
+                return QFileInfo(path).completeBaseName() + QStringLiteral(".java");
+            }
+            return QFileInfo(path).fileName();
+        };
+        leftHighlighter_->setLanguage(languageName(leftPath_));
+        rightHighlighter_->setLanguage(languageName(rightPath_));
+    }
+
+    void updateClassFileUi(bool resetDecompileMode) {
+        const bool hasClassFile = isJavaClassFilePath(leftPath_) ||
+                                  isJavaClassFilePath(rightPath_);
+        const bool modeChanged = classFileCompare_ != hasClassFile;
+        classFileCompare_ = hasClassFile;
+        if (decompileJavaAction_) {
+            const QSignalBlocker blocker(decompileJavaAction_);
+            decompileJavaAction_->setVisible(classFileCompare_);
+            if (resetDecompileMode || modeChanged)
+                decompileJavaAction_->setChecked(classFileCompare_);
+        }
+        if (leftEditor_) {
+            leftEditor_->setReadOnly(classFileCompare_);
+            leftEditor_->setArrowsEnabled(!classFileCompare_);
+        }
+        if (rightEditor_) {
+            rightEditor_->setReadOnly(classFileCompare_);
+            rightEditor_->setArrowsEnabled(!classFileCompare_);
+        }
+        if (preview_) preview_->setEditingEnabled(!classFileCompare_);
+        if (findBar_) findBar_->setReadOnly(classFileCompare_);
+        if (saveAction_) saveAction_->setEnabled(!classFileCompare_);
+        if (undoAction_) undoAction_->setEnabled(!classFileCompare_);
+        if (redoAction_) redoAction_->setEnabled(!classFileCompare_);
+        if (copyAction_) copyAction_->setEnabled(!classFileCompare_);
+        if (leftSaveButton_) leftSaveButton_->setEnabled(!classFileCompare_);
+        if (rightSaveButton_) rightSaveButton_->setEnabled(!classFileCompare_);
+        updateUndoRedoActions();
+    }
+
+    void reloadClassFiles() {
+        if (!classFileCompare_) return;
+        if (isJavaClassFilePath(leftPath_)) loadSide(true, leftPath_);
+        if (isJavaClassFilePath(rightPath_)) loadSide(false, rightPath_);
+        applyLanguageHighlighting();
     }
 
     void setHighlightStyle(SyntaxHighlighter::Style style) {
@@ -605,6 +656,15 @@ private:
         formatAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         formatAction_->setToolTip("Wrap long lines (Alt+Z)");
         addAction(formatAction_);
+        decompileJavaAction_ = toolbar_->addAction("Java Source");
+        decompileJavaAction_->setCheckable(true);
+        decompileJavaAction_->setChecked(classFileCompare_);
+        decompileJavaAction_->setVisible(classFileCompare_);
+        decompileJavaAction_->setToolTip(
+            "Show decompiled Java source; turn off to view the class-file bytes");
+        connect(decompileJavaAction_, &QAction::toggled, this, [this](bool) {
+            reloadClassFiles();
+        });
         toolbar_->addSeparator();
 
         pixelMinimapAction_ = toolbar_->addAction(icons::glyph(Glyph::MinimapPixel), "Minimap");
@@ -817,8 +877,12 @@ private:
         connect(rightEditor_, &QPlainTextEdit::cursorPositionChanged, this,
                 [this, updateCurrentRow]() { updateCurrentRow(rightEditor_->textCursor()); });
         miniMap_->onRowClicked = [this](int row) { jumpToRow(row); };
-        leftEditor_->onArrowClicked = [this](int start, int end) { copyGroup(start, end, true); };
-        rightEditor_->onArrowClicked = [this](int start, int end) { copyGroup(start, end, false); };
+        leftEditor_->onArrowClicked = [this](int start, int end) {
+            if (!classFileCompare_) copyGroup(start, end, true);
+        };
+        rightEditor_->onArrowClicked = [this](int start, int end) {
+            if (!classFileCompare_) copyGroup(start, end, false);
+        };
 
         connect(findAction_, &QAction::triggered, this,
                 [this]() { findBar_->openFor(focusedEditor()); });
@@ -1048,12 +1112,14 @@ private:
         QAction* alignManually = menu.addAction("Align Manually");
         QAction* isolate = menu.addAction("Isolate");
         QAction* copyToOther = menu.addAction(isLeft ? "Copy to Right" : "Copy to Left");
-        copyToOther->setEnabled(group != nullptr);
+        copyToOther->setEnabled(!classFileCompare_ && group != nullptr);
         menu.addSeparator();
         QAction* editLine = menu.addAction("Edit Line");
         QAction* insertBlank = menu.addAction("Insert Blank Line");
         QAction* increaseIndent = menu.addAction("Increase Indent");
         QAction* decreaseIndent = menu.addAction("Decrease Indent");
+        for (QAction* action : {editLine, insertBlank, increaseIndent, decreaseIndent})
+            action->setEnabled(!classFileCompare_);
         menu.addSeparator();
         QAction* compareClipboard = menu.addAction("Compare to Clipboard");
         menu.addSeparator();
@@ -1062,9 +1128,10 @@ private:
         QAction* pasteAction = menu.addAction("Paste");
         QAction* deleteAction = menu.addAction("Delete");
         const bool hasSelection = editor->textCursor().hasSelection();
-        cutAction->setEnabled(hasSelection);
+        cutAction->setEnabled(!classFileCompare_ && hasSelection);
         copyAction->setEnabled(hasSelection);
-        deleteAction->setEnabled(hasSelection);
+        deleteAction->setEnabled(!classFileCompare_ && hasSelection);
+        pasteAction->setEnabled(!classFileCompare_);
         menu.addSeparator();
         QMenu* openWith = menu.addMenu("Open With");
         QAction* openDefault = openWith->addAction("Default Application");
@@ -1302,6 +1369,7 @@ private:
     }
 
     void undoFocusedSide() {
+        if (classFileCompare_) return;
         flushPendingEdits();
         LineNumberEditor* editor = focusedEditor();
         const bool left = (editor == leftEditor_);
@@ -1317,6 +1385,7 @@ private:
     }
 
     void redoFocusedSide() {
+        if (classFileCompare_) return;
         flushPendingEdits();
         LineNumberEditor* editor = focusedEditor();
         const bool left = (editor == leftEditor_);
@@ -1367,6 +1436,11 @@ private:
     // Enabled-state of the Edit-menu Undo/Redo entries follows whichever
     // pane currently has focus.
     void updateUndoRedoActions() {
+        if (classFileCompare_) {
+            if (undoAction_) undoAction_->setEnabled(false);
+            if (redoAction_) redoAction_->setEnabled(false);
+            return;
+        }
         LineNumberEditor* editor = focusedEditor();
         const bool left = (editor == leftEditor_);
         const int index = left ? leftHistoryIndex_ : rightHistoryIndex_;
@@ -1376,6 +1450,7 @@ private:
     }
 
     void copyGroup(int startRow, int endRow, bool leftToRight) {
+        if (classFileCompare_) return;
         flushPendingEdits();
         syncFromEditors();
         startRow = qMax(0, startRow);
@@ -1697,6 +1772,7 @@ private:
     }
 
     void saveFocusedSide() {
+        if (classFileCompare_) return;
         syncFromEditors();
         if (leftEditor_->hasFocus()) {
             saveSide(true);
@@ -1718,36 +1794,62 @@ private:
         RemoteProfile remoteProfile;
         const bool isRemote = RemoteProfileStore::findProfileForPath(path, &remoteProfile);
         const bool isVirtual = !isRemote && archives::isVirtual(path);  // inside an archive
-        QThreadPool::globalInstance()->start([view, left, path, isRemote, isVirtual, remoteProfile]() {
+        const bool classFile = isJavaClassFilePath(path);
+        const bool decompileClass =
+            classFile && (!classFileCompare_ ||
+                          (decompileJavaAction_ && decompileJavaAction_->isChecked()));
+        QThreadPool::globalInstance()->start(
+            [view, left, path, isRemote, isVirtual, remoteProfile, classFile, decompileClass]() {
             bool opened = false;
             QString text;
             QString openError;
+            const auto convertClass = [&](const QByteArray& bytes) {
+                if (!decompileClass) {
+                    text = javaClassByteDump(bytes);
+                    return true;
+                }
+                if (decompileJavaClass(bytes, path, &text, &openError)) return true;
+                text = QStringLiteral("// Java decompilation failed: ") + openError +
+                       QStringLiteral("\n// Showing the class-file bytes:\n") +
+                       javaClassByteDump(bytes);
+                openError.clear();
+                return true;
+            };
             if (isRemote) {
                 QByteArray bytes;
                 opened = sharedVfsBridge().remoteReadFile(
                     remoteProfile, remoteRelativePath(path, remoteProfile), &bytes, &openError);
-                if (opened) text = QString::fromUtf8(bytes);
+                if (opened) opened = classFile ? convertClass(bytes) : (text = QString::fromUtf8(bytes), true);
             } else if (isVirtual) {
                 QByteArray bytes;
                 opened = sharedVfsBridge().localReadFile(path, &bytes, &openError);
-                if (opened) text = QString::fromUtf8(bytes);
+                if (opened) opened = classFile ? convertClass(bytes) : (text = QString::fromUtf8(bytes), true);
             } else {
                 QFile file(path);
-                opened = file.open(QIODevice::ReadOnly | QIODevice::Text);
-                if (opened) text = QTextStream(&file).readAll();
+                if (classFile) {
+                    opened = file.open(QIODevice::ReadOnly);
+                    if (opened) opened = convertClass(file.readAll());
+                } else {
+                    opened = file.open(QIODevice::ReadOnly | QIODevice::Text);
+                    if (opened) text = QTextStream(&file).readAll();
+                }
+                if (!opened && openError.isEmpty()) openError = file.errorString();
             }
             if (!view) return;
             QMetaObject::invokeMethod(view, [view, left, path, opened, text, openError]() {
                 if (!view) return;
                 if (!opened) {
                     view->progress_->hide();
-                    view->status_->setText("Could not open " + path +
+                    view->status_->setText((isJavaClassFilePath(path)
+                                                ? "Could not decompile or open "
+                                                : "Could not open ") + path +
                                             (openError.isEmpty() ? QString() : " (" + openError + ")"));
                     return;
                 }
                 view->flushPendingEdits();
                 view->syncFromEditors();
                 (left ? view->leftPath_ : view->rightPath_) = path;
+                view->updateClassFileUi(/*resetDecompileMode=*/false);
                 (left ? view->leftRaw_ : view->rightRaw_) = text;
                 (left ? view->leftDirtyLines_ : view->rightDirtyLines_).clear();
                 view->manualAlignments_.clear();
@@ -1787,6 +1889,12 @@ private:
 
     // `done` (optional) is called exactly once: immediately for local files, after the write for remote ones.
     void saveSide(bool left, SaveDone done = {}) {
+        if (classFileCompare_) {
+            const QString reason = QStringLiteral("Class-file comparisons are read-only.");
+            status_->setText(reason);
+            if (done) done(false, reason);
+            return;
+        }
         const QString& path = left ? leftPath_ : rightPath_;
         const bool isVirtual = archives::isVirtual(path);
         RemoteProfile remoteProfile;
@@ -1847,6 +1955,7 @@ private:
     }
 
     void applyPreviewEdit(bool left, const QString& text) {
+        if (classFileCompare_) return;
         if (currentRow_ < 0 || currentRow_ >= rows_.size()) return;
         LineNumberEditor* editor = left ? leftEditor_ : rightEditor_;
         const int number = left ? rows_[currentRow_].leftNumber : rows_[currentRow_].rightNumber;
@@ -1868,6 +1977,7 @@ private:
     QString rightPath_;
     QString leftRaw_;
     QString rightRaw_;
+    bool classFileCompare_ = false;
     QString ignoreSample_;
     QStringList leftOriginal_;
     QStringList rightOriginal_;
@@ -1883,6 +1993,7 @@ private:
     QAction* minorAction_ = nullptr;
     QAction* rulesAction_ = nullptr;
     QAction* formatAction_ = nullptr;
+    QAction* decompileJavaAction_ = nullptr;
     QAction* copyAction_ = nullptr;
     QAction* nextSectionAction_ = nullptr;
     QAction* prevSectionAction_ = nullptr;

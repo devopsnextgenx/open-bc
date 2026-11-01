@@ -2,9 +2,8 @@
 // ---------------------------------------------------------------------------
 // The font of the Text Compare editors and the "something about text views changed" notifier.
 //
-// Default (Tools > Options > Appearance, "Use default font"): the font Beyond Compare uses in its
-// file views, kDefaultFamily at kDefaultPointSize. When that family is not installed the system
-// fixed-width font is used instead (a proportional font would break the column alignment of a diff).
+// Default (Tools > Options > Appearance, "Use default font"): DejaVu Sans Mono when installed,
+// otherwise the system fixed-width font.
 // A custom font is stored by Options as QFont::toString().
 //
 // Viewers subscribe once (owner-scoped, removed automatically when the owner is destroyed) and
@@ -22,11 +21,13 @@
 #include <utility>
 #include <vector>
 
+#include "common/compare_font.h"
+
 namespace openbc::app {
 
 class TextFont {
 public:
-    static constexpr const char* kDefaultFamily = "Courier New";   // Beyond Compare's file-view font
+    static constexpr const char* kDefaultFamily = "DejaVu Sans Mono";
     static constexpr int kDefaultPointSize = 10;
 
     static TextFont& instance() {
@@ -39,16 +40,7 @@ public:
 
     // What "use default" resolves to on this machine.
     static QFont defaultFont() {
-        const QStringList families = QFontDatabase::families();
-        for (const QString& family : families) {
-            if (family.compare(QLatin1String(kDefaultFamily), Qt::CaseInsensitive) == 0) {
-                QFont f(family);
-                f.setPointSize(kDefaultPointSize);
-                f.setStyleHint(QFont::Monospace);
-                return f;
-            }
-        }
-        return QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        return defaultCompareFont();
     }
 
     // `custom` is QFont::toString(); ignored when useDefault or when it does not parse.

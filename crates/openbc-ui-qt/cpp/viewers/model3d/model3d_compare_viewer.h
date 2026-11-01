@@ -68,6 +68,7 @@
 #include "common/path_selector.h"
 #include "common/remote_selector.h"
 #include "common/file_change_controller.h"
+#include "common/compare_font.h"
 
 namespace openbc::app {
 
@@ -159,6 +160,7 @@ public:
 
     explicit Model3dCompareViewer(QSettings* preferences, QWidget* parent = nullptr) : QWidget(parent), prefs_(preferences) {
         setFocusPolicy(Qt::StrongFocus);
+        setFont(defaultCompareFont());
         loadPreferences();
 
         auto* root = new QVBoxLayout(this);

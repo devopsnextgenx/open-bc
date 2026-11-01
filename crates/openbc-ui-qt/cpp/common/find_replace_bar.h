@@ -54,8 +54,8 @@ public:
         auto* next = new QToolButton(this);
         next->setText(QString::fromUtf8("\u2193"));
         next->setToolTip("Next match (Enter)");
-        auto* replaceOne = new QPushButton("Replace", this);
-        auto* replaceAll = new QPushButton("Replace All", this);
+        replaceOne_ = new QPushButton("Replace", this);
+        replaceAll_ = new QPushButton("Replace All", this);
 
         caseSensitive_ = new QCheckBox("Aa", this);
         caseSensitive_->setToolTip("Case sensitive");
@@ -83,8 +83,8 @@ public:
         layout->addSpacing(8);
         layout->addWidget(new QLabel("Replace:", this));
         layout->addWidget(replaceEdit_);
-        layout->addWidget(replaceOne);
-        layout->addWidget(replaceAll);
+        layout->addWidget(replaceOne_);
+        layout->addWidget(replaceAll_);
         layout->addSpacing(8);
         layout->addWidget(scopeCombo_);
         layout->addWidget(status_, 1);
@@ -94,8 +94,8 @@ public:
         connect(replaceEdit_, &QLineEdit::returnPressed, this, [this]() { replaceCurrent(); });
         connect(next, &QToolButton::clicked, this, [this]() { findNext(); });
         connect(prev, &QToolButton::clicked, this, [this]() { findNext(/*backward=*/true); });
-        connect(replaceOne, &QPushButton::clicked, this, [this]() { replaceCurrent(); });
-        connect(replaceAll, &QPushButton::clicked, this, [this]() { replaceAllMatches(); });
+        connect(replaceOne_, &QPushButton::clicked, this, [this]() { replaceCurrent(); });
+        connect(replaceAll_, &QPushButton::clicked, this, [this]() { replaceAllMatches(); });
         connect(close, &QToolButton::clicked, this, [this]() { hideBar(); });
         connect(findEdit_, &QLineEdit::textChanged, this, [this](const QString&) {
             status_->clear();
@@ -109,6 +109,12 @@ public:
     void setEditors(QPlainTextEdit* left, QPlainTextEdit* right) {
         leftEditor_ = left;
         rightEditor_ = right;
+    }
+
+    void setReadOnly(bool readOnly) {
+        replaceEdit_->setEnabled(!readOnly);
+        replaceOne_->setEnabled(!readOnly);
+        replaceAll_->setEnabled(!readOnly);
     }
 
     void openFor(QPlainTextEdit* focusedEditor) {
@@ -179,7 +185,7 @@ private:
 
     void replaceCurrent() {
         for (QPlainTextEdit* editor : targets()) {
-            if (!editor) continue;
+            if (!editor || editor->isReadOnly()) continue;
             QTextCursor cursor = editor->textCursor();
             if (cursor.hasSelection() &&
                 cursor.selectedText().compare(
@@ -197,7 +203,7 @@ private:
         if (term.isEmpty()) return;
         int total = 0;
         for (QPlainTextEdit* editor : targets()) {
-            if (!editor) continue;
+            if (!editor || editor->isReadOnly()) continue;
             QTextCursor cursor(editor->document());
             cursor.movePosition(QTextCursor::Start);
             editor->setTextCursor(cursor);
@@ -218,6 +224,8 @@ private:
 
     QLineEdit* findEdit_ = nullptr;
     QLineEdit* replaceEdit_ = nullptr;
+    QPushButton* replaceOne_ = nullptr;
+    QPushButton* replaceAll_ = nullptr;
     QCheckBox* caseSensitive_ = nullptr;
     QCheckBox* wholeWord_ = nullptr;
     QComboBox* scopeCombo_ = nullptr;
