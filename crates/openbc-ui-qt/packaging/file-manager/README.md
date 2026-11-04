@@ -3,16 +3,17 @@
 # File-manager integration (Nautilus, Dolphin, Windows Explorer)
 
 The app already understands the command lines these menus run (`cli_options.cpp`, `handleLaunch` in
-`main_window.h`; the left item is remembered in preferences `context/leftPath`):
+`main_window.h`; the left item is held in memory only):
 
 | Menu entry | Command | Shown |
 |---|---|---|
 | openbc: Select Left Folder / File | `openbc --select-left-folder PATH` / `--select-left-file PATH` | always |
-| openbc: Compare To Left Folder / File | `openbc --compare-to-left-folder PATH` / `--compare-to-left-file PATH` | only after a left item was selected |
+| openbc: Compare To `<left item name>` | `openbc --compare-to-left-folder PATH` / `--compare-to-left-file PATH` | only after **Select Left Folder / File**; shown on matching items |
 | openbc: Compare (2 items selected) | `openbc LEFT RIGHT` | two items of the same kind |
 
 "Select Left" opens no tab: the running OpenBC (started on demand, Home tab only) keeps the path in memory.
-The first tab appears when "Compare To Left" supplies the right side (an empty tab is reused). OpenBC publishes
+The compare menu is labeled with the selected left item's name and appears only after that selection. The first
+tab appears when the compare action supplies the right side (an empty tab is reused). OpenBC publishes
 the selection so the file manager can hide "Compare To Left" until it exists (`app/context_menu_state.*`):
 Windows writes/removes the `OpenBC.CompareToLeft` verb in HKCU; Linux writes `$XDG_RUNTIME_DIR/openbc/left-selection`
 (Nautilus extension reads it) and `~/.local/share/kio/servicemenus/openbc-compare-to-left-*.desktop` (Dolphin).

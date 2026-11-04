@@ -5,7 +5,7 @@ Works with Nautilus 43+ (extension API 4.0) and older releases (API 3.0).
 
   * two items of the same kind selected  -> "openbc: Compare"
   * one item selected                    -> "openbc: Select Left Folder/File", and, only while a left item
-    is selected in the running OpenBC, "openbc: Compare To Left Folder/File"
+    is selected in the running OpenBC, "openbc: Compare To <left item name>"
   * right-click on the folder background -> the same entries for the folder being shown
 
 OpenBC keeps the left item in memory and publishes it to $XDG_RUNTIME_DIR/openbc/left-selection
@@ -26,15 +26,16 @@ from gi.repository import GObject, Nautilus  # noqa: E402
 _LAUNCHER = "openbc-fm"
 
 
-def _left_kind():
-    """'folder' / 'file' when OpenBC currently holds a left item, else None."""
+def _left_selection():
+    """(kind, path) when OpenBC currently holds a left item, else None."""
     runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     try:
         with open(os.path.join(runtime, "openbc", "left-selection"), encoding="utf-8") as handle:
             kind = handle.readline().strip()
+            path = handle.readline().rstrip("\r\n")
     except OSError:
         return None
-    return kind if kind in ("folder", "file") else None
+    return (kind, path) if kind in ("folder", "file") and path else None
 
 
 def _launcher():
@@ -72,8 +73,11 @@ class OpenBCMenuProvider(GObject.GObject, Nautilus.MenuProvider):
         title = kind.capitalize()
         items = [self._item(prefix + "SelectLeft", "openbc: Select Left " + title,
                             lambda *_: _run(["--select-left-" + kind, path]))]
-        if _left_kind() == kind:
-            items.append(self._item(prefix + "CompareToLeft", "openbc: Compare To Left " + title,
+        left = _left_selection()
+        if left is not None and left[0] == kind:
+            left_name = os.path.basename(os.path.normpath(left[1])) or left[1]
+            left_name = left_name.replace("\r", " ").replace("\n", " ")
+            items.append(self._item(prefix + "CompareToLeft", "openbc: Compare To " + left_name,
                                     lambda *_: _run(["--compare-to-left-" + kind, path])))
         return items
 

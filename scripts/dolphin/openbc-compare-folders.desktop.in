@@ -6,7 +6,7 @@ Actions=OpenBCSelectLeftFolder;
 X-KDE-Submenu=openbc
 Icon=io.github.devopsnextgenx.open-bc
 
-# "openbc: Compare To Left Folder" is deliberately not listed: the running OpenBC writes
+# "openbc: Compare To <left item name>" is deliberately not listed: the running OpenBC writes
 # openbc-compare-to-left-folder.desktop next to this file while a left folder is selected.
 
 [Desktop Action OpenBCSelectLeftFolder]

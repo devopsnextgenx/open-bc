@@ -24,12 +24,15 @@ helper="$source_dir/openbc-nautilus-action"
 # Not installed system-wide (AppImage, source tree): use the helper next to this script.
 [[ -x "$helper" ]] || helper="$here/openbc-nautilus-action"
 
-# "Compare To Left ..." entries are created/removed by the running OpenBC (only while a left item is selected).
+# "Compare To <left item name>" entries are created/removed by the running OpenBC while a left item is selected.
 names=("openbc: Compare" "openbc: Select Left Folder" "openbc: Select Left File")
 if [[ $uninstall = 1 ]]; then
     for name in "${names[@]}" "openbc: Compare To Left Folder" "openbc: Compare To Left File"; do
         rm -f "$destination/$name"
     done
+    if [[ -d $destination ]]; then
+        find "$destination" -maxdepth 1 -type l -name 'openbc: Compare To *' -delete
+    fi
     printf 'OpenBC Nautilus actions removed from %s\n' "$destination"
     exit 0
 fi

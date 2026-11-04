@@ -1016,7 +1016,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         focusWindow();
     };
     // "openbc: Select Left ..." only remembers the item (in memory, see context_menu_state.h);
-    // no tab is created until "openbc: Compare To Left ..." supplies the right side.
+    // no tab is created until "openbc: Compare To <left item name>" supplies the right side.
     auto handleContextAction = [&](const LaunchRequest& request) {
         const bool folderAction = request.contextAction.endsWith("folder");
         const bool selectLeft = request.contextAction.startsWith("select-left-");
@@ -1031,10 +1031,13 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         const QString kindName = folderAction ? "folder" : "file";
         if (selectLeft) {
             contextLeft.setLeft(kind, request.contextPath);
+            const QString leftName = selected.fileName().isEmpty()
+                                         ? QDir::toNativeSeparators(request.contextPath)
+                                         : selected.fileName();
             window.statusBar()->showMessage("Left " + kindName + ": " +
                                                 QDir::toNativeSeparators(request.contextPath) +
-                                                " - now choose \"openbc: Compare To Left " +
-                                                (folderAction ? "Folder" : "File") + "\" on the other one",
+                                                " - now choose \"openbc: Compare To " + leftName +
+                                                "\" on the other item",
                                             15000);
             return;   // no window raise, no tab: the user is still in the file manager
         }

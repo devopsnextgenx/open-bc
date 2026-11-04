@@ -4,7 +4,7 @@ Windows Registry Editor Version 5.00
 ; install folder. On Windows 11 these appear under "Show more options".
 ; Uninstall: delete the OpenBC.* keys below.
 ;
-; "openbc: Compare To Left Folder/File" is NOT in this file: the running OpenBC creates the verb
+; "openbc: Compare To <left item name>" is NOT in this file: the running OpenBC creates the verb
 ; (HKCU\\Software\\Classes\\Directory|*\\shell\\OpenBC.CompareToLeft) while a left item is selected and
 ; removes it when the selection is cleared or OpenBC exits, so it is only shown when it can work.
 

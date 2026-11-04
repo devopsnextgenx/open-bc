@@ -589,7 +589,7 @@ pkg_msi() {
         <RegistryValue Root="HKCU" Key="Software\OpenBC" Name="desktop_shortcut" Type="integer" Value="1" KeyPath="yes"/>
       </Component>
     </DirectoryRef>
-    <!-- "openbc: Compare To Left Folder/File" is NOT installed here: the running OpenBC adds the verbs under
+    <!-- "openbc: Compare To <left item name>" is NOT installed here: the running OpenBC adds the verbs under
          HKCU\\Software\\Classes (OpenBC.CompareToLeftFolder / OpenBC.CompareToLeftFile) only while a left item is
          selected and removes them again, so Explorer never offers a Compare that cannot work. -->
     <DirectoryRef Id="TARGETDIR">

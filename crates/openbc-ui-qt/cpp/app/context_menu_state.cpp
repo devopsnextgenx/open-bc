@@ -24,6 +24,14 @@ namespace {
     return kind == ContextMenuState::Kind::Folder ? "folder" : "file";
 }
 
+QString leftItemName(const QString& path) {
+    QString name = QFileInfo(path).fileName();
+    if (name.isEmpty()) name = QDir::toNativeSeparators(path);
+    name.replace('\n', ' ');
+    name.replace('\r', ' ');
+    return name;
+}
+
 #ifdef Q_OS_WIN
 
 // Verb keys mirror the MSI's naming (OpenBC.SelectLeftFolder, ...). The MSI installs only Select Left and
@@ -70,16 +78,15 @@ void removeVerbs() {
     RegDeleteTreeW(HKEY_CURRENT_USER, verbKey(L"*", L"OpenBC.CompareToLeftFile").c_str());
 }
 
-void publish(ContextMenuState::Kind kind) {
+void publish(ContextMenuState::Kind kind, const QString& path) {
     removeVerbs();
     const QString exe = currentExecutablePath();
     if (exe.isEmpty()) return;
+    const QString label = "openbc: Compare To " + leftItemName(path);
     if (kind == ContextMenuState::Kind::Folder)
-        writeVerb(L"Directory", L"OpenBC.CompareToLeftFolder", "openbc: Compare To Left Folder", exe,
-                  "--compare-to-left-folder");
+        writeVerb(L"Directory", L"OpenBC.CompareToLeftFolder", label, exe, "--compare-to-left-folder");
     else
-        writeVerb(L"*", L"OpenBC.CompareToLeftFile", "openbc: Compare To Left File", exe,
-                  "--compare-to-left-file");
+        writeVerb(L"*", L"OpenBC.CompareToLeftFile", label, exe, "--compare-to-left-file");
 }
 
 void unpublish() { removeVerbs(); }
@@ -112,28 +119,31 @@ QString launcherCommand() {
     return exe.contains(' ') ? "\"" + exe + "\"" : exe;
 }
 
-// install-nautilus.sh installs "openbc: Select Left ..." scripts; "Compare To Left" is a symlink to the
-// matching one (the script picks its action from the name it was started under), present only while a left
-// item is selected. Nothing is created when the user did not install the scripts.
+// install-nautilus.sh installs "openbc: Select Left ..." scripts; "Compare To <left item name>" is a
+// symlink to the matching one and is present only while a left item is selected.
 QString nautilusScriptsDir() {
     return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/nautilus/scripts";
 }
 
-void publishNautilusScript(ContextMenuState::Kind kind) {
+void removeNautilusCompareScripts() {
+    const QString dir = nautilusScriptsDir();
+    QDir scripts(dir);
+    const QStringList entries = scripts.entryList({"openbc: Compare To *"}, QDir::Files | QDir::System);
+    for (const QString& entry : entries) {
+        if (QFileInfo(dir + "/" + entry).isSymLink()) QFile::remove(dir + "/" + entry);
+    }
+}
+
+void publishNautilusScript(ContextMenuState::Kind kind, const QString& path) {
     const bool folder = kind == ContextMenuState::Kind::Folder;
     const QString dir = nautilusScriptsDir();
     const QString selectName = folder ? "openbc: Select Left Folder" : "openbc: Select Left File";
-    const QString compareName = folder ? "openbc: Compare To Left Folder" : "openbc: Compare To Left File";
-    const QString otherName = folder ? "openbc: Compare To Left File" : "openbc: Compare To Left Folder";
-    QFile::remove(dir + "/" + otherName);
-    QFile::remove(dir + "/" + compareName);
-    if (QFileInfo::exists(dir + "/" + selectName)) QFile::link(selectName, dir + "/" + compareName);
+    removeNautilusCompareScripts();
+    if (QFileInfo::exists(dir + "/" + selectName))
+        QFile::link(selectName, dir + "/openbc: Compare To " + leftItemName(path));
 }
 
-void unpublishNautilusScripts() {
-    QFile::remove(nautilusScriptsDir() + "/openbc: Compare To Left Folder");
-    QFile::remove(nautilusScriptsDir() + "/openbc: Compare To Left File");
-}
+void unpublishNautilusScripts() { removeNautilusCompareScripts(); }
 
 void writeFile(const QString& path, const QByteArray& content, QFileDevice::Permissions perms) {
     QDir().mkpath(QFileInfo(path).absolutePath());
@@ -150,7 +160,7 @@ void publish(ContextMenuState::Kind kind, const QString& path) {
               QFileDevice::ReadOwner | QFileDevice::WriteOwner);
 
     const bool folder = kind == ContextMenuState::Kind::Folder;
-    const QString title = folder ? "Compare To Left Folder" : "Compare To Left File";
+    const QString title = "Compare To " + leftItemName(path);
     const QString action = folder ? "OpenBCCompareToLeftFolder" : "OpenBCCompareToLeftFile";
     QString desktop;
     QTextStream out(&desktop);
@@ -170,7 +180,7 @@ void publish(ContextMenuState::Kind kind, const QString& path) {
     writeFile(dolphinMenuPath(name), desktop.toUtf8(),
               QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
                   QFileDevice::ReadGroup | QFileDevice::ReadOther);   // KDE trusts only executable menus
-    publishNautilusScript(kind);
+    publishNautilusScript(kind, path);
 }
 
 void unpublish() {
@@ -191,11 +201,7 @@ void ContextMenuState::setLeft(Kind kind, const QString& path) {
     }
     kind_ = kind;
     path_ = path;
-#ifdef Q_OS_WIN
-    publish(kind);
-#else
     publish(kind, path);
-#endif
 }
 
 void ContextMenuState::purgeStale() { unpublish(); }

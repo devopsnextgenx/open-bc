@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Nautilus "Scripts" action. Installed once per user under ~/.local/share/nautilus/scripts with the
 # action name as file name (see install-nautilus.sh); the name selects what to do.
-# "openbc: Compare To Left ..." is not installed by install-nautilus.sh: the running OpenBC creates it
-# (a symlink to the "Select Left" script) only while a left item is selected, and removes it again.
+# "openbc: Compare To <left item name>" is not installed by install-nautilus.sh: the running OpenBC
+# creates it (a symlink to the "Select Left" script) only while a left item is selected, and removes it.
 set -u
 
 action=${0##*/}
@@ -32,22 +32,30 @@ fi
 [[ -n "${selected_paths[0]:-}" ]] || fail "Select an item first."
 command -v "${openbc_cmd[0]}" >/dev/null 2>&1 || fail "OpenBC was not found (${openbc_cmd[0]})."
 
+left_kind=""
+selection_file="${XDG_RUNTIME_DIR:-/tmp}/openbc/left-selection"
+if [[ -r "$selection_file" ]]; then
+    IFS= read -r left_kind < "$selection_file"
+fi
+
 case "$action" in
     "openbc: Select Left Folder")
         [[ ${#selected_paths[@]} -eq 1 && -d ${selected_paths[0]} ]] || fail "Select one folder."
         exec "${openbc_cmd[@]}" --select-left-folder "${selected_paths[0]}"
         ;;
-    "openbc: Compare To Left Folder")
-        [[ ${#selected_paths[@]} -eq 1 && -d ${selected_paths[0]} ]] || fail "Select one folder."
-        exec "${openbc_cmd[@]}" --compare-to-left-folder "${selected_paths[0]}"
+    "openbc: Compare To "*)
+        [[ ${#selected_paths[@]} -eq 1 ]] || fail "Select one item."
+        if [[ $left_kind == folder && -d ${selected_paths[0]} ]]; then
+            exec "${openbc_cmd[@]}" --compare-to-left-folder "${selected_paths[0]}"
+        fi
+        if [[ $left_kind == file && -f ${selected_paths[0]} ]]; then
+            exec "${openbc_cmd[@]}" --compare-to-left-file "${selected_paths[0]}"
+        fi
+        fail "Select a matching item after selecting the left folder or file."
         ;;
     "openbc: Select Left File")
         [[ ${#selected_paths[@]} -eq 1 && -f ${selected_paths[0]} ]] || fail "Select one file."
         exec "${openbc_cmd[@]}" --select-left-file "${selected_paths[0]}"
-        ;;
-    "openbc: Compare To Left File")
-        [[ ${#selected_paths[@]} -eq 1 && -f ${selected_paths[0]} ]] || fail "Select one file."
-        exec "${openbc_cmd[@]}" --compare-to-left-file "${selected_paths[0]}"
         ;;
     "openbc: Compare")
         [[ ${#selected_paths[@]} -eq 2 ]] || fail "Select exactly two files or exactly two folders."
