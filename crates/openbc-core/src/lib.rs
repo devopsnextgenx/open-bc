@@ -20,6 +20,9 @@
 pub mod hex_compare;
 /// Image comparison domain types (options, verdicts, pixel probe).
 pub mod image_compare;
+/// Feature-gated Rust memory instrumentation for large-file performance tests.
+#[cfg(feature = "mem-stats")]
+pub mod mem;
 /// Generic property-table comparison used by media compare.
 pub mod meta_compare;
 /// 3D model comparison domain types (options, verdicts, mesh probe).

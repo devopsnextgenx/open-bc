@@ -2,21 +2,28 @@
 
 ## Status
 
-The large-file text compare refactor is now in an integrated, bounded-memory state across the core and the viewer path:
-
-- `openbc-core/src/text/large/source.rs` adds a bounded chunked `LargeTextSource` with metadata validation.
-- `openbc-core/src/text/large/line_index.rs` adds a compact newline index for byte offsets / line ranges.
-- `openbc-core/src/text/large/hashing.rs` adds a stable per-line hash and normalization helper.
-- `openbc-core/src/text/mod.rs` exposes the large-file primitives through the public text API.
-- `crates/openbc-ui-qt/cpp/viewers/text/text_compare_viewer.h` now keeps only a bounded trailing boundary window across large-file chunks instead of relying on the old page-local comparison logic, which avoids the earlier desynchronization bug described in the prompt.
+The large-file replacement is not complete. The viewer still uses its legacy page loader and
+`QTextDocument`-backed panes. Existing `openbc-core/src/text/large/` files are not wired into that
+viewer path and are not a bounded-memory implementation.
 
 ## Completion notes
 
-The old page-by-page logic has been replaced with a bounded-chunk boundary model that preserves alignment across large file reads without letting a single insert/delete span drift the diff permanently. The core-layer and viewer-layer scaffolding are in place, and the large-file pipeline is now aligned with the intended bounded-memory architecture from the task prompt.
+S0 is blocked: a deterministic large-text pair generator, opt-in Rust allocation counters, and an
+offscreen legacy-path measurement tool have been added. Only one 100 MiB Linux cycle has been
+measured; the 500 MiB baseline, five-cycle baseline, and Windows run remain outstanding. Do not start
+S1 until the S0 gate is complete. See [`LARGE_TEXT_COMPARE.md`](./LARGE_TEXT_COMPARE.md) for results
+and the exact Windows commands.
+
+A targeted follow-up fix now initializes the large-file minimap at the start of page loading and
+appends compact row metadata as each diff page arrives. This avoids regrouping the full accumulated
+row list after every page. Offscreen Qt tests verify distinct matched-diff, unmatched-line, and
+whitespace-diff markers and confirm the actual autosync viewer map grows from 518 to 1,030 rows
+before the full comparison completes. This narrow fix does not complete S0 or claim the virtualized
+replacement slice is unblocked.
 
 ## Phase plan
 
-1. Core large-file primitives and validation. ✅
-2. Wire the viewer to use bounded page ranges and global diff alignment. ✅
-3. Virtualize the widget and keep close memory parity with the pre-open baseline. ✅ (bounded-window architecture in place; remaining platform-specific tuning remains optional for future performance profiling)
-4. Verify with focused tests and explicit large-file smoke checks. ✅
+1. S0 — Measure the legacy path; do not start replacement slices until the baseline gate is complete.
+2. S1 — Walking skeleton with a virtualized view; start only after S0 baseline results are recorded.
+3. S2–S6 — Progressive alignment, global refine, highlight quality, cleanup, interaction, and docs;
+   each slice is gated by measured results before proceeding.

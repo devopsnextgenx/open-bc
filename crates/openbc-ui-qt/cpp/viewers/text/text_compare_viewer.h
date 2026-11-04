@@ -346,6 +346,7 @@ private:
             largeLeftNextOffset_ = 0;
             largeRightNextOffset_ = 0;
             largePageIndex_ = 0;
+            miniMap_->beginProgressiveRows();
         } else {
             if ((leftPath_.isEmpty() || largeLeftNextOffset_ < 0) &&
                 (rightPath_.isEmpty() || largeRightNextOffset_ < 0)) return;
@@ -504,6 +505,7 @@ private:
         applyingProgrammaticUpdate_ = false;
 
         rows_ += rows;
+        miniMap_->appendProgressiveRows(rows);
         for (int i = oldRowCount; i < rows_.size(); ++i) {
             rows_[i].left.clear();
             rows_[i].right.clear();
@@ -530,7 +532,6 @@ private:
         rightHighlighter_->setIncremental(true);
         leftHighlighter_->setDeferred(false);
         rightHighlighter_->setDeferred(false);
-        miniMap_->setRows(rows_);
         miniMap_->setCurrentRow(currentRow_);
         updateLargeVisibleDiffSelections();
         updateExtraSelections();

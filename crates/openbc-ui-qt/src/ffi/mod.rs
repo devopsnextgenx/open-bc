@@ -6,6 +6,8 @@
 //! independent of this module layout.
 
 pub(crate) mod common;
+#[cfg(feature = "mem-stats")]
+pub mod mem_stats;
 pub(crate) mod model3d_compare;
 pub(crate) mod picture_compare;
 pub(crate) mod resource_watch;

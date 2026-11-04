@@ -61,6 +61,7 @@ class DifferenceOverview : public QFrame {
 public:
   explicit DifferenceOverview(QWidget *parent = nullptr, bool vertical = false)
       : QFrame(parent), vertical_(vertical) {
+    setObjectName(QStringLiteral("textCompareMinimap"));
     if (vertical_) {
       setMinimumWidth(28);
       setMaximumWidth(28);
@@ -71,9 +72,35 @@ public:
     setCursor(Qt::PointingHandCursor);
   }
 
+  int rowCount() const { return rows_.size(); }
+
   void setRows(const QVector<TextDiffLine> &rows) {
-    rows_ = rows;
-    blocks_ = groupDiffRows(rows_);
+    beginProgressiveRows();
+    appendProgressiveRows(rows);
+  }
+
+  void beginProgressiveRows() {
+    rows_.clear();
+    blocks_.clear();
+    update();
+  }
+
+  void appendProgressiveRows(const QVector<TextDiffLine> &rows) {
+    for (const TextDiffLine &row : rows) {
+      const int index = rows_.size();
+      rows_.push_back({row.changed, row.whitespaceOnly, row.leftNumber != 0,
+                       row.rightNumber != 0});
+      if (!row.changed)
+        continue;
+      const bool missing = row.leftNumber == 0 || row.rightNumber == 0;
+      if (!blocks_.isEmpty() && blocks_.last().end == index - 1 &&
+          blocks_.last().whitespaceOnly == row.whitespaceOnly &&
+          blocks_.last().missing == missing) {
+        blocks_.last().end = index;
+      } else {
+        blocks_.push_back({index, index, row.whitespaceOnly, missing});
+      }
+    }
     update();
   }
 
@@ -218,22 +245,6 @@ private:
                rows_.size() - 1));
   }
 
-  // A group is "missing" when every row in it lacks a counterpart on one
-  // whole side (leftNumber == 0 for all of them, or rightNumber == 0 for
-  // all of them) - a pure insert/delete block, as opposed to a group where
-  // the same line exists on both sides but its text differs.
-  bool groupIsMissing(const DiffGroup &group) const {
-    bool allNoLeft = true;
-    bool allNoRight = true;
-    for (int row = group.start; row <= group.end && row < rows_.size(); ++row) {
-      if (rows_[row].leftNumber != 0)
-        allNoLeft = false;
-      if (rows_[row].rightNumber != 0)
-        allNoRight = false;
-    }
-    return allNoLeft || allNoRight;
-  }
-
   QColor colorFor(bool whitespaceOnly, bool missing) const {
     if (missing)
       return QColor("#9aa0b8"); // muted grey-violet, matches equalMarker()
@@ -247,16 +258,15 @@ private:
   void paintBlocks(QPainter &painter, qreal rowSize, qreal /*contentExtent*/) {
     const qreal barWidth =
         vertical_ ? width() - kDirtyColumnWidth - 6 : width() - 4;
-    for (const DiffGroup &block : blocks_) {
+    for (const OverviewBlock &block : blocks_) {
       const qreal start = block.start * rowSize;
       const qreal thickness =
           qMax<qreal>(3.0, (block.end - block.start + 1) * rowSize);
-      const bool missing = groupIsMissing(block);
-      const QColor color = colorFor(block.whitespaceOnly, missing);
+      const QColor color = colorFor(block.whitespaceOnly, block.missing);
       const QRectF bar = vertical_ ? QRectF(3, start, barWidth, thickness)
                                    : QRectF(start, 2, thickness, height() - 4);
       painter.fillRect(bar, color);
-      if (missing && thickness > 3.0) {
+      if (block.missing && thickness > 3.0) {
         painter.fillRect(bar, QBrush(QColor(0, 0, 0, 90), Qt::BDiagPattern));
       }
     }
@@ -310,14 +320,12 @@ private:
         ++row;
         continue;
       }
-      const bool missing0 =
-          rows_[row].leftNumber == 0 || rows_[row].rightNumber == 0;
+      const bool missing0 = !rows_[row].hasLeft || !rows_[row].hasRight;
       const bool whitespace0 = rows_[row].whitespaceOnly;
 
       int runEnd = row + 1;
       while (runEnd < totalRows && rows_[runEnd].changed) {
-        const bool missingN =
-            rows_[runEnd].leftNumber == 0 || rows_[runEnd].rightNumber == 0;
+        const bool missingN = !rows_[runEnd].hasLeft || !rows_[runEnd].hasRight;
         const bool whitespaceN = rows_[runEnd].whitespaceOnly;
         if (missingN != missing0 || whitespaceN != whitespace0)
           break;
@@ -356,8 +364,22 @@ private:
   // invisible region for very tiny files).
   static constexpr qreal kMinContentFraction = 0.05;
 
-  QVector<TextDiffLine> rows_;
-  QVector<DiffGroup> blocks_;
+  struct OverviewRow {
+    bool changed = false;
+    bool whitespaceOnly = false;
+    bool hasLeft = false;
+    bool hasRight = false;
+  };
+
+  struct OverviewBlock {
+    int start = 0;
+    int end = 0;
+    bool whitespaceOnly = false;
+    bool missing = false;
+  };
+
+  QVector<OverviewRow> rows_;
+  QVector<OverviewBlock> blocks_;
   QSet<int> dirtyRows_;
   bool vertical_ = false;
   bool pixelLineMode_ = true; // default to the classic block-bar minimap

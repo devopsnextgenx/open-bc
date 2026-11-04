@@ -86,10 +86,18 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Corrosion)
 
+option(OPENBC_BUILD_TEXT_MEMORY_TEST
+       "Build the offscreen legacy large-text memory measurement tool" OFF)
+set(OPENBC_RUST_FEATURE_ARGS "")
+if(OPENBC_BUILD_TEXT_MEMORY_TEST)
+    list(APPEND OPENBC_RUST_FEATURE_ARGS FEATURES mem-stats)
+endif()
+
 # Import ONLY the static library target, ignoring [[bin]] targets
 corrosion_import_crate(
     MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/crates/openbc-ui-qt/Cargo.toml"
     CRATE_TYPES staticlib
+    ${OPENBC_RUST_FEATURE_ARGS}
 )
 
 
@@ -137,6 +145,20 @@ target_link_libraries(openbc PRIVATE
 )
 
 target_compile_definitions(openbc PRIVATE OPENBC_BUILD_EXECUTABLE)
+
+if(OPENBC_BUILD_TEXT_MEMORY_TEST)
+    add_executable(text_memory_test
+        "${OPENBC_CPP_DIR}/tools/text_memory_test/text_memory_test.cpp"
+    )
+    target_include_directories(text_memory_test PRIVATE "${OPENBC_CPP_DIR}")
+    target_link_libraries(text_memory_test PRIVATE
+        Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Network
+        openbc_ui_qt-static ZLIB::ZLIB OpenSSL::SSL OpenSSL::Crypto LibLZMA::LibLZMA
+    )
+    if(WIN32)
+        target_link_libraries(text_memory_test PRIVATE psapi)
+    endif()
+endif()
 
 if(TARGET Qt6::Multimedia AND TARGET Qt6::MultimediaWidgets)
     message(STATUS "Qt Multimedia found: media playback enabled")

@@ -20,3 +20,4 @@ image = "0.25"
 
 [features]
 gpu = ["openbc-compute/gpu"]
+mem-stats = ["openbc-core/mem-stats"]
