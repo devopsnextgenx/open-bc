@@ -572,6 +572,9 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         if (!mayClose) {
             return;
         }
+        if (auto* view = dynamic_cast<TextCompareViewer*>(widget)) {
+            view->releaseLargeFileResources();
+        }
         tabs->removeTab(index);
         widget->deleteLater();
         home->refreshHistory();

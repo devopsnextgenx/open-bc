@@ -118,6 +118,13 @@ public:
         else refreshAndRehighlight();
     }
 
+    void clearCachedSpans() {
+        decltype(incrementalSpans_){}.swap(incrementalSpans_);
+        decltype(computedIncrementalLines_){}.swap(computedIncrementalLines_);
+        decltype(spans_){}.swap(spans_);
+        decltype(emptySpans_){}.swap(emptySpans_);
+    }
+
     void rehighlightVisibleBlocks(int first, int last) {
         if (deferred_ || !incremental_ || !enabled_) return;
         for (int line = qMax(0, first); line <= last; ++line) {

@@ -144,6 +144,51 @@ public:
     bool hasUnsavedChanges() const { return sideDirty(true) || sideDirty(false); }
     bool confirmClose() { return confirmDiscard(); }
 
+    void releaseLargeFileResources() {
+        if (!largeFileMode_) return;
+        largeFileMode_ = false;
+        ++largePageGeneration_;
+        ++loadGeneration_;
+        largePageLoading_ = false;
+        leftHighlighter_->setDeferred(true);
+        rightHighlighter_->setDeferred(true);
+        leftHighlighter_->clearCachedSpans();
+        rightHighlighter_->clearCachedSpans();
+        leftEditor_->clear();
+        rightEditor_->clear();
+        leftEditor_->setLineNumbers({});
+        rightEditor_->setLineNumbers({});
+        leftEditor_->setDiffData({}, {});
+        rightEditor_->setDiffData({}, {});
+        leftEditor_->setDirtyRows({});
+        rightEditor_->setDirtyRows({});
+        leftEditor_->setInlineDiffs({});
+        rightEditor_->setInlineDiffs({});
+        decltype(rows_){}.swap(rows_);
+        decltype(groups_){}.swap(groups_);
+        decltype(leftInline_){}.swap(leftInline_);
+        decltype(rightInline_){}.swap(rightInline_);
+        decltype(leftDiffSelections_){}.swap(leftDiffSelections_);
+        decltype(rightDiffSelections_){}.swap(rightDiffSelections_);
+        decltype(leftOriginal_){}.swap(leftOriginal_);
+        decltype(rightOriginal_){}.swap(rightOriginal_);
+        decltype(leftDirtyLines_){}.swap(leftDirtyLines_);
+        decltype(rightDirtyLines_){}.swap(rightDirtyLines_);
+        leftRaw_ = QString();
+        rightRaw_ = QString();
+        largeLeftNextOffset_ = -1;
+        largeRightNextOffset_ = -1;
+        largeLeftLineCount_ = 0;
+        largeRightLineCount_ = 0;
+        currentRow_ = -1;
+        miniMap_->setRows({});
+        miniMap_->setDirtyRows({});
+        miniMap_->setCurrentRow(-1);
+        leftEditor_->setLargeContentMode(false);
+        rightEditor_->setLargeContentMode(false);
+        progress_->hide();
+    }
+
     std::function<void()> onHomeRequested;
     std::function<void()> onSessionsRequested;
     std::function<void()> onTitleChanged;
