@@ -105,6 +105,21 @@ public:
         lineNumberArea_->update();
     }
 
+    void appendLineNumbers(const QVector<int>& numbers) {
+        lineNumbers_ += numbers;
+        updateMarginWidths();
+        lineNumberArea_->update();
+    }
+
+    void setLargeContentMode(bool enabled) {
+        largeContentMode_ = enabled;
+        if (enabled) {
+            filler_.clear();
+            snap_.clear();
+            snapChars_ = document()->characterCount();
+        }
+    }
+
     void setDiffData(const QVector<TextDiffLine>& rows, const QVector<DiffGroup>& groups) {
         diffRows_ = rows;
         diffGroups_ = groups;
@@ -137,6 +152,7 @@ public:
     // padding. (Reading toPlainText() instead turned every filler into a
     // permanent blank line on the next rebuild.)
     void resetEditTracking(const QVector<bool>& fillerBlocks) {
+        largeContentMode_ = false;
         filler_ = fillerBlocks;
         const int blocks = document()->blockCount();
         if (filler_.size() != blocks) filler_.resize(blocks);   // new entries are false
@@ -658,6 +674,7 @@ private:
     // map that onto whole blocks and decide which of the resulting blocks
     // are still padding.
     void trackContentsChange(int pos, int removed, int added) {
+        if (largeContentMode_) return;
         QTextDocument* doc = document();
         if (snap_.isEmpty() || filler_.size() != snap_.size() ||
             snapChars_ - removed + added != doc->characterCount()) {
@@ -732,6 +749,7 @@ private:
     int gutterRow_ = -1;  // row picked by clicking the blank arrow gutter
     QVector<bool> filler_;        // per block: alignment padding, not a file line
     QStringList snap_;            // per block text as last seen by trackContentsChange
+    bool largeContentMode_ = false;
     qint64 snapChars_ = 0;
     bool adoptEndBlockFlag_ = false;
 

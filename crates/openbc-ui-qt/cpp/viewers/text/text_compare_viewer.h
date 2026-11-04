@@ -102,7 +102,13 @@ public:
         connectSignals();
         if (largeFileMode_) {
             updateClassFileUi(/*resetDecompileMode=*/false);
-            loadLargePage(/*next=*/false);
+            leftEditor_->setLargeContentMode(true);
+            rightEditor_->setLargeContentMode(true);
+            leftHighlighter_->setDeferred(true);
+            rightHighlighter_->setDeferred(true);
+            leftHighlighter_->setIncremental(true);
+            rightHighlighter_->setIncremental(true);
+            loadLargePage();
         } else if (leftRaw_.isNull() && rightRaw_.isNull() &&
                    (!leftPath_.isEmpty() || !rightPath_.isEmpty())) {
             showRawText();
@@ -225,6 +231,7 @@ private:
 
     struct LargePage {
         QStringList lines;
+        QVector<qint64> lineOffsets;
         qint64 nextOffset = -1;
         QString error;
     };
@@ -247,6 +254,7 @@ private:
             const qint64 lineStart = file.pos();
             QByteArray line = file.readLine(kLargeLineByteLimit + 1);
             if (line.isEmpty()) break;
+            page.lineOffsets.push_back(lineStart);
             const bool truncated = line.size() > kLargeLineByteLimit ||
                                    (!line.endsWith('\n') && !file.atEnd() &&
                                     line.size() >= kLargeLineByteLimit);
@@ -267,41 +275,25 @@ private:
         return page;
     }
 
-    void loadLargePage(bool next) {
+    void loadLargePage() {
         if (!largeFileMode_ || largePageLoading_) return;
-        if (next && largePageIndex_ >= 0) {
+        if (largePageIndex_ < 0) {
+            largeLeftNextOffset_ = 0;
+            largeRightNextOffset_ = 0;
+            largePageIndex_ = 0;
+        } else {
             if ((leftPath_.isEmpty() || largeLeftNextOffset_ < 0) &&
                 (rightPath_.isEmpty() || largeRightNextOffset_ < 0)) return;
-            const int nextIndex = largePageIndex_ + 1;
-            if (nextIndex < largeLeftPageOffsets_.size() &&
-                nextIndex < largeRightPageOffsets_.size()) {
-                largePageIndex_ = nextIndex;
-            } else {
-                largeLeftPageOffsets_.push_back(largeLeftNextOffset_);
-                largeRightPageOffsets_.push_back(largeRightNextOffset_);
-                largeLeftLineStarts_.push_back(largeLeftLineStarts_.last() + leftOriginal_.size());
-                largeRightLineStarts_.push_back(largeRightLineStarts_.last() + rightOriginal_.size());
-                largePageIndex_ = nextIndex;
-            }
-        } else if (!next && largePageIndex_ < 0) {
-            largeLeftPageOffsets_ = {0};
-            largeRightPageOffsets_ = {0};
-            largeLeftLineStarts_ = {0};
-            largeRightLineStarts_ = {0};
-            largePageIndex_ = 0;
-        } else if (!next && largePageIndex_ > 0) {
-            --largePageIndex_;
+            ++largePageIndex_;
         }
         largePageLoading_ = true;
         ++loadGeneration_;
-        previousLargePageAction_->setEnabled(false);
-        nextLargePageAction_->setEnabled(false);
         progress_->show();
         const int generation = ++largePageGeneration_;
         const QString leftPath = leftPath_;
         const QString rightPath = rightPath_;
-        const qint64 leftOffset = largeLeftPageOffsets_.value(largePageIndex_, -1);
-        const qint64 rightOffset = largeRightPageOffsets_.value(largePageIndex_, -1);
+        const qint64 leftOffset = largeLeftNextOffset_;
+        const qint64 rightOffset = largeRightNextOffset_;
         for (const QString& path : {leftPath, rightPath}) {
             if (!path.isEmpty() && (!QFileInfo(path).exists() || !QFileInfo(path).isFile())) {
                 largePageLoading_ = false;
@@ -335,38 +327,50 @@ private:
                 }
                 if (left.nextOffset < 0 && right.nextOffset < 0 &&
                     left.lines.isEmpty() && right.lines.isEmpty()) {
-                    view->status_->setText("No more lines to load.");
+                    view->finishLargeFileLoading();
                     return;
                 }
-                view->leftOriginal_ = left.lines;
-                view->rightOriginal_ = right.lines;
-                view->largeLeftNextOffset_ = left.nextOffset;
-                view->largeRightNextOffset_ = right.nextOffset;
-                view->previousLargePageAction_->setEnabled(view->largePageIndex_ > 0);
-                view->nextLargePageAction_->setEnabled(left.nextOffset >= 0 ||
-                                                       right.nextOffset >= 0);
-                view->leftRaw_.clear();
-                view->rightRaw_.clear();
-                view->compareLargePage();
+                view->compareLargePage(left, right, view->largeLeftLineCount_,
+                                       view->largeRightLineCount_);
             }, Qt::QueuedConnection);
         });
     }
 
-    void compareLargePage() {
+    void compareLargePage(const LargePage& leftPage, const LargePage& rightPage,
+                          int leftLineStart, int rightLineStart) {
         const QString ignoreSample = activeIgnoreSample();
         const QString sessionId = instrumentationSessionId_;
-        const QStringList left = leftOriginal_;
-        const QStringList right = rightOriginal_;
         const bool minor = minorAction_->isChecked();
         const int generation = ++loadGeneration_;
         const int pageIndex = largePageIndex_;
-        const int leftLineStart = largeLeftLineStarts_.value(pageIndex);
-        const int rightLineStart = largeRightLineStarts_.value(pageIndex);
         const QPointer<TextCompareViewer> view(this);
-        QThreadPool::globalInstance()->start([view, generation, left, right, ignoreSample,
-                                               sessionId, minor, leftLineStart,
-                                               rightLineStart]() {
-            QVector<TextDiffLine> rows = alignTextLines(left, right, ignoreSample, sessionId);
+        QThreadPool::globalInstance()->start(
+            [view, generation, pageIndex, leftPage, rightPage, ignoreSample, sessionId,
+             minor, leftLineStart, rightLineStart]() {
+            QVector<TextDiffLine> rows = alignTextLines(leftPage.lines, rightPage.lines,
+                                                        ignoreSample, sessionId);
+            int leftCarry = 0;
+            int rightCarry = 0;
+            if (leftPage.nextOffset >= 0 || rightPage.nextOffset >= 0) {
+                int trailingStart = rows.size();
+                while (trailingStart > 0) {
+                    const TextDiffLine& row = rows[trailingStart - 1];
+                    if ((row.leftNumber > 0) == (row.rightNumber > 0)) break;
+                    --trailingStart;
+                }
+                const int retainedRows = qMin(64, rows.size() - trailingStart);
+                for (int i = rows.size() - retainedRows; i < rows.size(); ++i) {
+                    if (rows[i].leftNumber > 0) ++leftCarry;
+                    if (rows[i].rightNumber > 0) ++rightCarry;
+                }
+                rows.resize(rows.size() - retainedRows);
+            }
+            const int leftConsumed = leftPage.lines.size() - leftCarry;
+            const int rightConsumed = rightPage.lines.size() - rightCarry;
+            const qint64 leftNextOffset = leftCarry > 0
+                ? leftPage.lineOffsets[leftConsumed] : leftPage.nextOffset;
+            const qint64 rightNextOffset = rightCarry > 0
+                ? rightPage.lineOffsets[rightConsumed] : rightPage.nextOffset;
             if (minor) {
                 for (auto& row : rows) if (row.whitespaceOnly) row.changed = false;
             }
@@ -376,23 +380,95 @@ private:
             }
             const auto inlineDiffs = computeInlineDiffsForRows(rows, sessionId);
             if (!view) return;
-            QMetaObject::invokeMethod(view, [view, generation, rows = std::move(rows),
-                                             inlineDiffs]() mutable {
+            QMetaObject::invokeMethod(
+                view, [view, generation, pageIndex, leftLineStart, rightLineStart,
+                       leftConsumed, rightConsumed, leftNextOffset, rightNextOffset,
+                       rows = std::move(rows), inlineDiffs]() mutable {
                 if (!view || generation != view->loadGeneration_) return;
-                view->rows_ = view->visibleRows(rows);
-                if (view->rows_.size() == inlineDiffs.first.size()) {
-                    view->leftInline_ = inlineDiffs.first;
-                    view->rightInline_ = inlineDiffs.second;
+                view->largeLeftNextOffset_ = leftNextOffset;
+                view->largeRightNextOffset_ = rightNextOffset;
+                view->appendLargeRows(std::move(rows), inlineDiffs, leftConsumed, rightConsumed);
+                view->largeLeftLineCount_ = leftLineStart + leftConsumed;
+                view->largeRightLineCount_ = rightLineStart + rightConsumed;
+                view->largePageLoading_ = false;
+                view->progress_->hide();
+                view->status_->setText(
+                    QString("Large file mode · block %1 matched · %2 left line(s), %3 right line(s) loaded")
+                        .arg(pageIndex + 1).arg(view->largeLeftLineCount_)
+                        .arg(view->largeRightLineCount_));
+                if (view->largeLeftNextOffset_ >= 0 || view->largeRightNextOffset_ >= 0) {
+                    QTimer::singleShot(100, view, [view]() {
+                        if (view && view->largeFileMode_ && !view->largePageLoading_)
+                            view->loadLargePage();
+                    });
                 } else {
-                    view->computeInlineDiffs(view->rows_);
+                    view->finishLargeFileLoading();
                 }
-                view->applyRows(/*deferHighlighting=*/false, /*resetScroll=*/true);
-                const int leftStart = view->largeLeftLineStarts_.value(view->largePageIndex_) + 1;
-                const int rightStart = view->largeRightLineStarts_.value(view->largePageIndex_) + 1;
-                view->status_->setText(QString("Large file mode · block %1 · left line %2 · right line %3 · matching this block only")
-                                           .arg(view->largePageIndex_ + 1).arg(leftStart).arg(rightStart));
             }, Qt::QueuedConnection);
         });
+    }
+
+    void appendLargeRows(QVector<TextDiffLine> rows,
+                         const QPair<QVector<QVector<CharSegment>>,
+                                     QVector<QVector<CharSegment>>>& inlineDiffs,
+                         int leftConsumed, int rightConsumed) {
+        if (rows.size() != inlineDiffs.first.size() ||
+            rows.size() != inlineDiffs.second.size()) return;
+        const int oldRowCount = rows_.size();
+        const bool appendSeparator = oldRowCount > 0;
+        const auto appendToEditor = [appendSeparator](LineNumberEditor* editor,
+                                                       bool leftSide,
+                                                       const QVector<TextDiffLine>& pageRows) {
+            QTextCursor cursor(editor->document());
+            cursor.movePosition(QTextCursor::End);
+            if (appendSeparator) cursor.insertBlock();
+            QVector<int> numbers;
+            numbers.reserve(pageRows.size());
+            for (int i = 0; i < pageRows.size(); ++i) {
+                if (i > 0) cursor.insertBlock();
+                cursor.insertText(leftSide ? pageRows[i].left : pageRows[i].right);
+                numbers.push_back(leftSide ? pageRows[i].leftNumber : pageRows[i].rightNumber);
+            }
+            editor->appendLineNumbers(numbers);
+            editor->document()->setModified(false);
+        };
+        applyingProgrammaticUpdate_ = true;
+        appendToEditor(leftEditor_, true, rows);
+        appendToEditor(rightEditor_, false, rows);
+        applyingProgrammaticUpdate_ = false;
+
+        rows_ += rows;
+        for (int i = oldRowCount; i < rows_.size(); ++i) {
+            rows_[i].left.clear();
+            rows_[i].right.clear();
+        }
+        leftInline_ += inlineDiffs.first;
+        rightInline_ += inlineDiffs.second;
+        largeLeftLineCount_ += leftConsumed;
+        largeRightLineCount_ += rightConsumed;
+        leftStructurallyEdited_ = false;
+        rightStructurallyEdited_ = false;
+        leftEditor_->setDiffData({}, {});
+        rightEditor_->setDiffData({}, {});
+        updateLargeVisibleDiffSelections();
+        updateExtraSelections();
+        updateMinimapViewport();
+    }
+
+    void finishLargeFileLoading() {
+        largePageLoading_ = false;
+        progress_->hide();
+        status_->setText(QString("Large file loaded · %1 left line(s), %2 right line(s) · styling as viewed")
+                             .arg(largeLeftLineCount_).arg(largeRightLineCount_));
+        leftHighlighter_->setIncremental(true);
+        rightHighlighter_->setIncremental(true);
+        leftHighlighter_->setDeferred(false);
+        rightHighlighter_->setDeferred(false);
+        miniMap_->setRows(rows_);
+        miniMap_->setCurrentRow(currentRow_);
+        updateLargeVisibleDiffSelections();
+        updateExtraSelections();
+        rehighlightVisibleBlocks();
     }
 
     // Whichever editor pane last actually held keyboard focus. Falls back
@@ -525,12 +601,6 @@ private:
         if (copyAction_) copyAction_->setEnabled(!readOnly);
         if (leftSaveButton_) leftSaveButton_->setEnabled(!readOnly);
         if (rightSaveButton_) rightSaveButton_->setEnabled(!readOnly);
-        if (previousLargePageAction_) previousLargePageAction_->setVisible(largeFileMode_);
-        if (nextLargePageAction_) nextLargePageAction_->setVisible(largeFileMode_);
-        if (previousLargePageAction_ && largeFileMode_)
-            previousLargePageAction_->setEnabled(largePageIndex_ > 0 && !largePageLoading_);
-        if (nextLargePageAction_ && largeFileMode_)
-            nextLargePageAction_->setEnabled(!largePageLoading_);
         if (swapAction_) swapAction_->setEnabled(!largeFileMode_ && !classFileCompare_);
         setEditabilityIndicator(!readOnly, true);
         updateUndoRedoActions();
@@ -579,6 +649,7 @@ private:
         leftHighlighter_->setStyle(style);
         rightHighlighter_->setStyle(style);
         applyingProgrammaticUpdate_ = false;
+        rehighlightVisibleBlocks();
     }
 
     void computeInlineDiffs(const QVector<TextDiffLine>& rows) {
@@ -646,7 +717,7 @@ private:
 
     void beginAsyncRebuild() {
         if (largeFileMode_) {
-            compareLargePage();
+            status_->setText("Large-file blocks are matched once as they load.");
             return;
         }
         const int generation = ++loadGeneration_;
@@ -942,10 +1013,6 @@ private:
 
         copyAction_ = toolbar_->addAction(icons::glyph(Glyph::CopyLine), "Copy");
         copyAction_->setToolTip("Copy the current change to the other side");
-        previousLargePageAction_ = toolbar_->addAction("Previous Block");
-        previousLargePageAction_->setVisible(false);
-        nextLargePageAction_ = toolbar_->addAction("Next Block");
-        nextLargePageAction_->setVisible(false);
         toolbar_->addSeparator();
 
         nextSectionAction_ = toolbar_->addAction(icons::glyph(Glyph::NextSection), "Next Section");
@@ -1129,10 +1196,6 @@ private:
     }
 
     void connectSignals() {
-        connect(previousLargePageAction_, &QAction::triggered, this,
-                [this]() { loadLargePage(/*next=*/false); });
-        connect(nextLargePageAction_, &QAction::triggered, this,
-                [this]() { loadLargePage(/*next=*/true); });
         connect(leftEditor_->verticalScrollBar(), &QScrollBar::valueChanged, this,
                 [this](int value) {
                     if (!syncing_) {
@@ -1141,12 +1204,9 @@ private:
                         syncing_ = false;
                     }
                     updateMinimapViewport();
-                    if (largeFileMode_ && !largePageLoading_ &&
-                        nextLargePageAction_->isEnabled() &&
-                        leftEditor_->verticalScrollBar()->maximum() > 0 &&
-                        value >= leftEditor_->verticalScrollBar()->maximum()) {
-                        loadLargePage(/*next=*/true);
-                    }
+                    updateLargeVisibleDiffSelections();
+                    updateExtraSelections();
+                    rehighlightVisibleBlocks();
                 });
         connect(rightEditor_->verticalScrollBar(), &QScrollBar::valueChanged, this,
                 [this](int value) {
@@ -1156,6 +1216,9 @@ private:
                         syncing_ = false;
                     }
                     updateMinimapViewport();
+                    updateLargeVisibleDiffSelections();
+                    updateExtraSelections();
+                    rehighlightVisibleBlocks();
                 });
         const auto updateCurrentRow = [this](const QTextCursor& cursor) {
             currentRow_ = cursor.blockNumber();
@@ -1265,12 +1328,14 @@ private:
             leftHighlighter_->setEnabled(true);
             rightHighlighter_->setEnabled(true);
             applyingProgrammaticUpdate_ = false;
+            rehighlightVisibleBlocks();
         });
         connect(syntaxPlainAction_, &QAction::triggered, this, [this]() {
             applyingProgrammaticUpdate_ = true;
             leftHighlighter_->setEnabled(false);
             rightHighlighter_->setEnabled(false);
             applyingProgrammaticUpdate_ = false;
+            rehighlightVisibleBlocks();
         });
         connect(vibrantStyleAction_, &QAction::triggered, this, [this]() {
             setHighlightStyle(SyntaxHighlighter::Style::Vibrant);
@@ -1557,6 +1622,7 @@ private:
     }
 
     void syncFromEditors() {
+        if (largeFileMode_) return;
         if (!leftStructurallyEdited_) {
             for (int i = 0; i < rows_.size() && i < leftEditor_->document()->blockCount(); ++i) {
                 rows_[i].left = leftEditor_->document()->findBlockByNumber(i).text();
@@ -1969,7 +2035,7 @@ private:
 
     void rebuild() {
         if (largeFileMode_) {
-            compareLargePage();
+            status_->setText("Large-file blocks are matched once as they load.");
             return;
         }
         const CursorSnapshot leftSnap = captureCursor(leftEditor_);
@@ -2042,9 +2108,7 @@ private:
                              .arg(differenceCount));
     }
 
-    void computeDiffSelections(const QVector<TextDiffLine>& rows) {
-        leftDiffSelections_.clear();
-        rightDiffSelections_.clear();
+    void appendDiffSelections(const QVector<TextDiffLine>& rows, int rowOffset) {
         const auto addSelection = [this](LineNumberEditor* editor, int row, const QBrush& brush) {
             QTextEdit::ExtraSelection selection;
             selection.format.setBackground(brush);
@@ -2063,20 +2127,61 @@ private:
         for (int row = 0; row < rows.size(); ++row) {
             const TextDiffLine& line = rows[row];
             if (!line.changed) continue;
+            const int documentRow = row + rowOffset;
             if (line.whitespaceOnly) {
-                addSelection(leftEditor_, row, unimportantBg);
-                addSelection(rightEditor_, row, unimportantBg);
+                addSelection(leftEditor_, documentRow, unimportantBg);
+                addSelection(rightEditor_, documentRow, unimportantBg);
             } else if (line.leftNumber > 0 && line.rightNumber > 0) {
-                addSelection(leftEditor_, row, differentBg);
-                addSelection(rightEditor_, row, differentBg);
+                addSelection(leftEditor_, documentRow, differentBg);
+                addSelection(rightEditor_, documentRow, differentBg);
             } else if (line.leftNumber > 0) {
-                addSelection(leftEditor_, row, leftOnlyBg);
-                addSelection(rightEditor_, row, kHatch);
+                addSelection(leftEditor_, documentRow, leftOnlyBg);
+                addSelection(rightEditor_, documentRow, kHatch);
             } else if (line.rightNumber > 0) {
-                addSelection(rightEditor_, row, rightOnlyBg);
-                addSelection(leftEditor_, row, kHatch);
+                addSelection(rightEditor_, documentRow, rightOnlyBg);
+                addSelection(leftEditor_, documentRow, kHatch);
             }
         }
+    }
+
+    void computeDiffSelections(const QVector<TextDiffLine>& rows) {
+        leftDiffSelections_.clear();
+        rightDiffSelections_.clear();
+        appendDiffSelections(rows, 0);
+    }
+
+    void updateLargeVisibleDiffSelections() {
+        if (!largeFileMode_) return;
+        leftDiffSelections_.clear();
+        rightDiffSelections_.clear();
+        if (rows_.isEmpty()) return;
+        const auto visibleRange = [](LineNumberEditor* editor) {
+            const int first = editor->cursorForPosition(QPoint(2, 2)).blockNumber();
+            const int last = editor->cursorForPosition(
+                QPoint(2, qMax(2, editor->viewport()->height() - 2))).blockNumber();
+            return qMakePair(first, qMax(first, last));
+        };
+        const auto leftRange = visibleRange(leftEditor_);
+        const auto rightRange = visibleRange(rightEditor_);
+        const int lastRow = rows_.size() - 1;
+        const int first = qBound(0, qMin(leftRange.first, rightRange.first), lastRow);
+        const int last = qBound(first, qMax(leftRange.second, rightRange.second), lastRow);
+        if (first <= last) appendDiffSelections(rows_.mid(first, last - first + 1), first);
+    }
+
+    void rehighlightVisibleBlocks() {
+        if (!largeFileMode_ || leftHighlighter_->isHighlighting() ||
+            rightHighlighter_->isHighlighting()) return;
+        const auto visibleRange = [](LineNumberEditor* editor) {
+            const int first = editor->cursorForPosition(QPoint(2, 2)).blockNumber();
+            const int last = editor->cursorForPosition(
+                QPoint(2, qMax(2, editor->viewport()->height() - 2))).blockNumber();
+            return qMakePair(first, qMax(first, last));
+        };
+        const auto leftRange = visibleRange(leftEditor_);
+        const auto rightRange = visibleRange(rightEditor_);
+        leftHighlighter_->rehighlightVisibleBlocks(leftRange.first, leftRange.second);
+        rightHighlighter_->rehighlightVisibleBlocks(rightRange.first, rightRange.second);
     }
 
     QSet<int> dirtyRowIndices(bool left) const {
@@ -2166,18 +2271,41 @@ private:
             largeFileMode_ = true;
             (left ? leftPath_ : rightPath_) = path;
             updateClassFileUi(/*resetDecompileMode=*/false);
-            largeLeftPageOffsets_.clear();
-            largeRightPageOffsets_.clear();
-            largeLeftLineStarts_.clear();
-            largeRightLineStarts_.clear();
+            leftHighlighter_->setDeferred(true);
+            rightHighlighter_->setDeferred(true);
+            leftHighlighter_->setIncremental(true);
+            rightHighlighter_->setIncremental(true);
+            leftEditor_->setLargeContentMode(true);
+            rightEditor_->setLargeContentMode(true);
             largePageIndex_ = -1;
             largeLeftNextOffset_ = 0;
             largeRightNextOffset_ = 0;
+            largeLeftLineCount_ = 0;
+            largeRightLineCount_ = 0;
             leftOriginal_.clear();
             rightOriginal_.clear();
             leftRaw_.clear();
             rightRaw_.clear();
-            loadLargePage(/*next=*/false);
+            leftDiffSelections_.clear();
+            rightDiffSelections_.clear();
+            leftEditor_->setDiffData({}, {});
+            rightEditor_->setDiffData({}, {});
+            leftEditor_->setLineNumbers({});
+            rightEditor_->setLineNumbers({});
+            leftEditor_->setDirtyRows({});
+            rightEditor_->setDirtyRows({});
+            leftEditor_->setInlineDiffs({});
+            rightEditor_->setInlineDiffs({});
+            leftEditor_->clear();
+            rightEditor_->clear();
+            rows_.clear();
+            leftInline_.clear();
+            rightInline_.clear();
+            leftDirtyLines_.clear();
+            rightDirtyLines_.clear();
+            currentRow_ = -1;
+            miniMap_->setRows({});
+            loadLargePage();
             refreshSideHeader(true);
             refreshSideHeader(false);
             if (onTitleChanged) onTitleChanged();
@@ -2185,6 +2313,11 @@ private:
         }
         if (largeFileMode_) {
             largeFileMode_ = false;
+            ++largePageGeneration_;
+            leftHighlighter_->setDeferred(true);
+            rightHighlighter_->setDeferred(true);
+            leftHighlighter_->setIncremental(false);
+            rightHighlighter_->setIncremental(false);
             updateClassFileUi(/*resetDecompileMode=*/false);
         }
         const QPointer<TextCompareViewer> view(this);
@@ -2403,8 +2536,6 @@ private:
     QAction* prevSectionAction_ = nullptr;
     QAction* swapAction_ = nullptr;
     QAction* reloadAction_ = nullptr;
-    QAction* previousLargePageAction_ = nullptr;
-    QAction* nextLargePageAction_ = nullptr;
 
     PathSelector* leftSelector_ = nullptr;
     std::unique_ptr<FileChangeController> changes_;  // external-change notice + reload (common/file_change_controller.h)
@@ -2430,10 +2561,8 @@ private:
     int largePageIndex_ = -1;
     qint64 largeLeftNextOffset_ = 0;
     qint64 largeRightNextOffset_ = 0;
-    QVector<qint64> largeLeftPageOffsets_;
-    QVector<qint64> largeRightPageOffsets_;
-    QVector<int> largeLeftLineStarts_;
-    QVector<int> largeRightLineStarts_;
+    int largeLeftLineCount_ = 0;
+    int largeRightLineCount_ = 0;
     QProgressBar* progress_ = nullptr;
     int loadGeneration_ = 0;
     bool syncing_ = false;

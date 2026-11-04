@@ -8,6 +8,8 @@
 #include <QTextBlock>
 #include <QTextCharFormat>
 #include <QTextDocument>
+#include <QHash>
+#include <QSet>
 #include <QVector>
 #include <functional>
 
@@ -42,6 +44,50 @@ public:
         SyntaxMappingStore::instance().addListener(this, [this]() { refreshAndRehighlight(); });
     }
 
+    const QVector<BackendHighlightSpan>& incrementalSpansForLine(int line,
+                                                                  const QString& text) {
+        auto found = incrementalSpans_.constFind(line);
+        if (found != incrementalSpans_.constEnd()) return found.value();
+        if (computedIncrementalLines_.contains(line)) return emptySpans_;
+        computedIncrementalLines_.insert(line);
+        const QByteArray extension = extension_.toUtf8();
+        const QByteArray source = text.toUtf8();
+        const QByteArray sessionId = sessionId_.toUtf8();
+        OpenBcHighlight* handle = style_ == Style::VsCodeDark
+            ? openbc_highlight_buffer_with_theme(
+                  reinterpret_cast<const std::uint8_t*>(extension.constData()), extension.size(),
+                  reinterpret_cast<const std::uint8_t*>(source.constData()), source.size(), 1,
+                  reinterpret_cast<const std::uint8_t*>(sessionId.constData()), sessionId.size())
+            : openbc_highlight_buffer(
+                  reinterpret_cast<const std::uint8_t*>(extension.constData()), extension.size(),
+                  reinterpret_cast<const std::uint8_t*>(source.constData()), source.size(),
+                  reinterpret_cast<const std::uint8_t*>(sessionId.constData()), sessionId.size());
+        if (!handle) return emptySpans_;
+        QVector<BackendHighlightSpan> lineSpans;
+        const std::size_t count = openbc_highlight_len(handle);
+        lineSpans.reserve(static_cast<int>(count));
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::size_t byteStart = openbc_highlight_start(handle, i);
+            const std::size_t byteLength = openbc_highlight_length(handle, i);
+            const int start = static_cast<int>(
+                QString::fromUtf8(source.constData(), static_cast<int>(byteStart)).size());
+            const int length = static_cast<int>(
+                QString::fromUtf8(source.constData() + byteStart,
+                                  static_cast<int>(byteLength)).size());
+            lineSpans.push_back({
+                line,
+                start,
+                length,
+                backendColor(handle, i, true),
+                backendColor(handle, i, false),
+                openbc_highlight_bold(handle, i) != 0,
+                openbc_highlight_italic(handle, i) != 0,
+            });
+        }
+        openbc_highlight_destroy(handle);
+        return incrementalSpans_.insert(line, std::move(lineSpans)).value();
+    }
+
     // `language` is whatever identifies the file: its name ("Makefile", "main.rs"), an extension
     // or a language name. The backend resolves it (built-in table first overridden by the user's
     // mappings), so pass the full file name rather than only the suffix.
@@ -60,7 +106,24 @@ public:
     void setDeferred(bool deferred) {
         if (deferred_ == deferred) return;
         deferred_ = deferred;
-        if (!deferred_) refreshAndRehighlight();
+        if (!deferred_ && !incremental_) refreshAndRehighlight();
+    }
+
+    void setIncremental(bool incremental) {
+        if (incremental_ == incremental) return;
+        incremental_ = incremental;
+        incrementalSpans_.clear();
+        computedIncrementalLines_.clear();
+        if (incremental_) spans_.clear();
+        else refreshAndRehighlight();
+    }
+
+    void rehighlightVisibleBlocks(int first, int last) {
+        if (deferred_ || !incremental_ || !enabled_) return;
+        for (int line = qMax(0, first); line <= last; ++line) {
+            const QTextBlock block = document()->findBlockByNumber(line);
+            if (block.isValid()) rehighlightBlock(block);
+        }
     }
 
     void setStyle(Style style) {
@@ -89,7 +152,9 @@ protected:
     void highlightBlock(const QString& text) override {
         if (!enabled_ || deferred_) return;
         const int line = currentBlock().blockNumber();
-        for (const BackendHighlightSpan& span : spans_) {
+        const QVector<BackendHighlightSpan> blockSpans =
+            incremental_ ? incrementalSpansForLine(line, text) : spans_;
+        for (const BackendHighlightSpan& span : blockSpans) {
             if (span.line != line || span.start >= text.size()) continue;
             QTextCharFormat format;
             format.setForeground(styledForeground(span.foreground));
@@ -118,6 +183,11 @@ protected:
 private:
     void refreshAndRehighlight() {
         if (refreshing_ || deferred_) return;
+        if (incremental_) {
+            incrementalSpans_.clear();
+            computedIncrementalLines_.clear();
+            return;
+        }
         refreshing_ = true;
         refreshBackendSpans();
         rehighlight();
@@ -197,10 +267,14 @@ private:
     QString sessionId_;
     QString extension_;
     QVector<BackendHighlightSpan> spans_;
+    QHash<int, QVector<BackendHighlightSpan>> incrementalSpans_;
+    QSet<int> computedIncrementalLines_;
+    QVector<BackendHighlightSpan> emptySpans_;
     std::function<QVector<CharSegment>(int)> inlineDiffProvider_;
     Style style_ = Style::VsCodeDark;
     bool enabled_ = true;
     bool deferred_ = false;
+    bool incremental_ = false;
     bool refreshing_ = false;
     bool manualRehighlight_ = false;
 };
