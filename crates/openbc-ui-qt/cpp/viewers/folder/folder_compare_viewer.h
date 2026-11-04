@@ -23,6 +23,8 @@
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
@@ -31,6 +33,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QGridLayout>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
@@ -56,6 +59,7 @@
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <algorithm>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -68,6 +72,7 @@
 #include "common/java_class_support.h"
 #include "remote/remote_profile_store.h"
 #include "remote/remote_vfs_bridge.h"
+#include "options/app_options.h"
 #include "style/qt_style.h"
 #include "viewers/folder/folder_model.h"
 #include "viewers/picture/picture_extensions.h"
@@ -126,6 +131,8 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
   QSet<QString> ignoredPaths;
   QSet<QString> expandedPaths;
   bool rootItemsCreated = false;
+  QString rootLeftPath;
+  QString rootRightPath;
 
   // Totals shown in the pane footers (GUI thread only).
   int leftFiles = 0;
@@ -145,6 +152,8 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
     rightProfile = std::move(rightConnection);
     leftRemote = hasLeftConnection;
     rightRemote = hasRightConnection;
+    rootLeftPath = leftPath;
+    rootRightPath = rightPath;
     scheduleFolder(leftPath, rightPath, nullptr, nullptr, nullptr, false);
   }
 
@@ -169,13 +178,16 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
                                       leftProfile = run->leftProfile,
                                       leftRemote = run->leftRemote,
                                       rightProfile = run->rightProfile,
-                                      rightRemote = run->rightRemote]() {
+                                      rightRemote = run->rightRemote,
+                                      rootLeftPath = run->rootLeftPath,
+                                      rootRightPath = run->rootRightPath]() {
         if (run->cancelled.load())
           return;
         QString error;
         auto entries = collectEntriesFromEngine(
             request.leftPath, leftProfile, leftRemote, request.rightPath,
-            rightProfile, rightRemote, run->options, run->cancelled, &error);
+            rightProfile, rightRemote, rootLeftPath, rootRightPath,
+            run->options, run->cancelled, &error);
         if (run->cancelled.load())
           return;
         QMetaObject::invokeMethod(
@@ -229,11 +241,23 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
     return side;
   }
 
+  static QString relativeFilterPath(const QString &root, const QString &path) {
+    if (root.contains("://")) {
+      QString relative = path.mid(root.size());
+      while (relative.startsWith('/'))
+        relative.remove(0, 1);
+      return relative;
+    }
+    return QDir::fromNativeSeparators(QDir(root).relativeFilePath(path));
+  }
+
   static std::vector<EntryPair>
   collectEntriesFromEngine(const QString &leftPath,
                            const RemoteProfile &leftProfile, bool leftRemote,
                            const QString &rightPath,
                            const RemoteProfile &rightProfile, bool rightRemote,
+                           const QString &rootLeftPath,
+                           const QString &rootRightPath,
                            const CompareOptions &options,
                            const std::atomic_bool &cancelled, QString *error) {
     QList<VfsCompareEntry> rows;
@@ -250,10 +274,21 @@ struct ComparisonRun : std::enable_shared_from_this<ComparisonRun> {
       EntryPair entry;
       entry.left = makeEngineSide(row.left, row.name, leftPath);
       entry.right = makeEngineSide(row.right, row.name, rightPath);
-      if ((!entry.left.isDir && entry.left.exists &&
-           !options.filter.matches(row.name)) ||
-          (!entry.right.isDir && entry.right.exists &&
-           !options.filter.matches(row.name))) {
+      const bool isFolder =
+          (entry.left.exists && entry.left.isDir) ||
+          (entry.right.exists && entry.right.isDir);
+      const bool leftExists = entry.left.exists;
+      const QString filterPath =
+          leftExists ? entry.left.path : entry.right.path;
+      const QString filterRoot =
+          leftExists ? rootLeftPath : rootRightPath;
+      const QString relativePath = relativeFilterPath(filterRoot, filterPath);
+      if (isFolder
+              ? (!options.includeFolders.matchesOrHasMatchingDescendant(
+                     relativePath) ||
+                 options.excludeFolders.matches(relativePath))
+              : (!options.includeFiles.matches(relativePath) ||
+                 options.excludeFiles.matches(relativePath))) {
         continue;
       }
       // A differing archive pair (zip, 7z, tar.gz, ...) is shown as a folder pair. Archives that
@@ -897,12 +932,37 @@ public:
 
   QString instrumentationSessionId() const { return instrumentationSessionId_; }
 
+  void setOptionsStore(OptionsStore *store) {
+    optionsStore_ = store;
+    if (!optionsStore_)
+      return;
+    const AppOptions& options = optionsStore_->options();
+    if (options.defaultFolderFilterPreset.isEmpty()) {
+      includeFilesText_ = "*.*";
+      excludeFilesText_.clear();
+      includeFoldersText_ = "*";
+      excludeFoldersText_ = ".git\nnode_modules";
+    } else {
+      for (const FolderFilterPreset& preset : options.folderFilterPresets) {
+        if (preset.name == options.defaultFolderFilterPreset) {
+          setFilterTexts(preset);
+          break;
+        }
+      }
+    }
+    filterCombo_->setEditText(includeFilesText_);
+  }
+
   void copySettingsFrom(const FolderCompareViewer &other) {
     modeCombo_->setCurrentIndex(other.modeCombo_->currentIndex());
     contentsAction_->setChecked(other.contentsAction_->isChecked());
     timestampsAction_->setChecked(other.timestampsAction_->isChecked());
     archivesAction_->setChecked(other.archivesAction_->isChecked());
     filterCombo_->setEditText(other.filterCombo_->currentText());
+    includeFilesText_ = other.includeFilesText_;
+    excludeFilesText_ = other.excludeFilesText_;
+    includeFoldersText_ = other.includeFoldersText_;
+    excludeFoldersText_ = other.excludeFoldersText_;
     for (int i = 0; i < kPairClassCount; ++i) {
       showActions_[i]->setChecked(other.showActions_[i]->isChecked());
     }
@@ -996,7 +1056,11 @@ public:
     options.checkContent = contentsAction_->isChecked();
     options.ignoreTimestamps = timestampsAction_->isChecked();
     options.archivesAsFolders = archivesAction_->isChecked();
-    options.filter = NameFilter::parse(filterCombo_->currentText());
+    includeFilesText_ = filterCombo_->currentText();
+    options.includeFiles = NameFilter::parse(includeFilesText_);
+    options.excludeFiles = NameFilter::parse(excludeFilesText_, false);
+    options.includeFolders = NameFilter::parse(includeFoldersText_);
+    options.excludeFolders = NameFilter::parse(excludeFoldersText_, false);
 
     run_ = makeRun(leftTree_, rightTree_, std::move(options));
     run_->ignoredPaths = ignoredPaths_;
@@ -1083,6 +1147,173 @@ public:
   }
 
 private:
+  void setFilterTexts(const FolderFilterPreset &preset) {
+    includeFilesText_ = preset.includeFiles;
+    excludeFilesText_ = preset.excludeFiles;
+    includeFoldersText_ = preset.includeFolders;
+    excludeFoldersText_ = preset.excludeFolders;
+  }
+
+  void editNameFilters() {
+    QDialog dialog(this);
+    dialog.setWindowTitle("Name Filters");
+    dialog.setMinimumWidth(720);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *grid = new QGridLayout;
+    auto *includeFiles = new QPlainTextEdit(&dialog);
+    auto *excludeFiles = new QPlainTextEdit(&dialog);
+    auto *includeFolders = new QPlainTextEdit(&dialog);
+    auto *excludeFolders = new QPlainTextEdit(&dialog);
+    includeFiles->setPlainText(includeFilesText_);
+    excludeFiles->setPlainText(excludeFilesText_);
+    includeFolders->setPlainText(includeFoldersText_);
+    excludeFolders->setPlainText(excludeFoldersText_);
+    for (QPlainTextEdit *editor :
+         {includeFiles, excludeFiles, includeFolders, excludeFolders})
+      editor->setMinimumHeight(92);
+    grid->addWidget(new QLabel("Include files:"), 0, 0);
+    grid->addWidget(new QLabel("Exclude files:"), 0, 1);
+    grid->addWidget(includeFiles, 1, 0);
+    grid->addWidget(excludeFiles, 1, 1);
+    grid->addWidget(new QLabel("Include folders:"), 2, 0);
+    grid->addWidget(new QLabel("Exclude folders:"), 2, 1);
+    grid->addWidget(includeFolders, 3, 0);
+    grid->addWidget(excludeFolders, 3, 1);
+    layout->addLayout(grid);
+    auto *help = new QLabel(
+        "One mask per line (or separated by ';'). Wildcards: * and ?. "
+        "Masks with a path separator match from the base folder.");
+    help->setWordWrap(true);
+    layout->addWidget(help);
+
+    auto *controls = new QHBoxLayout;
+    auto *clear = new QPushButton("Clear", &dialog);
+    auto *loadPreset = new QComboBox(&dialog);
+    loadPreset->addItem("Load preset...", QString());
+    if (optionsStore_) {
+      for (const FolderFilterPreset &preset :
+           optionsStore_->options().folderFilterPresets)
+        loadPreset->addItem(preset.name, preset.name);
+    } else {
+      loadPreset->setEnabled(false);
+    }
+    auto *addPreset = new QPushButton("Add To Presets...", &dialog);
+    addPreset->setEnabled(optionsStore_ != nullptr);
+    auto *savePreset = new QPushButton("Save Preset", &dialog);
+    savePreset->setEnabled(false);
+    controls->addWidget(clear);
+    controls->addWidget(loadPreset);
+    controls->addWidget(addPreset);
+    controls->addWidget(savePreset);
+    controls->addStretch(1);
+    auto *apply = new QPushButton("Apply", &dialog);
+    auto *cancel = new QPushButton("Cancel", &dialog);
+    controls->addWidget(apply);
+    controls->addWidget(cancel);
+    layout->addLayout(controls);
+
+    connect(clear, &QPushButton::clicked, &dialog, [=]() {
+      includeFiles->clear();
+      excludeFiles->clear();
+      includeFolders->clear();
+      excludeFolders->clear();
+    });
+    connect(loadPreset, QOverload<int>::of(&QComboBox::activated), &dialog,
+            [this, loadPreset, includeFiles, excludeFiles, includeFolders,
+             excludeFolders, savePreset](int index) {
+              const QString presetName = loadPreset->itemData(index).toString();
+              savePreset->setEnabled(false);
+              if (presetName.isEmpty() || !optionsStore_)
+                return;
+              for (const FolderFilterPreset &preset :
+                   optionsStore_->options().folderFilterPresets) {
+                if (preset.name == presetName) {
+                  includeFiles->setPlainText(preset.includeFiles);
+                  excludeFiles->setPlainText(preset.excludeFiles);
+                  includeFolders->setPlainText(preset.includeFolders);
+                  excludeFolders->setPlainText(preset.excludeFolders);
+                  savePreset->setEnabled(!preset.builtIn);
+                  break;
+                }
+              }
+            });
+    connect(addPreset, &QPushButton::clicked, &dialog,
+            [this, &dialog, loadPreset, savePreset, includeFiles, excludeFiles,
+             includeFolders, excludeFolders]() {
+      bool accepted = false;
+      const QString name =
+          QInputDialog::getText(&dialog, "Add Filter Preset", "Name:",
+                                QLineEdit::Normal, QString(), &accepted)
+              .trimmed();
+      if (!accepted)
+        return;
+      if (name.isEmpty()) {
+        QMessageBox::warning(&dialog, "Folder filters",
+                             "Enter a preset name.");
+        return;
+      }
+      AppOptions next = optionsStore_->options();
+      for (const FolderFilterPreset &preset : next.folderFilterPresets) {
+        if (preset.name.compare(name, Qt::CaseInsensitive) == 0) {
+          QMessageBox::warning(&dialog, "Folder filters",
+                               "A preset with that name already exists.");
+          return;
+        }
+      }
+      next.folderFilterPresets.append(
+          {name, includeFiles->toPlainText(), excludeFiles->toPlainText(),
+           includeFolders->toPlainText(), excludeFolders->toPlainText()});
+      optionsStore_->commit(next);
+      loadPreset->addItem(name, name);
+      loadPreset->setCurrentIndex(loadPreset->count() - 1);
+      savePreset->setEnabled(true);
+            });
+    connect(savePreset, &QPushButton::clicked, &dialog,
+            [this, &dialog, loadPreset, includeFiles, excludeFiles,
+             includeFolders, excludeFolders]() {
+              const QString selectedName =
+                  loadPreset->currentData().toString();
+              if (selectedName.isEmpty() || !optionsStore_)
+                return;
+              AppOptions next = optionsStore_->options();
+              auto preset = std::find_if(
+                  next.folderFilterPresets.begin(),
+                  next.folderFilterPresets.end(),
+                  [&selectedName](const FolderFilterPreset& value) {
+                    return value.name == selectedName;
+                  });
+              if (preset == next.folderFilterPresets.end()) {
+                QMessageBox::warning(&dialog, "Folder filters",
+                                     "The selected preset no longer exists.");
+                return;
+              }
+              if (preset->builtIn) {
+                QMessageBox::warning(
+                    &dialog, "Folder filters",
+                    "Built-in presets cannot be overwritten. Use Add To Presets to save a copy.");
+                return;
+              }
+              preset->includeFiles = includeFiles->toPlainText();
+              preset->excludeFiles = excludeFiles->toPlainText();
+              preset->includeFolders = includeFolders->toPlainText();
+              preset->excludeFolders = excludeFolders->toPlainText();
+              optionsStore_->commit(next);
+    });
+    connect(apply, &QPushButton::clicked, &dialog, [&]() {
+      includeFilesText_ = includeFiles->toPlainText();
+      excludeFilesText_ = excludeFiles->toPlainText();
+      includeFoldersText_ = includeFolders->toPlainText();
+      excludeFoldersText_ = excludeFolders->toPlainText();
+      filterCombo_->setEditText(includeFilesText_);
+      dialog.accept();
+    });
+    connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+    if (dialog.exec() == QDialog::Accepted) {
+      log("Applied name filters");
+      refresh();
+    }
+  }
+
   // ---------------------------------------------------------------- actions
   void createActions() {
     using icons::Glyph;
@@ -1159,6 +1390,9 @@ private:
     filterClearAction_ =
         new QAction(icons::glyph(Glyph::FilterClear), "Clear filter", this);
     filterClearAction_->setToolTip("Show all files");
+    nameFiltersButton_ = new QPushButton("Name Filters...", toolbar_);
+    nameFiltersButton_->setToolTip(
+        "Configure include and exclude masks for files and folders");
 
     consoleAction_ = new QAction("Toggle console", this);
     consoleAction_->setCheckable(true);
@@ -1309,9 +1543,9 @@ private:
     filterCombo_->setMinimumWidth(190);
     filterCombo_->addItem("*.*");
     filterCombo_->setToolTip(
-        "File filter, e.g. *.cpp;*.h  or just part of a name.\n"
-        "Folders are always shown.");
+        "Quick include-file filter; use Name Filters for folder and exclude masks.");
     toolbar_->addWidget(filterCombo_);
+    toolbar_->addWidget(nameFiltersButton_);
     toolbar_->addAction(filterApplyAction_);
     toolbar_->addAction(filterClearAction_);
     root->addWidget(toolbar_);
@@ -1433,18 +1667,31 @@ private:
     });
 
     connect(filterApplyAction_, &QAct::triggered, this, [this]() {
+      includeFilesText_ = filterCombo_->currentText();
       log("Applied filter: " + filterCombo_->currentText());
       refresh();
     });
     connect(filterClearAction_, &QAct::triggered, this, [this]() {
       filterCombo_->setEditText("*.*");
+      includeFilesText_ = "*.*";
+      excludeFilesText_.clear();
+      includeFoldersText_ = "*";
+      excludeFoldersText_.clear();
       log("Filter cleared");
       refresh();
     });
     connect(filterCombo_->lineEdit(), &QLineEdit::returnPressed, this,
-            [this]() { refresh(); });
+            [this]() {
+              includeFilesText_ = filterCombo_->currentText();
+              refresh();
+            });
     connect(filterCombo_, QOverload<int>::of(&QComboBox::activated), this,
-            [this](int) { refresh(); });
+            [this](int) {
+              includeFilesText_ = filterCombo_->currentText();
+              refresh();
+            });
+    connect(nameFiltersButton_, &QPushButton::clicked, this,
+            [this]() { editNameFilters(); });
 
     for (auto *action : showActions_) {
       connect(action, &QAct::toggled, this,
@@ -3092,9 +3339,15 @@ private:
   QLabel *rightFree_ = nullptr;
   QComboBox *modeCombo_ = nullptr;
   QComboBox *filterCombo_ = nullptr;
+  QPushButton *nameFiltersButton_ = nullptr;
   QPlainTextEdit *console_ = nullptr;
   QSplitter *splitter_ = nullptr;
   QSettings *preferences_ = nullptr;
+  OptionsStore *optionsStore_ = nullptr;
+  QString includeFilesText_ = QStringLiteral("*.*");
+  QString excludeFilesText_;
+  QString includeFoldersText_ = QStringLiteral("*");
+  QString excludeFoldersText_ = QStringLiteral(".git\nnode_modules");
   std::unique_ptr<FileChangeController> changes_;  // external-change notice + reload (common/file_change_controller.h)
   QSet<QString> expandedPaths_;
   ViewState pendingView_;        // scroll position / selection to restore after the running refresh

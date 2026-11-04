@@ -416,6 +416,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
 
     addSession = [&](const QString& left, const QString& right, bool run) -> FolderCompareViewer* {
         auto* session = new FolderCompareViewer(&preferences);
+        session->setOptionsStore(&optionsStore);
         session->setPaths(left, right);
         registerInstrumentationSession(session->instrumentationSessionId(), session->title());
         session->onComparisonRequested = [&](const QString& requestedLeft, const QString& requestedRight) {

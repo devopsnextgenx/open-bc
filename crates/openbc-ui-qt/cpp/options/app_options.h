@@ -6,7 +6,7 @@
 //
 // OptionsStore: the single owner of the *committed* options.
 //
-// PERSISTENCE: Appearance, syntaxMappings and Archive Types are saved/loaded (preferences.ini);
+// PERSISTENCE: Appearance, syntaxMappings, Archive Types, and Folder Filters are saved/loaded (preferences.ini);
 // other pages are still in-memory. The dialog edits a copy of AppOptions; OK/Apply hands it to
 // OptionsStore::commit(), which persists implemented fields and notifies listeners.
 // The persisted profile includes `syntaxMappings`: OptionsStore hands it to
@@ -20,6 +20,7 @@
 #pragma once
 
 #include <QColor>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSettings>
@@ -27,6 +28,7 @@
 #include <QMap>
 #include <QString>
 #include <QStringList>
+#include <algorithm>
 #include <functional>
 #include <utility>
 #include <vector>
@@ -72,6 +74,30 @@ struct CommandBinding {
     QString defaultShortcut;
     QString description;
 };
+
+struct FolderFilterPreset {
+    QString name;
+    QString includeFiles = QStringLiteral("*.*");
+    QString excludeFiles;
+    QString includeFolders = QStringLiteral("*");
+    QString excludeFolders;
+    bool builtIn = false;
+};
+
+inline QList<FolderFilterPreset> defaultFolderFilterPresets() {
+    return {
+        {QStringLiteral("Source code"),
+         QStringLiteral("*.c;*.cpp;*.h;*.hpp;*.cs;*.java;*.js;*.ts;*.tsx;*.py;*.rs;*.go"),
+         {}, QStringLiteral("*"), {}, true},
+        {QStringLiteral("Web"), QStringLiteral("*.html;*.htm;*.css;*.js;*.ts;*.json"),
+         {}, QStringLiteral("*"), {}, true},
+        {QStringLiteral("Exclude VCS folders"), QStringLiteral("*.*"), {},
+         QStringLiteral("*"), QStringLiteral(".git;.svn;.hg"), true},
+        {QStringLiteral("Exclude build output"), QStringLiteral("*.*"), {},
+         QStringLiteral("*"),
+         QStringLiteral("node_modules;target;dist;build;bin;obj"), true},
+    };
+}
 
 struct AppOptions {
     // ---- Startup ----------------------------------------------------------
@@ -154,6 +180,10 @@ struct AppOptions {
     // The user's extension / file name -> language rules, on top of the built-in table.
     QList<SyntaxMapping> syntaxMappings;
 
+    // ---- Folder Compare Name Filters --------------------------------------
+    QList<FolderFilterPreset> folderFilterPresets = defaultFolderFilterPresets();
+    QString defaultFolderFilterPreset;
+
     // ---- Commands ---------------------------------------------------------
     bool largeToolbarButtonsWithText = true;
     // Key: view name ("Home", "Folder Compare", ...).
@@ -223,7 +253,7 @@ public:
     std::function<void(ThemeChoice)> previewTheme;
 
     // Reads the saved profile from preferences.ini; missing keys keep the AppOptions{} defaults.
-    // Appearance, Syntax Highlighting and Archive Types are persisted.
+    // Appearance, Syntax Highlighting, Archive Types, and Folder Filters are persisted.
     void load() {
         options_ = AppOptions{};
         options_.syntaxMappings = SyntaxMappingStore::instance().mappings();
@@ -252,6 +282,52 @@ public:
             if (c.text.isValid() && c.background.isValid() && c.folderInfo.isValid())
                 options_.colors.insert(it.key(), c);
         }
+        const QJsonArray filterPresets =
+            QJsonDocument::fromJson(p.value("folderFilters/presets").toString().toUtf8())
+                .array();
+        if (!filterPresets.isEmpty()) {
+            const QList<FolderFilterPreset> builtInPresets =
+                defaultFolderFilterPresets();
+            options_.folderFilterPresets.clear();
+            for (const QJsonValue& value : filterPresets) {
+                const QJsonObject preset = value.toObject();
+                const QString name = preset.value("name").toString().trimmed();
+                if (name.isEmpty())
+                    continue;
+                const bool duplicate = std::any_of(
+                    options_.folderFilterPresets.cbegin(),
+                    options_.folderFilterPresets.cend(),
+                    [&name](const FolderFilterPreset& existing) {
+                        return existing.name.compare(name, Qt::CaseInsensitive) == 0;
+                    });
+                if (duplicate)
+                    continue;
+                bool builtIn = preset.value("builtIn").toBool(false);
+                if (!preset.contains("builtIn")) {
+                    builtIn = std::any_of(
+                        builtInPresets.cbegin(), builtInPresets.cend(),
+                        [&name](const FolderFilterPreset& value) {
+                            return value.name == name;
+                        });
+                }
+                options_.folderFilterPresets.append(
+                    {name, preset.value("includeFiles").toString(QStringLiteral("*.*")),
+                     preset.value("excludeFiles").toString(),
+                     preset.value("includeFolders").toString(QStringLiteral("*")),
+                     preset.value("excludeFolders").toString(), builtIn});
+            }
+            if (options_.folderFilterPresets.isEmpty())
+                options_.folderFilterPresets = defaultFolderFilterPresets();
+        }
+        options_.defaultFolderFilterPreset =
+            p.value("folderFilters/defaultPreset").toString();
+        if (std::none_of(options_.folderFilterPresets.cbegin(),
+                         options_.folderFilterPresets.cend(),
+                         [this](const FolderFilterPreset& preset) {
+                             return preset.name ==
+                                    options_.defaultFolderFilterPreset;
+                         }))
+            options_.defaultFolderFilterPreset.clear();
         options_.javaDecompilerEnabled =
             p.value("ArchiveTypes/JavaDecompilerEnabled", options_.javaDecompilerEnabled).toBool();
         options_.decompilerJarPath = p.value("ArchiveTypes/DecompilerJarPath").toString();
@@ -280,6 +356,20 @@ public:
         }
         p.setValue("appearance/colors",
                    QString::fromUtf8(QJsonDocument(colors).toJson(QJsonDocument::Compact)));
+        QJsonArray filterPresets;
+        for (const FolderFilterPreset& preset : options_.folderFilterPresets) {
+            filterPresets.append(QJsonObject{
+                {"name", preset.name},
+                {"includeFiles", preset.includeFiles},
+                {"excludeFiles", preset.excludeFiles},
+                {"includeFolders", preset.includeFolders},
+                {"excludeFolders", preset.excludeFolders},
+                {"builtIn", preset.builtIn},
+            });
+        }
+        p.setValue("folderFilters/presets",
+                   QString::fromUtf8(QJsonDocument(filterPresets).toJson(QJsonDocument::Compact)));
+        p.setValue("folderFilters/defaultPreset", options_.defaultFolderFilterPreset);
         p.remove("theme/dark");   // superseded by appearance/theme
         p.sync();
     }

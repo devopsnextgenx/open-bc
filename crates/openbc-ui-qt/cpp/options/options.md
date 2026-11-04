@@ -41,6 +41,7 @@ To implement a page: (1) load/persist its fields in `OptionsStore`, (2) add a li
 | Syntax Highlighting | `syntaxMappings` via `SyntaxMappingStore` (preferences.ini, backend, re-highlight) |
 | Appearance | Saved by `OptionsStore` (`appearance/*` in preferences.ini), applied by `AppearanceController` (`appearance_controller.h`). Theme + Preview (`OptionsStore::previewTheme`, reverted on Cancel; `View > Dark Theme` commits the same option). File Compare viewer default font: DejaVu Sans Mono (system fixed-width fallback); Text Compare's custom font remains configurable via `QFontComboBox` and is pushed to `LineNumberEditor::applyEditorFont`. Colors go through `appearance::state()` (`appearance_state.h`, read by `style/qt_style.h`): Folder Views (Default text/Folder info, Selection, Unknown/Same/Orphan/Older/Newer/Different, Log panel), File Views (Default text, Line numbers, Selection, Different/Left only/Right only/Unimportant), stripes, center gradient (`#folderGutter`), folder-icon coloring. **No consumer yet** (kept, no effect): Folder Views "Filtered out"/"Merge colors", File Views "Same", all Picture Compare colors. |
 | Archive Types | `javaDecompilerEnabled`, `decompilerJarPath`, `javaBinPath` (`ArchiveTypes/*` in preferences.ini); Java class decompilation reads the current values for each operation |
+| Folder Filters | Named include/exclude file and folder masks plus the default preset for new folder comparisons (`folderFilters/*` in preferences.ini) |
 
 ## In progress (UI only)
 | Page | Fields (AppOptions) | Where it should take effect |

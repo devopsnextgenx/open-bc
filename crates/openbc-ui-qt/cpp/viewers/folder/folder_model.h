@@ -73,49 +73,108 @@ inline QString freeSpaceText(const QString& path) {
 }
 
 // ---------------------------------------------------------------------------
-// File-name filter: "*.cpp;*.h", "*.txt", or a plain substring like "foo".
-// Applies to files only; folders are always listed so their contents stay
-// reachable.
+// Name masks support wildcards, substrings, and base-folder-relative paths.
+// File and folder inclusion/exclusion are configured separately.
 // ---------------------------------------------------------------------------
 
 class NameFilter {
 public:
-    static NameFilter parse(const QString& text) {
+    static NameFilter parse(const QString& text, bool emptyMatchesAll = true) {
         NameFilter filter;
-        const QString trimmed = text.trimmed();
-        if (trimmed.isEmpty() || trimmed == "*" || trimmed == "*.*") {
+        filter.matchAll_ = emptyMatchesAll;
+        const QStringList tokens =
+            text.split(QRegularExpression("[;\\r\\n]+"), Qt::SkipEmptyParts);
+        for (QString token : tokens) {
+            token = token.trimmed();
+            if (token.isEmpty())
+                continue;
+            if (token == "*" || token == "*.*")
+                return NameFilter();
+            const bool pathPattern = token.contains('/') || token.contains('\\');
+            token.replace('\\', '/');
+            while (token.startsWith('/'))
+                token.remove(0, 1);
+            if (!pathPattern && !token.contains('*') && !token.contains('?'))
+                token = "*" + token + "*";
+            if (token == "*.*")
+                token = "*";
+            filter.patterns_.emplace_back(
+                QRegularExpression::wildcardToRegularExpression(token),
+                QRegularExpression::CaseInsensitiveOption);
+            filter.pathPatterns_.push_back(pathPattern);
+            filter.patternTexts_.append(token);
+        }
+        if (filter.patterns_.empty()) {
+            filter.matchAll_ = emptyMatchesAll;
             return filter;
         }
-        const QStringList tokens =
-            trimmed.split(QRegularExpression("[;,\\s]+"), Qt::SkipEmptyParts);
-        for (QString token : tokens) {
-            if (token == "*" || token == "*.*") {
-                return NameFilter();
-            }
-            if (!token.contains('*') && !token.contains('?')) {
-                token = "*" + token + "*";
-            }
-            filter.patterns_.emplace_back(QRegularExpression::wildcardToRegularExpression(token),
-                                          QRegularExpression::CaseInsensitiveOption);
-        }
-        filter.matchAll_ = filter.patterns_.empty();
+        filter.matchAll_ = false;
         return filter;
     }
 
-    bool matches(const QString& name) const {
+    bool matches(const QString& relativePath) const {
         if (matchAll_) {
             return true;
         }
-        for (const auto& pattern : patterns_) {
-            if (pattern.match(name).hasMatch()) {
+        const QString normalized = QString(relativePath).replace('\\', '/');
+        const QString name = normalized.section('/', -1);
+        for (size_t i = 0; i < patterns_.size(); ++i) {
+            const QString candidate = pathPatterns_[i] ? normalized : name;
+            if (patterns_[i].match(candidate).hasMatch()) {
                 return true;
             }
         }
         return false;
     }
 
+    bool matchesOrHasMatchingDescendant(const QString& relativePath) const {
+        if (matches(relativePath))
+            return true;
+        QString prefix = QString(relativePath).replace('\\', '/');
+        if (!prefix.isEmpty() && !prefix.endsWith('/'))
+            prefix += '/';
+        for (size_t i = 0; i < patterns_.size(); ++i) {
+            if (pathPatterns_[i] &&
+                globCanMatchPrefix(patternTexts_[static_cast<int>(i)], prefix))
+                return true;
+        }
+        return false;
+    }
+
 private:
+    static bool globCanMatchPrefix(const QString& pattern,
+                                   const QString& prefix) {
+        std::vector<bool> states(static_cast<size_t>(pattern.size() + 1), false);
+        states[0] = true;
+        const auto closeStars = [&pattern](std::vector<bool>& current) {
+            for (int i = 0; i < pattern.size(); ++i) {
+                if (current[static_cast<size_t>(i)] && pattern[i] == '*')
+                    current[static_cast<size_t>(i + 1)] = true;
+            }
+        };
+        closeStars(states);
+        for (const QChar character : prefix) {
+            std::vector<bool> next(states.size(), false);
+            for (int i = 0; i < pattern.size(); ++i) {
+                if (!states[static_cast<size_t>(i)])
+                    continue;
+                if (pattern[i] == '*') {
+                    next[static_cast<size_t>(i)] = true;
+                } else if (pattern[i] == '?' ||
+                           pattern[i].toCaseFolded() == character.toCaseFolded()) {
+                    next[static_cast<size_t>(i + 1)] = true;
+                }
+            }
+            states = std::move(next);
+            closeStars(states);
+        }
+        return std::any_of(states.cbegin(), states.cend(),
+                           [](bool active) { return active; });
+    }
+
     std::vector<QRegularExpression> patterns_;
+    std::vector<bool> pathPatterns_;
+    QStringList patternTexts_;
     bool matchAll_ = true;
 };
 
@@ -124,7 +183,10 @@ struct CompareOptions {
     bool ignoreTimestamps = false;
     // Show differing archive pairs (zip, 7z, tar.gz, ...) as expandable folders.
     bool archivesAsFolders = true;
-    NameFilter filter;
+    NameFilter includeFiles = NameFilter::parse("*.*");
+    NameFilter excludeFiles = NameFilter::parse({}, false);
+    NameFilter includeFolders = NameFilter::parse("*");
+    NameFilter excludeFolders = NameFilter::parse({}, false);
 };
 
 // ---------------------------------------------------------------------------

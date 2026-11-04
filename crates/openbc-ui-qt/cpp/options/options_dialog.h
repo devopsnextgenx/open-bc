@@ -36,6 +36,7 @@
 #include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
 #include <QMouseEvent>
+#include <QMessageBox>
 #include <QSizeGrip>
 #include <QWindow>
 #include <QFontDialog>
@@ -194,6 +195,7 @@ public:
             {"Backups", buildBackups()},
             {"File Operations", buildFileOperations()},
             {"Archive Types", buildArchiveTypes()},
+            {"Folder Filters", buildFolderFilters()},
             {"Commands", buildCommands()},
             {"Open With", buildPlaceholder("Open With")},
             {"Tweaks", buildTweaks()},
@@ -1169,6 +1171,209 @@ private:
         connect(enabled, &QCheckBox::toggled, this, updateEnabledControls);
         updateEnabledControls();
         v->addStretch(1);
+        return page;
+    }
+
+    QWidget* buildFolderFilters() {
+        auto* page = new QWidget;
+        auto* root = new QVBoxLayout(page);
+        auto* tabs = new QTabWidget(page);
+        auto* nameFilters = new QWidget(tabs);
+        auto* nameLayout = new QVBoxLayout(nameFilters);
+        nameLayout->addWidget(heading("Name Filters"));
+        nameLayout->addWidget(new QLabel(
+            "Choose the filter preset applied to each new folder comparison."));
+        auto* defaultPreset = new QComboBox(nameFilters);
+        defaultPreset->addItem("Built-in default", QString());
+        for (const FolderFilterPreset& preset : draft_.folderFilterPresets)
+            defaultPreset->addItem(preset.name, preset.name);
+        const int defaultIndex =
+            defaultPreset->findData(draft_.defaultFolderFilterPreset);
+        defaultPreset->setCurrentIndex(defaultIndex < 0 ? 0 : defaultIndex);
+        nameLayout->addWidget(new QLabel("Default preset for folders:"));
+        nameLayout->addWidget(defaultPreset, 0, Qt::AlignLeft);
+        nameLayout->addStretch(1);
+        tabs->addTab(nameFilters, "Name Filters");
+
+        auto* misc = new QWidget(tabs);
+        auto* miscLayout = new QVBoxLayout(misc);
+        miscLayout->addWidget(heading("Name filter presets"));
+        auto* table = new QTableWidget(0, 5, misc);
+        table->setHorizontalHeaderLabels(
+            {"Name", "Include files", "Exclude files", "Include folders",
+             "Exclude folders"});
+        table->verticalHeader()->hide();
+        table->setSelectionBehavior(QAbstractItemView::SelectRows);
+        table->setSelectionMode(QAbstractItemView::SingleSelection);
+        table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        table->horizontalHeader()->setStretchLastSection(true);
+        table->horizontalHeader()->setSectionResizeMode(
+            0, QHeaderView::ResizeToContents);
+        miscLayout->addWidget(table, 1);
+
+        auto* name = new QLineEdit(misc);
+        auto* includeFiles = new QLineEdit(misc);
+        auto* excludeFiles = new QLineEdit(misc);
+        auto* includeFolders = new QLineEdit(misc);
+        auto* excludeFolders = new QLineEdit(misc);
+        auto* fields = new QGridLayout;
+        fields->addWidget(new QLabel("Name"), 0, 0);
+        fields->addWidget(name, 0, 1);
+        fields->addWidget(new QLabel("Include files"), 1, 0);
+        fields->addWidget(includeFiles, 1, 1);
+        fields->addWidget(new QLabel("Exclude files"), 2, 0);
+        fields->addWidget(excludeFiles, 2, 1);
+        fields->addWidget(new QLabel("Include folders"), 3, 0);
+        fields->addWidget(includeFolders, 3, 1);
+        fields->addWidget(new QLabel("Exclude folders"), 4, 0);
+        fields->addWidget(excludeFolders, 4, 1);
+        miscLayout->addLayout(fields);
+        auto* add = new QPushButton("Add");
+        auto* update = new QPushButton("Update");
+        auto* remove = new QPushButton("Delete");
+        auto* defaults = new QPushButton("Defaults");
+        auto* buttons = new QHBoxLayout;
+        buttons->addWidget(add);
+        buttons->addWidget(update);
+        buttons->addWidget(remove);
+        buttons->addStretch(1);
+        buttons->addWidget(defaults);
+        miscLayout->addLayout(buttons);
+        tabs->addTab(misc, "Misc");
+        root->addWidget(tabs);
+
+        const auto refreshTable = [this, table]() {
+            table->setRowCount(0);
+            for (const FolderFilterPreset& preset : draft_.folderFilterPresets) {
+                const int row = table->rowCount();
+                table->insertRow(row);
+                const QStringList values{preset.name, preset.includeFiles,
+                                         preset.excludeFiles, preset.includeFolders,
+                                         preset.excludeFolders};
+                for (int column = 0; column < values.size(); ++column)
+                    table->setItem(row, column, new QTableWidgetItem(values[column]));
+            }
+        };
+        const auto refreshDefaultPresets = [this, defaultPreset]() {
+            const QString selected = draft_.defaultFolderFilterPreset;
+            const QSignalBlocker blocker(defaultPreset);
+            defaultPreset->clear();
+            defaultPreset->addItem("Built-in default", QString());
+            for (const FolderFilterPreset& preset : draft_.folderFilterPresets)
+                defaultPreset->addItem(preset.name, preset.name);
+            const int index = defaultPreset->findData(selected);
+            defaultPreset->setCurrentIndex(index < 0 ? 0 : index);
+        };
+        const auto clearEditor = [name, includeFiles, excludeFiles, includeFolders,
+                                  excludeFolders]() {
+            name->clear();
+            includeFiles->setText("*.*");
+            excludeFiles->clear();
+            includeFolders->setText("*");
+            excludeFolders->clear();
+        };
+        refreshTable();
+        clearEditor();
+
+        connect(defaultPreset, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this, defaultPreset](int) {
+                    draft_.defaultFolderFilterPreset =
+                        defaultPreset->currentData().toString();
+                    markDirty();
+                });
+        connect(table, &QTableWidget::itemSelectionChanged, this,
+                [table, name, includeFiles, excludeFiles, includeFolders,
+                 excludeFolders]() {
+                    const int row = table->currentRow();
+                    if (row < 0)
+                        return;
+                    name->setText(table->item(row, 0)->text());
+                    includeFiles->setText(table->item(row, 1)->text());
+                    excludeFiles->setText(table->item(row, 2)->text());
+                    includeFolders->setText(table->item(row, 3)->text());
+                    excludeFolders->setText(table->item(row, 4)->text());
+                });
+        connect(add, &QPushButton::clicked, this,
+                [this, name, includeFiles, excludeFiles, includeFolders,
+                 excludeFolders, table, refreshTable,
+                 refreshDefaultPresets]() {
+                    const QString presetName = name->text().trimmed();
+                    if (presetName.isEmpty()) {
+                        QMessageBox::warning(this, "Folder filters",
+                                             "Enter a preset name.");
+                        return;
+                    }
+                    for (const FolderFilterPreset& preset :
+                         draft_.folderFilterPresets) {
+                        if (preset.name.compare(presetName, Qt::CaseInsensitive) == 0) {
+                            QMessageBox::warning(this, "Folder filters",
+                                                 "A preset with that name already exists.");
+                            return;
+                        }
+                    }
+                    draft_.folderFilterPresets.append(
+                        {presetName, includeFiles->text(), excludeFiles->text(),
+                         includeFolders->text(), excludeFolders->text()});
+                    refreshTable();
+                    refreshDefaultPresets();
+                    table->selectRow(table->rowCount() - 1);
+                    markDirty();
+                });
+        connect(update, &QPushButton::clicked, this,
+                [this, name, includeFiles, excludeFiles, includeFolders,
+                 excludeFolders, table, refreshTable,
+                 refreshDefaultPresets]() {
+                    const int row = table->currentRow();
+                    const QString presetName = name->text().trimmed();
+                    if (row < 0 || presetName.isEmpty())
+                        return;
+                    for (int i = 0; i < draft_.folderFilterPresets.size(); ++i) {
+                        if (i != row &&
+                            draft_.folderFilterPresets[i].name.compare(
+                                presetName, Qt::CaseInsensitive) == 0) {
+                            QMessageBox::warning(this, "Folder filters",
+                                                 "A preset with that name already exists.");
+                            return;
+                        }
+                    }
+                    const QString previousName =
+                        draft_.folderFilterPresets[row].name;
+                    draft_.folderFilterPresets[row] =
+                        {presetName, includeFiles->text(), excludeFiles->text(),
+                         includeFolders->text(), excludeFolders->text()};
+                    if (draft_.defaultFolderFilterPreset == previousName)
+                        draft_.defaultFolderFilterPreset = presetName;
+                    refreshTable();
+                    refreshDefaultPresets();
+                    table->selectRow(row);
+                    markDirty();
+                });
+        connect(remove, &QPushButton::clicked, this,
+                [this, table, refreshTable, refreshDefaultPresets,
+                 clearEditor]() {
+                    const int row = table->currentRow();
+                    if (row < 0)
+                        return;
+                    const QString removed = draft_.folderFilterPresets[row].name;
+                    draft_.folderFilterPresets.removeAt(row);
+                    if (draft_.defaultFolderFilterPreset == removed)
+                        draft_.defaultFolderFilterPreset.clear();
+                    refreshDefaultPresets();
+                    refreshTable();
+                    clearEditor();
+                    markDirty();
+                });
+        connect(defaults, &QPushButton::clicked, this,
+                [this, defaultPreset, refreshTable, refreshDefaultPresets,
+                 clearEditor]() {
+                    draft_.folderFilterPresets = defaultFolderFilterPresets();
+                    draft_.defaultFolderFilterPreset.clear();
+                    refreshDefaultPresets();
+                    refreshTable();
+                    clearEditor();
+                    markDirty();
+                });
+
         return page;
     }
 
