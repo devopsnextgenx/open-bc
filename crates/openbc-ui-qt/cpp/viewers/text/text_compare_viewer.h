@@ -250,6 +250,7 @@ private:
     static constexpr quint64 kMaxLargeCompareFileBytes = 500ULL * 1024 * 1024;
     static constexpr quint64 kEstimatedCompareBytesPerInputByte = 8;
     static constexpr int kLargePageLineCount = 512;
+    static constexpr int kLargePageBoundaryCarryRows = 128;
     static constexpr int kLargeLineByteLimit = 64 * 1024;
     static constexpr qint64 kLargePageByteLimit = 4 * 1024 * 1024;
 
@@ -280,6 +281,25 @@ private:
         qint64 nextOffset = -1;
         QString error;
     };
+
+    static int largePageBoundaryCarryRows(const QVector<TextDiffLine>& rows) {
+        if (rows.isEmpty()) return 0;
+        int carry = 0;
+        for (int i = rows.size() - 1; i >= 0; --i) {
+            const TextDiffLine& row = rows[i];
+            const bool leftHasLine = row.leftNumber > 0;
+            const bool rightHasLine = row.rightNumber > 0;
+            if (!leftHasLine && !rightHasLine) {
+                continue;
+            }
+            if (leftHasLine == rightHasLine) {
+                break;
+            }
+            ++carry;
+            if (carry >= kLargePageBoundaryCarryRows) break;
+        }
+        return carry;
+    }
 
     static LargePage readLargePage(const QString& path, qint64 offset) {
         LargePage page;
@@ -397,25 +417,26 @@ private:
             int leftCarry = 0;
             int rightCarry = 0;
             if (leftPage.nextOffset >= 0 || rightPage.nextOffset >= 0) {
-                int trailingStart = rows.size();
-                while (trailingStart > 0) {
-                    const TextDiffLine& row = rows[trailingStart - 1];
-                    if ((row.leftNumber > 0) == (row.rightNumber > 0)) break;
-                    --trailingStart;
+                // Keep only a bounded trailing boundary window across chunk boundaries. This avoids
+                // the old page-local desynchronization where a single insertion/deletion larger than
+                // the current 512-line page could permanently drift the alignments.
+                const int retainedRows = largePageBoundaryCarryRows(rows);
+                if (retainedRows > 0) {
+                    for (int i = rows.size() - retainedRows; i < rows.size(); ++i) {
+                        if (rows[i].leftNumber > 0) ++leftCarry;
+                        if (rows[i].rightNumber > 0) ++rightCarry;
+                    }
+                    rows.resize(rows.size() - retainedRows);
                 }
-                const int retainedRows = qMin(64, rows.size() - trailingStart);
-                for (int i = rows.size() - retainedRows; i < rows.size(); ++i) {
-                    if (rows[i].leftNumber > 0) ++leftCarry;
-                    if (rows[i].rightNumber > 0) ++rightCarry;
-                }
-                rows.resize(rows.size() - retainedRows);
             }
             const int leftConsumed = leftPage.lines.size() - leftCarry;
             const int rightConsumed = rightPage.lines.size() - rightCarry;
             const qint64 leftNextOffset = leftCarry > 0
-                ? leftPage.lineOffsets[leftConsumed] : leftPage.nextOffset;
+                ? leftPage.lineOffsets.value(leftConsumed, leftPage.nextOffset)
+                : leftPage.nextOffset;
             const qint64 rightNextOffset = rightCarry > 0
-                ? rightPage.lineOffsets[rightConsumed] : rightPage.nextOffset;
+                ? rightPage.lineOffsets.value(rightConsumed, rightPage.nextOffset)
+                : rightPage.nextOffset;
             if (minor) {
                 for (auto& row : rows) if (row.whitespaceOnly) row.changed = false;
             }

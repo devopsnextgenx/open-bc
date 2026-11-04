@@ -14,6 +14,7 @@
 //! User mappings are process-wide and replaced as a whole ([`set_user_mappings`]); every later
 //! highlight call sees them, so open documents only have to ask for a fresh highlight.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
@@ -74,9 +75,22 @@ fn index() -> &'static Index {
 /// User key (lower-case extension or file name) to an index into [`LANGUAGES`].
 type UserMap = HashMap<String, usize>;
 
-fn user_map() -> &'static RwLock<UserMap> {
+fn global_user_map() -> &'static RwLock<UserMap> {
     static MAP: OnceLock<RwLock<UserMap>> = OnceLock::new();
     MAP.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+// A thread-local override keeps per-worker syntax mapping changes isolated while the global
+// fallback still behaves like one process-wide registry for the default case.
+thread_local! {
+    static USER_MAP: RefCell<Option<UserMap>> = RefCell::new(None);
+}
+
+fn user_map() -> UserMap {
+    USER_MAP.with(|map| match map.borrow().as_ref() {
+        Some(user) => user.clone(),
+        None => global_user_map().read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone(),
+    })
 }
 
 /// Candidate keys for a file name, most specific first: `a.test.ts` gives `a.test.ts`, `test.ts`,
@@ -112,7 +126,7 @@ fn lookup(user: &UserMap, token: &str) -> Option<usize> {
 
 /// Resolves `token` to a grammar route; unknown tokens render as plain text.
 pub(super) fn route(token: &str) -> Route {
-    let user = user_map().read().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let user = user_map();
     lookup(&user, token).map_or(Route::Plain, |i| LANGUAGES[i].grammar.into())
 }
 
@@ -153,7 +167,10 @@ where
         }
     }
     let applied = next.len();
-    *user_map().write().unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
+    USER_MAP.with(|map| {
+        *map.borrow_mut() = Some(next.clone());
+    });
+    *global_user_map().write().unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
     applied
 }
 
