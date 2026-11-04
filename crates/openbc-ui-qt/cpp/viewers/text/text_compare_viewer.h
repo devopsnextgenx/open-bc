@@ -48,6 +48,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QFile>
 #include <QVBoxLayout>
 #include <QVector>
 #include <QWidget>
@@ -82,12 +83,13 @@ public:
                     leftRaw_(leftText), rightRaw_(rightText),
                     classFileCompare_(isJavaClassFilePath(leftPath) ||
                                       isJavaClassFilePath(rightPath)) {
+        largeFileMode_ = shouldUseLargeFileMode(leftPath_, rightPath_, leftText, rightText);
         setObjectName("textCompareView");
         setFont(defaultCompareFont());
         buildUi();
         updateClassFileUi(/*resetDecompileMode=*/false);
-        // Per side: re-read just that file. The text was handed in by the caller, so the baseline for
-        // the initial load is taken here (a change between that read and this line is not seen).
+        // Watch each side independently; loads are routed through the viewer so large local files
+        // can be paged without first materializing their complete contents.
         changes_ = std::make_unique<FileChangeController>(
             this,
             [this](std::uint8_t side) {
@@ -98,8 +100,18 @@ public:
         changes_->track(0, leftPath_);
         changes_->track(1, rightPath_);
         connectSignals();
-        showRawText();
-        beginAsyncRebuild();
+        if (largeFileMode_) {
+            updateClassFileUi(/*resetDecompileMode=*/false);
+            loadLargePage(/*next=*/false);
+        } else if (leftRaw_.isNull() && rightRaw_.isNull() &&
+                   (!leftPath_.isEmpty() || !rightPath_.isEmpty())) {
+            showRawText();
+            if (!leftPath_.isEmpty()) loadSide(true, leftPath_);
+            if (!rightPath_.isEmpty()) loadSide(false, rightPath_);
+        } else {
+            showRawText();
+            beginAsyncRebuild();
+        }
     }
 
     QString title() const {
@@ -183,6 +195,206 @@ protected:
     }
 
 private:
+    static constexpr quint64 kLargeCompareMemoryBudget = 300ULL * 1024 * 1024;
+    static constexpr quint64 kMaxLargeCompareFileBytes = 500ULL * 1024 * 1024;
+    static constexpr quint64 kEstimatedCompareBytesPerInputByte = 8;
+    static constexpr int kLargePageLineCount = 512;
+    static constexpr int kLargeLineByteLimit = 64 * 1024;
+    static constexpr qint64 kLargePageByteLimit = 4 * 1024 * 1024;
+
+    static bool shouldUseLargeFileMode(const QString& leftPath, const QString& rightPath,
+                                       const QString& leftText, const QString& rightText) {
+        quint64 inputBytes = static_cast<quint64>(leftText.size()) * 2 +
+                             static_cast<quint64>(rightText.size()) * 2;
+        quint64 fileBytes = 0;
+        bool hasLocalFile = false;
+        for (const QString& path : {leftPath, rightPath}) {
+            if (path.isEmpty()) continue;
+            const QFileInfo info(path);
+            if (info.exists() && info.isFile()) {
+                hasLocalFile = true;
+                fileBytes += static_cast<quint64>(info.size());
+            }
+        }
+        if (!hasLocalFile) return false;
+        inputBytes = qMax(inputBytes, fileBytes);
+        // Diff rows and Qt text blocks can expand input several-fold; route to bounded pages
+        // before the estimated viewer working set crosses its 300 MiB budget.
+        return inputBytes > kLargeCompareMemoryBudget / kEstimatedCompareBytesPerInputByte;
+    }
+
+    struct LargePage {
+        QStringList lines;
+        qint64 nextOffset = -1;
+        QString error;
+    };
+
+    static LargePage readLargePage(const QString& path, qint64 offset) {
+        LargePage page;
+        if (path.isEmpty() || offset < 0) return page;
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            page.error = file.errorString();
+            return page;
+        }
+        if (!file.seek(offset)) {
+            page.error = file.errorString();
+            return page;
+        }
+        qint64 pageBytes = 0;
+        while (page.lines.size() < kLargePageLineCount &&
+               pageBytes < kLargePageByteLimit && !file.atEnd()) {
+            const qint64 lineStart = file.pos();
+            QByteArray line = file.readLine(kLargeLineByteLimit + 1);
+            if (line.isEmpty()) break;
+            const bool truncated = line.size() > kLargeLineByteLimit ||
+                                   (!line.endsWith('\n') && !file.atEnd() &&
+                                    line.size() >= kLargeLineByteLimit);
+            if (truncated) {
+                line.truncate(kLargeLineByteLimit);
+                while (!file.atEnd()) {
+                    const QByteArray tail = file.readLine(4096);
+                    if (tail.isEmpty() || tail.endsWith('\n')) break;
+                }
+                line += QByteArrayLiteral(" ... [line truncated at 64 KiB]");
+            }
+            if (line.endsWith('\n')) line.chop(1);
+            if (line.endsWith('\r')) line.chop(1);
+            page.lines.push_back(QString::fromUtf8(line));
+            pageBytes += file.pos() - lineStart;
+        }
+        page.nextOffset = file.atEnd() ? -1 : file.pos();
+        return page;
+    }
+
+    void loadLargePage(bool next) {
+        if (!largeFileMode_ || largePageLoading_) return;
+        if (next && largePageIndex_ >= 0) {
+            if ((leftPath_.isEmpty() || largeLeftNextOffset_ < 0) &&
+                (rightPath_.isEmpty() || largeRightNextOffset_ < 0)) return;
+            const int nextIndex = largePageIndex_ + 1;
+            if (nextIndex < largeLeftPageOffsets_.size() &&
+                nextIndex < largeRightPageOffsets_.size()) {
+                largePageIndex_ = nextIndex;
+            } else {
+                largeLeftPageOffsets_.push_back(largeLeftNextOffset_);
+                largeRightPageOffsets_.push_back(largeRightNextOffset_);
+                largeLeftLineStarts_.push_back(largeLeftLineStarts_.last() + leftOriginal_.size());
+                largeRightLineStarts_.push_back(largeRightLineStarts_.last() + rightOriginal_.size());
+                largePageIndex_ = nextIndex;
+            }
+        } else if (!next && largePageIndex_ < 0) {
+            largeLeftPageOffsets_ = {0};
+            largeRightPageOffsets_ = {0};
+            largeLeftLineStarts_ = {0};
+            largeRightLineStarts_ = {0};
+            largePageIndex_ = 0;
+        } else if (!next && largePageIndex_ > 0) {
+            --largePageIndex_;
+        }
+        largePageLoading_ = true;
+        ++loadGeneration_;
+        previousLargePageAction_->setEnabled(false);
+        nextLargePageAction_->setEnabled(false);
+        progress_->show();
+        const int generation = ++largePageGeneration_;
+        const QString leftPath = leftPath_;
+        const QString rightPath = rightPath_;
+        const qint64 leftOffset = largeLeftPageOffsets_.value(largePageIndex_, -1);
+        const qint64 rightOffset = largeRightPageOffsets_.value(largePageIndex_, -1);
+        for (const QString& path : {leftPath, rightPath}) {
+            if (!path.isEmpty() && (!QFileInfo(path).exists() || !QFileInfo(path).isFile())) {
+                largePageLoading_ = false;
+                progress_->hide();
+                status_->setText("Large-file mode currently requires local, regular files.");
+                return;
+            }
+        }
+        if ((leftOffset >= 0 && QFileInfo(leftPath).size() > static_cast<qint64>(kMaxLargeCompareFileBytes)) ||
+            (rightOffset >= 0 && QFileInfo(rightPath).size() > static_cast<qint64>(kMaxLargeCompareFileBytes))) {
+            largePageLoading_ = false;
+            progress_->hide();
+            status_->setText(QString("Large-file mode supports local files up to 500 MiB per side."));
+            setEditabilityIndicator(false, false);
+            return;
+        }
+        const QPointer<TextCompareViewer> view(this);
+        QThreadPool::globalInstance()->start([view, generation, leftPath, rightPath,
+                                               leftOffset, rightOffset]() {
+            const LargePage left = readLargePage(leftPath, leftOffset);
+            const LargePage right = readLargePage(rightPath, rightOffset);
+            if (!view) return;
+            QMetaObject::invokeMethod(view, [view, generation, left, right]() {
+                if (!view || generation != view->largePageGeneration_) return;
+                view->largePageLoading_ = false;
+                view->progress_->hide();
+                if (!left.error.isEmpty() || !right.error.isEmpty()) {
+                    view->status_->setText("Could not load large-file block: " +
+                                            (!left.error.isEmpty() ? left.error : right.error));
+                    return;
+                }
+                if (left.nextOffset < 0 && right.nextOffset < 0 &&
+                    left.lines.isEmpty() && right.lines.isEmpty()) {
+                    view->status_->setText("No more lines to load.");
+                    return;
+                }
+                view->leftOriginal_ = left.lines;
+                view->rightOriginal_ = right.lines;
+                view->largeLeftNextOffset_ = left.nextOffset;
+                view->largeRightNextOffset_ = right.nextOffset;
+                view->previousLargePageAction_->setEnabled(view->largePageIndex_ > 0);
+                view->nextLargePageAction_->setEnabled(left.nextOffset >= 0 ||
+                                                       right.nextOffset >= 0);
+                view->leftRaw_.clear();
+                view->rightRaw_.clear();
+                view->compareLargePage();
+            }, Qt::QueuedConnection);
+        });
+    }
+
+    void compareLargePage() {
+        const QString ignoreSample = activeIgnoreSample();
+        const QString sessionId = instrumentationSessionId_;
+        const QStringList left = leftOriginal_;
+        const QStringList right = rightOriginal_;
+        const bool minor = minorAction_->isChecked();
+        const int generation = ++loadGeneration_;
+        const int pageIndex = largePageIndex_;
+        const int leftLineStart = largeLeftLineStarts_.value(pageIndex);
+        const int rightLineStart = largeRightLineStarts_.value(pageIndex);
+        const QPointer<TextCompareViewer> view(this);
+        QThreadPool::globalInstance()->start([view, generation, left, right, ignoreSample,
+                                               sessionId, minor, leftLineStart,
+                                               rightLineStart]() {
+            QVector<TextDiffLine> rows = alignTextLines(left, right, ignoreSample, sessionId);
+            if (minor) {
+                for (auto& row : rows) if (row.whitespaceOnly) row.changed = false;
+            }
+            for (auto& row : rows) {
+                if (row.leftNumber > 0) row.leftNumber += leftLineStart;
+                if (row.rightNumber > 0) row.rightNumber += rightLineStart;
+            }
+            const auto inlineDiffs = computeInlineDiffsForRows(rows, sessionId);
+            if (!view) return;
+            QMetaObject::invokeMethod(view, [view, generation, rows = std::move(rows),
+                                             inlineDiffs]() mutable {
+                if (!view || generation != view->loadGeneration_) return;
+                view->rows_ = view->visibleRows(rows);
+                if (view->rows_.size() == inlineDiffs.first.size()) {
+                    view->leftInline_ = inlineDiffs.first;
+                    view->rightInline_ = inlineDiffs.second;
+                } else {
+                    view->computeInlineDiffs(view->rows_);
+                }
+                view->applyRows(/*deferHighlighting=*/false, /*resetScroll=*/true);
+                const int leftStart = view->largeLeftLineStarts_.value(view->largePageIndex_) + 1;
+                const int rightStart = view->largeRightLineStarts_.value(view->largePageIndex_) + 1;
+                view->status_->setText(QString("Large file mode · block %1 · left line %2 · right line %3 · matching this block only")
+                                           .arg(view->largePageIndex_ + 1).arg(leftStart).arg(rightStart));
+            }, Qt::QueuedConnection);
+        });
+    }
+
     // Whichever editor pane last actually held keyboard focus. Falls back
     // to the left pane if neither has ever been focused (e.g. only the
     // toolbar has focus), so Ctrl+Z still does something sensible.
@@ -296,23 +508,63 @@ private:
             if (resetDecompileMode || modeChanged)
                 decompileJavaAction_->setChecked(classFileCompare_);
         }
+        const bool readOnly = classFileCompare_ || largeFileMode_;
         if (leftEditor_) {
-            leftEditor_->setReadOnly(classFileCompare_);
-            leftEditor_->setArrowsEnabled(!classFileCompare_);
+            leftEditor_->setReadOnly(readOnly);
+            leftEditor_->setArrowsEnabled(!readOnly);
         }
         if (rightEditor_) {
-            rightEditor_->setReadOnly(classFileCompare_);
-            rightEditor_->setArrowsEnabled(!classFileCompare_);
+            rightEditor_->setReadOnly(readOnly);
+            rightEditor_->setArrowsEnabled(!readOnly);
         }
-        if (preview_) preview_->setEditingEnabled(!classFileCompare_);
-        if (findBar_) findBar_->setReadOnly(classFileCompare_);
-        if (saveAction_) saveAction_->setEnabled(!classFileCompare_);
-        if (undoAction_) undoAction_->setEnabled(!classFileCompare_);
-        if (redoAction_) redoAction_->setEnabled(!classFileCompare_);
-        if (copyAction_) copyAction_->setEnabled(!classFileCompare_);
-        if (leftSaveButton_) leftSaveButton_->setEnabled(!classFileCompare_);
-        if (rightSaveButton_) rightSaveButton_->setEnabled(!classFileCompare_);
+        if (preview_) preview_->setEditingEnabled(!readOnly);
+        if (findBar_) findBar_->setReadOnly(readOnly);
+        if (saveAction_) saveAction_->setEnabled(!readOnly);
+        if (undoAction_) undoAction_->setEnabled(!readOnly);
+        if (redoAction_) redoAction_->setEnabled(!readOnly);
+        if (copyAction_) copyAction_->setEnabled(!readOnly);
+        if (leftSaveButton_) leftSaveButton_->setEnabled(!readOnly);
+        if (rightSaveButton_) rightSaveButton_->setEnabled(!readOnly);
+        if (previousLargePageAction_) previousLargePageAction_->setVisible(largeFileMode_);
+        if (nextLargePageAction_) nextLargePageAction_->setVisible(largeFileMode_);
+        if (previousLargePageAction_ && largeFileMode_)
+            previousLargePageAction_->setEnabled(largePageIndex_ > 0 && !largePageLoading_);
+        if (nextLargePageAction_ && largeFileMode_)
+            nextLargePageAction_->setEnabled(!largePageLoading_);
+        if (swapAction_) swapAction_->setEnabled(!largeFileMode_ && !classFileCompare_);
+        setEditabilityIndicator(!readOnly, true);
         updateUndoRedoActions();
+    }
+
+    void applyEditabilityIndicatorStyle() {
+        if (!statusIndicator_) return;
+        const QColor color = editable_ ? QColor(0x3d, 0x8b, 0xe8) : QColor(0xc8, 0x4c, 0x4c);
+        const QString background = editabilityFlashOn_ ? color.name() : QStringLiteral("transparent");
+        statusIndicator_->setStyleSheet(
+            QString("QLabel { color: #ffffff; background: %1; border: 1px solid %2; "
+                    "border-radius: 3px; padding: 1px 5px; font-weight: bold; }")
+                .arg(background, color.name()));
+    }
+
+    void setEditabilityIndicator(bool editable, bool flash) {
+        if (!statusIndicator_) return;
+        if (editabilityKnown_ && editable_ == editable && !flash) return;
+        const bool changed = editabilityKnown_ && editable_ != editable;
+        editabilityKnown_ = true;
+        editable_ = editable;
+        const int generation = ++editabilityTransitionGeneration_;
+        if (editabilityFlashTimer_) editabilityFlashTimer_->stop();
+        editabilityFlashOn_ = flash && changed;
+        statusIndicator_->setText(editable ? "EDITABLE" : "READ ONLY");
+        applyEditabilityIndicatorStyle();
+        if (!editabilityFlashOn_ || !editabilityFlashTimer_) return;
+        editabilityFlashTimer_->start(250);
+        QTimer::singleShot(3000, this, [this, generation]() {
+            if (generation != editabilityTransitionGeneration_) return;
+            if (editabilityFlashTimer_) editabilityFlashTimer_->stop();
+            editabilityFlashOn_ = false;
+            applyEditabilityIndicatorStyle();
+        });
     }
 
     void reloadClassFiles() {
@@ -393,6 +645,10 @@ private:
     }
 
     void beginAsyncRebuild() {
+        if (largeFileMode_) {
+            compareLargePage();
+            return;
+        }
         const int generation = ++loadGeneration_;
         const QString leftText = leftRaw_.isNull() ? leftOriginal_.join('\n') : leftRaw_;
         const QString rightText = rightRaw_.isNull() ? rightOriginal_.join('\n') : rightRaw_;
@@ -432,11 +688,7 @@ private:
                 if (view->rows_.size() != inlineDiffs.first.size()) {
                     view->computeInlineDiffs(view->rows_);
                 }
-                view->applyRows();
-                if (!deferHighlighting) {
-                    view->leftHighlighter_->setDeferred(false);
-                    view->rightHighlighter_->setDeferred(false);
-                }
+                view->applyRows(deferHighlighting);
                 view->progress_->hide();
                 view->pushSideHistory(/*left=*/true);
                 view->pushSideHistory(/*left=*/false);
@@ -444,9 +696,9 @@ private:
         });
     }
 
-    void applyRows() {
-        const CursorSnapshot leftSnap = captureCursor(leftEditor_);
-        const CursorSnapshot rightSnap = captureCursor(rightEditor_);
+    void applyRows(bool deferHighlighting, bool resetScroll = false) {
+        const CursorSnapshot leftSnap = resetScroll ? CursorSnapshot{} : captureCursor(leftEditor_);
+        const CursorSnapshot rightSnap = resetScroll ? CursorSnapshot{} : captureCursor(rightEditor_);
         groups_ = groupDiffRows(rows_);
 
         QStringList leftLines;
@@ -492,8 +744,8 @@ private:
         rightHighlighter_->refreshInlineDiffs();
         synchronizeJavaDiffRowHeights();
         applyingProgrammaticUpdate_ = false;
-        leftHighlighter_->setDeferred(false);
-        rightHighlighter_->setDeferred(false);
+        leftHighlighter_->setDeferred(deferHighlighting);
+        rightHighlighter_->setDeferred(deferHighlighting);
         computeDiffSelections(rows_);
         miniMap_->setRows(rows_);
         miniMap_->setCurrentRow(currentRow_);
@@ -690,6 +942,10 @@ private:
 
         copyAction_ = toolbar_->addAction(icons::glyph(Glyph::CopyLine), "Copy");
         copyAction_->setToolTip("Copy the current change to the other side");
+        previousLargePageAction_ = toolbar_->addAction("Previous Block");
+        previousLargePageAction_->setVisible(false);
+        nextLargePageAction_ = toolbar_->addAction("Next Block");
+        nextLargePageAction_->setVisible(false);
         toolbar_->addSeparator();
 
         nextSectionAction_ = toolbar_->addAction(icons::glyph(Glyph::NextSection), "Next Section");
@@ -830,9 +1086,22 @@ private:
         root->addWidget(ruleBar_);
         ruleBar_->hide();
 
-        status_ = new QLabel(this);
+        auto* statusBar = new QWidget(this);
+        auto* statusLayout = new QHBoxLayout(statusBar);
+        statusLayout->setContentsMargins(6, 2, 6, 2);
+        statusLayout->setSpacing(8);
+        status_ = new QLabel(statusBar);
         status_->setObjectName("compareStatus");
-        root->addWidget(status_);
+        statusLayout->addWidget(status_, 1);
+        statusIndicator_ = new QLabel(statusBar);
+        statusIndicator_->setObjectName("textEditabilityStatus");
+        statusLayout->addWidget(statusIndicator_);
+        editabilityFlashTimer_ = new QTimer(this);
+        connect(editabilityFlashTimer_, &QTimer::timeout, this, [this]() {
+            editabilityFlashOn_ = !editabilityFlashOn_;
+            applyEditabilityIndicatorStyle();
+        });
+        root->addWidget(statusBar);
         progress_ = new QProgressBar(this);
         progress_->setObjectName("compareProgress");
         progress_->setRange(0, 0);
@@ -860,6 +1129,10 @@ private:
     }
 
     void connectSignals() {
+        connect(previousLargePageAction_, &QAction::triggered, this,
+                [this]() { loadLargePage(/*next=*/false); });
+        connect(nextLargePageAction_, &QAction::triggered, this,
+                [this]() { loadLargePage(/*next=*/true); });
         connect(leftEditor_->verticalScrollBar(), &QScrollBar::valueChanged, this,
                 [this](int value) {
                     if (!syncing_) {
@@ -868,6 +1141,12 @@ private:
                         syncing_ = false;
                     }
                     updateMinimapViewport();
+                    if (largeFileMode_ && !largePageLoading_ &&
+                        nextLargePageAction_->isEnabled() &&
+                        leftEditor_->verticalScrollBar()->maximum() > 0 &&
+                        value >= leftEditor_->verticalScrollBar()->maximum()) {
+                        loadLargePage(/*next=*/true);
+                    }
                 });
         connect(rightEditor_->verticalScrollBar(), &QScrollBar::valueChanged, this,
                 [this](int value) {
@@ -1388,7 +1667,7 @@ private:
     }
 
     void undoFocusedSide() {
-        if (classFileCompare_) return;
+        if (classFileCompare_ || largeFileMode_) return;
         flushPendingEdits();
         LineNumberEditor* editor = focusedEditor();
         const bool left = (editor == leftEditor_);
@@ -1404,7 +1683,7 @@ private:
     }
 
     void redoFocusedSide() {
-        if (classFileCompare_) return;
+        if (classFileCompare_ || largeFileMode_) return;
         flushPendingEdits();
         LineNumberEditor* editor = focusedEditor();
         const bool left = (editor == leftEditor_);
@@ -1455,7 +1734,7 @@ private:
     // Enabled-state of the Edit-menu Undo/Redo entries follows whichever
     // pane currently has focus.
     void updateUndoRedoActions() {
-        if (classFileCompare_) {
+        if (classFileCompare_ || largeFileMode_) {
             if (undoAction_) undoAction_->setEnabled(false);
             if (redoAction_) redoAction_->setEnabled(false);
             return;
@@ -1469,7 +1748,7 @@ private:
     }
 
     void copyGroup(int startRow, int endRow, bool leftToRight) {
-        if (classFileCompare_) return;
+        if (classFileCompare_ || largeFileMode_) return;
         flushPendingEdits();
         syncFromEditors();
         startRow = qMax(0, startRow);
@@ -1689,6 +1968,10 @@ private:
     }
 
     void rebuild() {
+        if (largeFileMode_) {
+            compareLargePage();
+            return;
+        }
         const CursorSnapshot leftSnap = captureCursor(leftEditor_);
         const CursorSnapshot rightSnap = captureCursor(rightEditor_);
 
@@ -1855,7 +2138,7 @@ private:
     }
 
     void saveFocusedSide() {
-        if (classFileCompare_) return;
+        if (classFileCompare_ || largeFileMode_) return;
         syncFromEditors();
         if (leftEditor_->hasFocus()) {
             saveSide(true);
@@ -1868,6 +2151,42 @@ private:
 
     void loadSide(bool left, const QString& path) {
         if (changes_) changes_->track(left ? 0 : 1, path);  // baseline BEFORE the read below
+        const QString candidateLeft = left ? path : leftPath_;
+        const QString candidateRight = left ? rightPath_ : path;
+        const QFileInfo candidateInfo(path);
+        if (!path.isEmpty() && candidateInfo.exists() && candidateInfo.isFile() &&
+            static_cast<quint64>(candidateInfo.size()) > kMaxLargeCompareFileBytes) {
+            status_->setText(QString("Text comparisons support local files up to 500 MiB per side."));
+            return;
+        }
+        const bool useLargeMode =
+            shouldUseLargeFileMode(candidateLeft, candidateRight,
+                                   left ? QString() : leftRaw_, left ? rightRaw_ : QString());
+        if (useLargeMode) {
+            largeFileMode_ = true;
+            (left ? leftPath_ : rightPath_) = path;
+            updateClassFileUi(/*resetDecompileMode=*/false);
+            largeLeftPageOffsets_.clear();
+            largeRightPageOffsets_.clear();
+            largeLeftLineStarts_.clear();
+            largeRightLineStarts_.clear();
+            largePageIndex_ = -1;
+            largeLeftNextOffset_ = 0;
+            largeRightNextOffset_ = 0;
+            leftOriginal_.clear();
+            rightOriginal_.clear();
+            leftRaw_.clear();
+            rightRaw_.clear();
+            loadLargePage(/*next=*/false);
+            refreshSideHeader(true);
+            refreshSideHeader(false);
+            if (onTitleChanged) onTitleChanged();
+            return;
+        }
+        if (largeFileMode_) {
+            largeFileMode_ = false;
+            updateClassFileUi(/*resetDecompileMode=*/false);
+        }
         const QPointer<TextCompareViewer> view(this);
         progress_->show();
         status_->setText("Loading " + QFileInfo(path).fileName() + "...");
@@ -1972,8 +2291,10 @@ private:
 
     // `done` (optional) is called exactly once: immediately for local files, after the write for remote ones.
     void saveSide(bool left, SaveDone done = {}) {
-        if (classFileCompare_) {
-            const QString reason = QStringLiteral("Class-file comparisons are read-only.");
+        if (classFileCompare_ || largeFileMode_) {
+            const QString reason = largeFileMode_
+                                      ? QStringLiteral("Large-file comparisons are read-only.")
+                                      : QStringLiteral("Class-file comparisons are read-only.");
             status_->setText(reason);
             if (done) done(false, reason);
             return;
@@ -2038,7 +2359,7 @@ private:
     }
 
     void applyPreviewEdit(bool left, const QString& text) {
-        if (classFileCompare_) return;
+        if (classFileCompare_ || largeFileMode_) return;
         if (currentRow_ < 0 || currentRow_ >= rows_.size()) return;
         LineNumberEditor* editor = left ? leftEditor_ : rightEditor_;
         const int number = left ? rows_[currentRow_].leftNumber : rows_[currentRow_].rightNumber;
@@ -2082,6 +2403,8 @@ private:
     QAction* prevSectionAction_ = nullptr;
     QAction* swapAction_ = nullptr;
     QAction* reloadAction_ = nullptr;
+    QAction* previousLargePageAction_ = nullptr;
+    QAction* nextLargePageAction_ = nullptr;
 
     PathSelector* leftSelector_ = nullptr;
     std::unique_ptr<FileChangeController> changes_;  // external-change notice + reload (common/file_change_controller.h)
@@ -2095,6 +2418,22 @@ private:
     DifferenceOverview* miniMap_ = nullptr;
     DiffLinePreview* preview_ = nullptr;
     QLabel* status_ = nullptr;
+    QLabel* statusIndicator_ = nullptr;
+    QTimer* editabilityFlashTimer_ = nullptr;
+    bool editabilityKnown_ = false;
+    bool editable_ = true;
+    bool editabilityFlashOn_ = false;
+    int editabilityTransitionGeneration_ = 0;
+    bool largeFileMode_ = false;
+    bool largePageLoading_ = false;
+    int largePageGeneration_ = 0;
+    int largePageIndex_ = -1;
+    qint64 largeLeftNextOffset_ = 0;
+    qint64 largeRightNextOffset_ = 0;
+    QVector<qint64> largeLeftPageOffsets_;
+    QVector<qint64> largeRightPageOffsets_;
+    QVector<int> largeLeftLineStarts_;
+    QVector<int> largeRightLineStarts_;
     QProgressBar* progress_ = nullptr;
     int loadGeneration_ = 0;
     bool syncing_ = false;

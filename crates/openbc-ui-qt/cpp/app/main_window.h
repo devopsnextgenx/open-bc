@@ -851,22 +851,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         } else if (entry.kind == "model3d") {
             addModel3dView(entry.left, entry.right, true);
         } else if (!entry.left.isEmpty() || !entry.right.isEmpty()) {
-            const QPointer<PersistedMainWindow> mainWindow(&window);
-            window.statusBar()->showMessage("Loading comparison files...");
-            QThreadPool::globalInstance()->start([&, entry, mainWindow]() {
-                QFile leftFile(entry.left);
-                QFile rightFile(entry.right);
-                const QString leftText = leftFile.open(QIODevice::ReadOnly)
-                                             ? QString::fromUtf8(leftFile.readAll()) : QString();
-                const QString rightText = rightFile.open(QIODevice::ReadOnly)
-                                              ? QString::fromUtf8(rightFile.readAll()) : QString();
-                if (!mainWindow) return;
-                QMetaObject::invokeMethod(mainWindow, [&, entry, leftText, rightText, mainWindow]() {
-                    if (!mainWindow) return;
-                    addTextView(entry.left, entry.right, leftText, rightText, nullptr);
-                    mainWindow->statusBar()->clearMessage();
-                }, Qt::QueuedConnection);
-            });
+            addTextView(entry.left, entry.right, QString(), QString(), nullptr);
         }
     };
 
@@ -1006,11 +991,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
             return;
         }
         if (kind == "text-compare") {
-            auto readText = [](const QString& path) {
-                QFile file(path);
-                return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
-            };
-            addTextView(request.left, request.right, readText(request.left), readText(request.right), nullptr);
+            addTextView(request.left, request.right, QString(), QString(), nullptr);
         } else {
             home->onNewSession(kind, paths);
         }
