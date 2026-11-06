@@ -26,37 +26,18 @@
 #include <QList>
 #include <QProgressBar>
 #include <QTimer>
+#include <QToolBar>
+#include <QToolButton>
 #include <QWidget>
 #include <functional>
 #include <memory>
 
+#include "common/minimap.h"
+#include "common/path_selector.h"
 #include "viewers/text/engine/text_model.h"
 #include "viewers/text/virtual/virtual_text_editor.h"
 
 namespace openbc::app {
-
-// Whole-file difference strip. One pixel row summarises a slice of display rows (computed in Rust
-// from the diff index in O(segments + pixels), no line data touched).
-class ModelOverview : public QWidget {
-public:
-    explicit ModelOverview(QWidget* parent = nullptr);
-    void setModel(std::shared_ptr<TextModel> model);
-    void setViewport(quint64 firstRow, int visibleRows);
-    std::function<void(quint64 row)> onRowRequested;
-
-protected:
-    void paintEvent(QPaintEvent*) override;
-    void mousePressEvent(QMouseEvent*) override;
-    void mouseMoveEvent(QMouseEvent*) override;
-    void resizeEvent(QResizeEvent*) override;
-
-private:
-    void request(int y);
-    std::shared_ptr<TextModel> model_;
-    QByteArray cells_;
-    quint64 first_ = 0;
-    int visible_ = 1;
-};
 
 class VirtualTextCompareViewer : public QWidget {
 public:
@@ -74,11 +55,13 @@ public:
     std::function<void()> onTitleChanged;
 
     QList<QAction*> actionsMenuItems() const { return {reloadAction_, swapAction_}; }
-    QList<QAction*> editMenuItems() const { return {copyAction_, selectAllAction_}; }
+    QList<QAction*> editMenuItems() const {
+        return {undoAction_, redoAction_, saveAction_, nullptr, copyAction_, selectAllAction_};
+    }
     QList<QAction*> searchMenuItems() const {
         return {findAction_, findNextAction_, findPrevAction_, gotoLineAction_, nextDiffAction_, prevDiffAction_};
     }
-    QList<QAction*> viewMenuItems() const { return {syntaxAction_}; }
+    QList<QAction*> viewMenuItems() const { return {minimapAction_, syntaxAction_}; }
 
     // For tests and status reporting.
     VirtualTextEditor* leftEditor() const { return left_; }
@@ -97,6 +80,9 @@ private:
     void onModelReady(std::shared_ptr<TextModel> model);
     void applyFont();
     void updateStatus();
+    void updateOverview();
+    void refreshSideHeader(bool left);
+    void commitPath(bool left, const QString& path);
     void showFindBar(bool show);
     void findNext(bool forward);
     VirtualTextEditor* activeEditor() const;
@@ -111,9 +97,14 @@ private:
 
     VirtualTextEditor* left_ = nullptr;
     VirtualTextEditor* right_ = nullptr;
-    ModelOverview* overview_ = nullptr;
-    QLabel* leftLabel_ = nullptr;
-    QLabel* rightLabel_ = nullptr;
+    DifferenceOverview* overview_ = nullptr;
+    QToolBar* toolbar_ = nullptr;
+    PathSelector* leftSelector_ = nullptr;
+    PathSelector* rightSelector_ = nullptr;
+    QLabel* leftAttrsLabel_ = nullptr;
+    QLabel* rightAttrsLabel_ = nullptr;
+    QToolButton* leftSaveButton_ = nullptr;
+    QToolButton* rightSaveButton_ = nullptr;
     QLabel* status_ = nullptr;
     QProgressBar* progress_ = nullptr;
     QWidget* findBar_ = nullptr;
@@ -124,7 +115,10 @@ private:
     VirtualTextEditor* lastFocused_ = nullptr;
     bool syncing_ = false;
 
-    QAction *reloadAction_ = nullptr, *swapAction_ = nullptr, *copyAction_ = nullptr, *selectAllAction_ = nullptr,
+    QAction *homeAction_ = nullptr, *sessionsAction_ = nullptr, *minimapAction_ = nullptr,
+            *copyDiffAction_ = nullptr, *reloadAction_ = nullptr, *swapAction_ = nullptr,
+            *saveAction_ = nullptr, *undoAction_ = nullptr, *redoAction_ = nullptr,
+            *copyAction_ = nullptr, *selectAllAction_ = nullptr,
             *findAction_ = nullptr, *findNextAction_ = nullptr, *findPrevAction_ = nullptr,
             *gotoLineAction_ = nullptr, *nextDiffAction_ = nullptr, *prevDiffAction_ = nullptr,
             *syntaxAction_ = nullptr;

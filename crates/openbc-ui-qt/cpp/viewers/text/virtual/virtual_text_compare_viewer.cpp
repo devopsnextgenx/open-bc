@@ -1,69 +1,23 @@
 // virtual_text_compare_viewer.cpp — see the header.
 #include "viewers/text/virtual/virtual_text_compare_viewer.h"
 
+#include <QDateTime>
 #include <QFileInfo>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QInputDialog>
-#include <QMouseEvent>
-#include <QPainter>
+#include <QLocale>
 #include <QPushButton>
+#include <QToolBar>
 #include <QVBoxLayout>
 
 #include "options/appearance_state.h"
 #include "options/text_font.h"
+#include "style/qt_style.h"
 
 namespace openbc::app {
 
-// ---- ModelOverview ----------------------------------------------------------------------------
-
-ModelOverview::ModelOverview(QWidget* parent) : QWidget(parent) {
-    setFixedWidth(22);
-    setCursor(Qt::PointingHandCursor);
-}
-
-void ModelOverview::setModel(std::shared_ptr<TextModel> model) {
-    model_ = std::move(model);
-    cells_ = model_ ? model_->overview(qMax(1, height())) : QByteArray();
-    update();
-}
-
-void ModelOverview::setViewport(quint64 firstRow, int visibleRows) {
-    first_ = firstRow;
-    visible_ = qMax(1, visibleRows);
-    update();
-}
-
-void ModelOverview::resizeEvent(QResizeEvent*) {
-    if (model_) cells_ = model_->overview(qMax(1, height()));
-}
-
-void ModelOverview::paintEvent(QPaintEvent*) {
-    QPainter p(this);
-    p.fillRect(rect(), palette().color(QPalette::Window));
-    if (!model_ || model_->rowCount() == 0) return;
-    for (int y = 0; y < cells_.size() && y < height(); ++y) {
-        const quint8 f = static_cast<quint8>(cells_[y]);
-        if (!f) continue;
-        const QColor c = (f & 4) ? QColor(0xe0, 0xa0, 0x30) : ((f & 1) ? QColor(0x50, 0xc8, 0x78) : QColor(0xe0, 0x60, 0x60));
-        p.fillRect(QRect(3, y, width() - 6, 1), c);
-    }
-    const double rows = static_cast<double>(model_->rowCount());
-    const int y0 = static_cast<int>(first_ / rows * height());
-    const int h = qMax(3, static_cast<int>(visible_ / rows * height()));
-    p.setPen(QPen(palette().color(QPalette::Text), 1));
-    p.setBrush(QColor(255, 255, 255, 40));
-    p.drawRect(QRect(0, y0, width() - 1, h));
-}
-
-void ModelOverview::request(int y) {
-    if (!model_ || model_->rowCount() == 0 || !onRowRequested) return;
-    const double ratio = qBound(0.0, static_cast<double>(y) / qMax(1, height()), 1.0);
-    const quint64 row = static_cast<quint64>(ratio * static_cast<double>(model_->rowCount()));
-    onRowRequested(row > static_cast<quint64>(visible_ / 2) ? row - static_cast<quint64>(visible_ / 2) : 0);
-}
-
-void ModelOverview::mousePressEvent(QMouseEvent* e) { request(e->pos().y()); }
-void ModelOverview::mouseMoveEvent(QMouseEvent* e) { if (e->buttons() & Qt::LeftButton) request(e->pos().y()); }
+namespace icons = openbc::ui::icons;
 
 // ---- VirtualTextCompareViewer ---------------------------------------------------------------------
 
@@ -95,35 +49,73 @@ QString VirtualTextCompareViewer::title() const {
 }
 
 void VirtualTextCompareViewer::buildUi() {
+    setObjectName(QStringLiteral("textCompareView"));
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    auto* header = new QHBoxLayout;
-    header->setContentsMargins(6, 4, 6, 4);
-    leftLabel_ = new QLabel;
-    rightLabel_ = new QLabel;
-    for (QLabel* l : {leftLabel_, rightLabel_}) l->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    header->addWidget(leftLabel_, 1);
-    header->addSpacing(22);
-    header->addWidget(rightLabel_, 1);
-    root->addLayout(header);
+    toolbar_ = new QToolBar(this);
+    toolbar_->setObjectName(QStringLiteral("textCompareToolbar"));
+    toolbar_->setMovable(false);
+    toolbar_->setFloatable(false);
+    toolbar_->setIconSize(QSize(20, 20));
+    toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    root->addWidget(toolbar_);
 
-    progress_ = new QProgressBar;
-    progress_->setRange(0, 100);
-    progress_->setTextVisible(true);
-    progress_->setMaximumHeight(14);
-    progress_->hide();
-    root->addWidget(progress_);
+    auto* header = new QHBoxLayout;
+    header->setContentsMargins(0, 0, 0, 0);
+    header->setSpacing(1);
+    const auto buildSideHeader = [this](bool left) {
+        auto* frame = new QFrame(this);
+        frame->setObjectName(QStringLiteral("sideHeader"));
+        auto* layout = new QVBoxLayout(frame);
+        layout->setContentsMargins(8, 4, 8, 4);
+        layout->setSpacing(2);
+        auto* pathRow = new QHBoxLayout;
+        pathRow->setContentsMargins(0, 0, 0, 0);
+        pathRow->setSpacing(4);
+        PathSelector*& selector = left ? leftSelector_ : rightSelector_;
+        selector = makeCommitSelector(
+            frame, left ? tr("Left") : tr("Right"), left ? leftPath_ : rightPath_,
+            QStringLiteral("All files (*.*)"),
+            [this, left](QString path) { commitPath(left, path); });
+        selector->setObjectName(QStringLiteral("sidePathSelector"));
+        selector->combo()->setObjectName(QStringLiteral("sidePath"));
+        selector->combo()->setToolTip(left ? leftPath_ : rightPath_);
+        pathRow->addWidget(selector, 1);
+
+        QToolButton*& saveButton = left ? leftSaveButton_ : rightSaveButton_;
+        saveButton = new QToolButton(frame);
+        saveButton->setObjectName(QStringLiteral("saveSideBtn"));
+        saveButton->setIcon(icons::glyph(icons::Glyph::Save));
+        saveButton->setIconSize(QSize(15, 15));
+        saveButton->setToolTip(tr("Saving is unavailable in the Virtual editor (read-only)"));
+        saveButton->setEnabled(false);
+        pathRow->addWidget(saveButton, 0);
+        layout->addLayout(pathRow);
+
+        QLabel*& attrs = left ? leftAttrsLabel_ : rightAttrsLabel_;
+        attrs = new QLabel(frame);
+        attrs->setObjectName(QStringLiteral("sideAttrs"));
+        layout->addWidget(attrs);
+        refreshSideHeader(left);
+        return frame;
+    };
+    header->addWidget(buildSideHeader(true), 1);
+    header->addWidget(buildSideHeader(false), 1);
+    root->addLayout(header);
 
     auto* body = new QHBoxLayout;
     body->setContentsMargins(0, 0, 0, 0);
     body->setSpacing(0);
     left_ = new VirtualTextEditor;
     right_ = new VirtualTextEditor;
-    overview_ = new ModelOverview;
-    body->addWidget(left_, 1);
+    left_->setGutterSides(VirtualTextEditor::GutterSide::Left, VirtualTextEditor::GutterSide::Right);
+    right_->setGutterSides(VirtualTextEditor::GutterSide::Right, VirtualTextEditor::GutterSide::Left);
+    right_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    overview_ = new DifferenceOverview(this, true);
     body->addWidget(overview_);
+    body->addWidget(left_, 1);
     body->addWidget(right_, 1);
     root->addLayout(body, 1);
 
@@ -149,8 +141,16 @@ void VirtualTextCompareViewer::buildUi() {
     root->addWidget(findBar_);
 
     status_ = new QLabel;
+    status_->setObjectName(QStringLiteral("compareStatus"));
     status_->setContentsMargins(6, 2, 6, 2);
     root->addWidget(status_);
+
+    progress_ = new QProgressBar;
+    progress_->setRange(0, 100);
+    progress_->setTextVisible(false);
+    progress_->setFixedHeight(3);
+    progress_->hide();
+    root->addWidget(progress_);
 }
 
 void VirtualTextCompareViewer::buildActions() {
@@ -162,15 +162,80 @@ void VirtualTextCompareViewer::buildActions() {
         addAction(a);
         return a;
     };
-    reloadAction_ = make(tr("&Reload"), QKeySequence(Qt::Key_F5), [this] { reload(true); });
+    homeAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::Home), tr("Home"));
+    sessionsAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::Sessions), tr("Sessions"));
+    toolbar_->addSeparator();
+    QObject::connect(homeAction_, &QAction::triggered, this,
+                     [this] { if (onHomeRequested) onHomeRequested(); });
+    QObject::connect(sessionsAction_, &QAction::triggered, this,
+                     [this] { if (onSessionsRequested) onSessionsRequested(); });
+
+    const auto unavailable = [this](icons::Glyph glyph, const QString& text, const QString& reason) {
+        QAction* action = toolbar_->addAction(icons::glyph(glyph), text);
+        action->setEnabled(false);
+        action->setToolTip(reason);
+        return action;
+    };
+    QAction* showAllAction =
+        unavailable(icons::Glyph::ShowAll, tr("All"), tr("Row filtering is unavailable in the Virtual editor"));
+    showAllAction->setCheckable(true);
+    showAllAction->setChecked(true);
+    QAction* showDiffsAction =
+        unavailable(icons::Glyph::ShowDiffs, tr("Diffs"), tr("Row filtering is unavailable in the Virtual editor"));
+    showDiffsAction->setCheckable(true);
+    QAction* contextAction =
+        unavailable(icons::Glyph::Context, tr("Context"), tr("Row filtering is unavailable in the Virtual editor"));
+    contextAction->setCheckable(true);
+    toolbar_->addSeparator();
+    unavailable(icons::Glyph::Minor, tr("Minor"), tr("Whitespace filtering is unavailable in the Virtual editor"));
+    unavailable(icons::Glyph::Rules, tr("Rules"), tr("Ignore rules are unavailable in the Virtual editor"));
+    unavailable(icons::Glyph::Format, tr("Word Wrap"), tr("Word wrapping is unavailable in the Virtual editor"));
+    toolbar_->addSeparator();
+
+    minimapAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::MinimapPixel), tr("Minimap"));
+    minimapAction_->setCheckable(true);
+    minimapAction_->setChecked(true);
+    minimapAction_->setToolTip(tr("Toggle pixel-line versus block markers in the minimap"));
+    findAction_ = make(tr("&Find..."), QKeySequence::Find, [this] { showFindBar(true); });
+    findAction_->setIcon(icons::glyph(icons::Glyph::Find));
+    toolbar_->addAction(findAction_);
+    toolbar_->addSeparator();
+
+    copyDiffAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::CopyLine), tr("Copy"));
+    copyDiffAction_->setToolTip(tr("Copy changes to the other side (unavailable in the read-only Virtual editor)"));
+    copyDiffAction_->setEnabled(false);
+    toolbar_->addSeparator();
+    nextDiffAction_ = make(tr("&Next Difference"), QKeySequence(Qt::Key_F8),
+                           [this] { if (auto* e = activeEditor()) e->goToNextDifference(); });
+    nextDiffAction_->setIcon(icons::glyph(icons::Glyph::NextSection));
+    toolbar_->addAction(nextDiffAction_);
+    prevDiffAction_ = make(tr("P&revious Difference"), QKeySequence(Qt::SHIFT | Qt::Key_F8),
+                           [this] { if (auto* e = activeEditor()) e->goToPreviousDifference(); });
+    prevDiffAction_->setIcon(icons::glyph(icons::Glyph::PrevSection));
+    toolbar_->addAction(prevDiffAction_);
+    toolbar_->addSeparator();
+
     swapAction_ = make(tr("S&wap Sides"), QKeySequence(), [this] {
         std::swap(leftPath_, rightPath_);
         if (onTitleChanged) onTitleChanged();
         startLoad(false);
     });
+    swapAction_->setIcon(icons::glyph(icons::Glyph::Swap));
+    toolbar_->addAction(swapAction_);
+    reloadAction_ = make(tr("&Reload"), QKeySequence(Qt::Key_F5), [this] { reload(true); });
+    reloadAction_->setIcon(icons::glyph(icons::Glyph::Refresh));
+    toolbar_->addAction(reloadAction_);
+
+    saveAction_ = make(tr("&Save"), QKeySequence::Save, [] {});
+    undoAction_ = make(tr("&Undo"), QKeySequence::Undo, [] {});
+    redoAction_ = make(tr("&Redo"), QKeySequence::Redo, [] {});
+    for (QAction* readOnlyAction : {saveAction_, undoAction_, redoAction_}) {
+        readOnlyAction->setEnabled(false);
+        readOnlyAction->setToolTip(tr("Unavailable in the Virtual editor (read-only)"));
+    }
+
     copyAction_ = make(tr("&Copy"), QKeySequence::Copy, [this] { if (auto* e = activeEditor()) e->copySelection(); });
     selectAllAction_ = make(tr("Select &All"), QKeySequence::SelectAll, [this] { if (auto* e = activeEditor()) e->selectAllText(); });
-    findAction_ = make(tr("&Find..."), QKeySequence::Find, [this] { showFindBar(true); });
     findNextAction_ = make(tr("Find &Next"), QKeySequence(Qt::Key_F3), [this] { findNext(true); });
     findPrevAction_ = make(tr("Find &Previous"), QKeySequence(Qt::SHIFT | Qt::Key_F3), [this] { findNext(false); });
     gotoLineAction_ = make(tr("&Go to Line..."), QKeySequence(Qt::CTRL | Qt::Key_G), [this] {
@@ -182,32 +247,40 @@ void VirtualTextCompareViewer::buildActions() {
                                                  static_cast<int>(qMin<quint64>(max, 2147483647)), 1, &ok);
         if (ok) e->goToLine(static_cast<quint64>(v));
     });
-    nextDiffAction_ = make(tr("&Next Difference"), QKeySequence(Qt::Key_F8), [this] { if (auto* e = activeEditor()) e->goToNextDifference(); });
-    prevDiffAction_ = make(tr("P&revious Difference"), QKeySequence(Qt::SHIFT | Qt::Key_F8), [this] { if (auto* e = activeEditor()) e->goToPreviousDifference(); });
     syntaxAction_ = make(tr("Syntax &Highlighting"), QKeySequence(), [this] {
         left_->setSyntaxEnabled(syntaxAction_->isChecked());
         right_->setSyntaxEnabled(syntaxAction_->isChecked());
     });
     syntaxAction_->setCheckable(true);
     syntaxAction_->setChecked(true);
+
+    QObject::connect(minimapAction_, &QAction::toggled, this,
+                     [this](bool on) { overview_->setPixelLineMode(on); });
 }
 
 void VirtualTextCompareViewer::wireEditors() {
     auto link = [this](VirtualTextEditor* self, VirtualTextEditor* peer) {
         self->onTopRowChanged = [this, peer, self](quint64 row) {
             if (!syncing_) { syncing_ = true; peer->setFirstVisibleRow(row); syncing_ = false; }
-            overview_->setViewport(row, self->visibleRowCount());
+            overview_->setViewportRows(row, static_cast<quint64>(self->visibleRowCount()));
         };
         self->onHorizontalOffsetChanged = [this, peer](int px) {
             if (!syncing_) { syncing_ = true; peer->setHorizontalPixelOffset(px); syncing_ = false; }
         };
-        self->onCurrentRowChanged = [peer](quint64 row) { peer->setCurrentRowQuietly(row); };
+        self->onCurrentRowChanged = [this, peer](quint64 row) {
+            peer->setCurrentRowQuietly(row);
+            overview_->setVirtualCurrentRow(row);
+        };
         self->onFocused = [this, self]() { lastFocused_ = self; };
         self->onStatusMessage = [this](const QString& text) { status_->setText(text); };
     };
     link(left_, right_);
     link(right_, left_);
-    overview_->onRowRequested = [this](quint64 row) { left_->setFirstVisibleRow(row); };
+    overview_->onVirtualRowClicked = [this](quint64 row) {
+        const quint64 halfViewport = static_cast<quint64>(left_->visibleRowCount() / 2);
+        left_->setFirstVisibleRow(row > halfViewport ? row - halfViewport : 0);
+    };
+    overview_->onResized = [this] { updateOverview(); };
 }
 
 VirtualTextEditor* VirtualTextCompareViewer::activeEditor() const {
@@ -222,6 +295,56 @@ void VirtualTextCompareViewer::applyFont() {
     right_->setEditorFont(f);
 }
 
+void VirtualTextCompareViewer::updateOverview() {
+    if (!model_ || !overview_) return;
+    overview_->setVirtualOverview(model_->overview(qMax(1, overview_->height())), model_->rowCount());
+    overview_->setViewportRows(left_->firstVisibleRow(),
+                               static_cast<quint64>(left_->visibleRowCount()));
+    overview_->setVirtualCurrentRow(left_->currentRow());
+}
+
+void VirtualTextCompareViewer::refreshSideHeader(bool left) {
+    PathSelector* selector = left ? leftSelector_ : rightSelector_;
+    QLabel* attrs = left ? leftAttrsLabel_ : rightAttrsLabel_;
+    const QString& path = left ? leftPath_ : rightPath_;
+    if (!selector || !attrs) return;
+    selector->setText(path);
+    selector->combo()->setToolTip(path);
+
+    const QFileInfo info(path);
+    if (!info.exists()) {
+        attrs->setText(path.isEmpty() ? tr("(missing on this side)") : tr("(unavailable)"));
+        return;
+    }
+
+    static const char* const encodings[] = {"UTF-8", "UTF-16 LE", "UTF-16 BE", "?"};
+    QString encoding = tr("UTF-8");
+    if (model_) {
+        const int code = model_->encodingCode(left ? Side::Left : Side::Right);
+        encoding = QString::fromLatin1(encodings[qMin(code & 0x7f, 3)]);
+        if (code & 0x80) encoding += tr(" (binary?)");
+    }
+    attrs->setText(QStringLiteral("%1    %2    %3")
+                       .arg(info.lastModified().toString(QStringLiteral("M/d/yyyy h:mm:ss AP")),
+                            QLocale().toString(info.size()) + tr(" bytes"), encoding));
+}
+
+void VirtualTextCompareViewer::commitPath(bool left, const QString& path) {
+    const QString selectedPath = path.trimmed();
+    if (selectedPath.isEmpty()) return;
+    QString& currentPath = left ? leftPath_ : rightPath_;
+    PathSelector* selector = left ? leftSelector_ : rightSelector_;
+    if (currentPath == selectedPath) {
+        selector->setText(selectedPath);
+        return;
+    }
+    currentPath = selectedPath;
+    selector->remember(selectedPath);
+    selector->setText(selectedPath);
+    if (onTitleChanged) onTitleChanged();
+    startLoad(false);
+}
+
 void VirtualTextCompareViewer::watchFiles() {
     const QStringList watched = watcher_.files();
     if (!watched.isEmpty()) watcher_.removePaths(watched);
@@ -231,8 +354,16 @@ void VirtualTextCompareViewer::watchFiles() {
 
 void VirtualTextCompareViewer::applyDroppedPaths(const QString& left, const QString& right) {
     if (left.isEmpty() && right.isEmpty()) return;
-    if (!left.isEmpty()) leftPath_ = left;
-    if (!right.isEmpty()) rightPath_ = right;
+    if (!left.isEmpty()) {
+        leftPath_ = left;
+        leftSelector_->remember(left);
+        leftSelector_->setText(left);
+    }
+    if (!right.isEmpty()) {
+        rightPath_ = right;
+        rightSelector_->remember(right);
+        rightSelector_->setText(right);
+    }
     if (onTitleChanged) onTitleChanged();
     startLoad(false);
 }
@@ -240,10 +371,8 @@ void VirtualTextCompareViewer::applyDroppedPaths(const QString& left, const QStr
 void VirtualTextCompareViewer::reload(bool keepScroll) { startLoad(keepScroll); }
 
 void VirtualTextCompareViewer::startLoad(bool keepScroll) {
-    leftLabel_->setText(leftPath_.isEmpty() ? tr("(none)") : leftPath_);
-    rightLabel_->setText(rightPath_.isEmpty() ? tr("(none)") : rightPath_);
-    leftLabel_->setToolTip(leftPath_);
-    rightLabel_->setToolTip(rightPath_);
+    refreshSideHeader(true);
+    refreshSideHeader(false);
     watchFiles();
     if (leftPath_.isEmpty() && rightPath_.isEmpty()) {
         status_->setText(tr("Drop two files here to compare them."));
@@ -281,9 +410,13 @@ void VirtualTextCompareViewer::onModelReady(std::shared_ptr<TextModel> model) {
     }
     left_->setModel(model_, Side::Left);
     right_->setModel(model_, Side::Right);
-    overview_->setModel(model_);
+    updateOverview();
+    refreshSideHeader(true);
+    refreshSideHeader(false);
     if (keepScrollOnLoad_) left_->setFirstVisibleRow(savedTopRow_);
-    overview_->setViewport(left_->firstVisibleRow(), left_->visibleRowCount());
+    overview_->setViewportRows(left_->firstVisibleRow(),
+                               static_cast<quint64>(left_->visibleRowCount()));
+    overview_->setVirtualCurrentRow(left_->currentRow());
     updateStatus();
     if (onTitleChanged) onTitleChanged();
 }

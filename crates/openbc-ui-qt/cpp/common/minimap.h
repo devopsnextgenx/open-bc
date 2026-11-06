@@ -34,14 +34,17 @@
 #pragma once
 
 #include <QBrush>
+#include <QByteArray>
 #include <QColor>
 #include <QFrame>
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QResizeEvent>
 #include <QSet>
 #include <functional>
 #include <iostream>
+#include <utility>
 
 #include "common/diff_algorithms.h"
 
@@ -79,9 +82,23 @@ public:
     appendProgressiveRows(rows);
   }
 
+  void setVirtualOverview(QByteArray buckets, quint64 rowCount) {
+    rows_.clear();
+    blocks_.clear();
+    dirtyRows_.clear();
+    summaryBuckets_ = std::move(buckets);
+    summaryRowCount_ = rowCount;
+    summaryMode_ = true;
+    currentRowSet_ = false;
+    update();
+  }
+
   void beginProgressiveRows() {
     rows_.clear();
     blocks_.clear();
+    summaryBuckets_.clear();
+    summaryRowCount_ = 0;
+    summaryMode_ = false;
     update();
   }
 
@@ -130,6 +147,13 @@ public:
   bool pixelLineMode() const { return pixelLineMode_; }
 
   void setCurrentRow(int row) {
+    currentRowSet_ = row >= 0;
+    currentRow_ = currentRowSet_ ? static_cast<quint64>(row) : 0;
+    update();
+  }
+
+  void setVirtualCurrentRow(quint64 row) {
+    currentRowSet_ = true;
     currentRow_ = row;
     update();
   }
@@ -146,21 +170,35 @@ public:
     update();
   }
 
+  void setViewportRows(quint64 firstRow, quint64 visibleRows) {
+    const quint64 count = overviewRowCount();
+    if (count == 0) {
+      setViewport(0.0, 0.0);
+      return;
+    }
+    const long double total = static_cast<long double>(count);
+    setViewport(static_cast<qreal>(static_cast<long double>(firstRow) / total),
+                static_cast<qreal>(static_cast<long double>(visibleRows) / total));
+  }
+
 protected:
   void paintEvent(QPaintEvent *) override {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, false);
     painter.fillRect(rect(), QColor("#232323"));
-    if (rows_.isEmpty())
+    const quint64 totalRows = overviewRowCount();
+    if (totalRows == 0)
       return;
 
     // Content region: fraction of the strip used to map the document.
     // Short files compress into the top portion; long files use full height.
     const qreal stripExtent = vertical_ ? height() : width();
     const qreal contentExtent = contentExtentFor(stripExtent);
-    const qreal rowSize = contentExtent / rows_.size();
+    const qreal rowSize = contentExtent / static_cast<qreal>(totalRows);
 
-    if (pixelLineMode_) {
+    if (summaryMode_) {
+      paintSummary(painter, contentExtent);
+    } else if (pixelLineMode_) {
       paintPixelLines(painter, rowSize, contentExtent);
     } else {
       paintBlocks(painter, rowSize, contentExtent);
@@ -170,8 +208,8 @@ protected:
       paintDirtyTicks(painter, rowSize, contentExtent);
     }
 
-    if (currentRow_ >= 0 && currentRow_ < rows_.size()) {
-      const qreal at = currentRow_ * rowSize;
+    if (currentRowSet_ && currentRow_ < totalRows) {
+      const qreal at = static_cast<qreal>(currentRow_) * rowSize;
       painter.fillRect(vertical_
                            ? QRectF(0, at, width(), 1)
                            : QRectF(at, 0, qMax<qreal>(1, rowSize), height()),
@@ -204,6 +242,12 @@ protected:
     }
   }
 
+  void resizeEvent(QResizeEvent *event) override {
+    QFrame::resizeEvent(event);
+    if (onResized)
+      onResized();
+  }
+
   void mousePressEvent(QMouseEvent *event) override { jumpFromPosition(event); }
 
   void mouseMoveEvent(QMouseEvent *event) override {
@@ -214,25 +258,33 @@ protected:
 
 public:
   std::function<void(int)> onRowClicked;
+  std::function<void(quint64)> onVirtualRowClicked;
+  std::function<void()> onResized;
 
 private:
+  quint64 overviewRowCount() const {
+    return summaryMode_ ? summaryRowCount_ : static_cast<quint64>(rows_.size());
+  }
+
   // Height (or width, when horizontal) of the region that maps the document.
   // Never exceeds the strip; for short files scales down so the viewport
   // box stays a true proportion of that region and remains visually compact.
   qreal contentExtentFor(qreal stripExtent) const {
-    if (rows_.isEmpty())
+    const quint64 count = overviewRowCount();
+    if (count == 0)
       return stripExtent;
-    if (rows_.size() >= kFullScaleLines)
+    if (count >= static_cast<quint64>(kFullScaleLines))
       return stripExtent;
     // Scale content height with line count; keep a usable minimum so a
     // handful of lines still produce a visible content region + viewport.
     const qreal scaled =
-        stripExtent * (static_cast<qreal>(rows_.size()) / kFullScaleLines);
+        stripExtent * (static_cast<qreal>(count) / kFullScaleLines);
     return qMax(stripExtent * kMinContentFraction, scaled);
   }
 
   void jumpFromPosition(QMouseEvent *event) {
-    if (rows_.isEmpty() || !onRowClicked)
+    const quint64 count = overviewRowCount();
+    if (count == 0)
       return;
     const qreal position =
         vertical_ ? event->position().y() : event->position().x();
@@ -240,9 +292,55 @@ private:
     const qreal contentExtent = contentExtentFor(stripExtent);
     // Clicks below the content region map to the last row.
     const qreal clamped = qBound<qreal>(0.0, position, contentExtent);
-    onRowClicked(
-        qBound(0, static_cast<int>(clamped * rows_.size() / contentExtent),
-               rows_.size() - 1));
+    if (!summaryMode_) {
+      if (!onRowClicked)
+        return;
+      onRowClicked(qBound(0, static_cast<int>(clamped * rows_.size() / contentExtent),
+                          rows_.size() - 1));
+      return;
+    }
+    if (!onVirtualRowClicked)
+      return;
+    const long double ratio = static_cast<long double>(clamped / contentExtent);
+    const quint64 row = static_cast<quint64>(ratio * static_cast<long double>(count));
+    onVirtualRowClicked(qMin(row, count - 1));
+  }
+
+  QColor summaryColor(quint8 flags) const {
+    if (flags & 4)
+      return QColor("#e0a030");
+    if (flags & 1)
+      return QColor("#50c878");
+    return QColor("#e06060");
+  }
+
+  void paintSummary(QPainter &painter, qreal contentExtent) const {
+    if (summaryBuckets_.isEmpty())
+      return;
+    const qreal bucketSize = contentExtent / summaryBuckets_.size();
+    const qreal barWidth = vertical_ ? width() - 6 : height() - 4;
+    int bucket = 0;
+    while (bucket < summaryBuckets_.size()) {
+      const quint8 flags = static_cast<quint8>(summaryBuckets_[bucket]);
+      if (!flags) {
+        ++bucket;
+        continue;
+      }
+      int end = bucket + 1;
+      if (!pixelLineMode_) {
+        while (end < summaryBuckets_.size() &&
+               static_cast<quint8>(summaryBuckets_[end]) == flags)
+          ++end;
+      }
+      const qreal start = bucket * bucketSize;
+      const qreal thickness =
+          pixelLineMode_ ? qMax<qreal>(1.0, bucketSize)
+                         : qMax<qreal>(3.0, (end - bucket) * bucketSize);
+      const QRectF marker = vertical_ ? QRectF(3, start, barWidth, thickness)
+                                      : QRectF(start, 2, thickness, barWidth);
+      painter.fillRect(marker, summaryColor(flags));
+      bucket = end;
+    }
   }
 
   QColor colorFor(bool whitespaceOnly, bool missing) const {
@@ -380,10 +478,14 @@ private:
 
   QVector<OverviewRow> rows_;
   QVector<OverviewBlock> blocks_;
+  QByteArray summaryBuckets_;
+  quint64 summaryRowCount_ = 0;
   QSet<int> dirtyRows_;
   bool vertical_ = false;
   bool pixelLineMode_ = true; // default to the classic block-bar minimap
-  int currentRow_ = -1;
+  bool summaryMode_ = false;
+  bool currentRowSet_ = false;
+  quint64 currentRow_ = 0;
   qreal viewportStart_ = 0.0;
   qreal viewportSpan_ = 0.0;
 };

@@ -40,6 +40,7 @@ class VirtualTextEditor : public QAbstractScrollArea, public ITextCompareEditor 
 public:
     // Lines longer than this many bytes are windowed instead of decoded whole.
     static constexpr int kMaxRenderChars = 16 * 1024;
+    enum class GutterSide { Left, Right };
 
     explicit VirtualTextEditor(QWidget* parent = nullptr);
     ~VirtualTextEditor() override;
@@ -71,6 +72,11 @@ public:
     void setCacheLimitChars(int chars);
     void setTabWidth(int columns) { tabColumns_ = qBound(1, columns, 16); update(); }
     void setShowLineNumbers(bool show) { showLineNumbers_ = show; updateMetrics(); }
+    void setGutterSides(GutterSide numberSide, GutterSide arrowSide) {
+        numberGutterSide_ = numberSide;
+        arrowGutterSide_ = arrowSide;
+        updateMetrics();
+    }
 
     // ---- queries (also used by the tests) ----------------------------------------------------
     QString selectedText(qint64 maxBytes, bool* truncated = nullptr) const;
@@ -79,6 +85,8 @@ public:
     int cachedLines() const { return lineCache_.count(); }
     int cachedSpanLines() const { return spanCache_.count(); }
     int gutterWidth() const { return gutterWidth_; }
+    GutterSide numberGutterSide() const { return numberGutterSide_; }
+    GutterSide arrowGutterSide() const { return arrowGutterSide_; }
     Side side() const { return side_; }
     const std::shared_ptr<TextModel>& model() const { return model_; }
     // True once the worker finished the highlight request for the current viewport.
@@ -163,6 +171,10 @@ private:
     void autoScrollTick();
     QColor rowBackground(const LineData& d) const;
     QString wordAt(const Pos& p, int* start, int* end);
+    int leftGutterWidth() const;
+    int rightGutterWidth() const;
+    int contentLeft() const;
+    int contentRight() const;
 
     std::shared_ptr<TextModel> model_;
     Side side_ = Side::Left;
@@ -171,10 +183,14 @@ private:
     int charWidth_ = 8;
     int ascent_ = 12;
     int gutterWidth_ = 0;
+    int numberGutterWidth_ = 0;
+    GutterSide numberGutterSide_ = GutterSide::Left;
+    GutterSide arrowGutterSide_ = GutterSide::Right;
     int visibleRows_ = 1;
     int tabColumns_ = 4;
     int prefetchRows_ = 24;
     bool showLineNumbers_ = true;
+    static constexpr int kArrowGutterWidth = 20;
 
     quint64 topRow_ = 0;
     int hOffset_ = 0;

@@ -128,13 +128,30 @@ void VirtualTextEditor::updateMetrics() {
         const quint64 lines = model_ ? qMax<quint64>(1, model_->lineCount(side_)) : 1;
         int digits = 1;
         for (quint64 v = lines; v >= 10; v /= 10) ++digits;
-        gutterWidth_ = charWidth_ * qMax(3, digits) + 18;
+        numberGutterWidth_ = charWidth_ * qMax(3, digits) + 18;
     } else {
-        gutterWidth_ = 4;
+        numberGutterWidth_ = 0;
     }
+    gutterWidth_ = numberGutterWidth_ + kArrowGutterWidth;
     visibleRows_ = qMax(1, viewport()->height() / lineHeight_);
     lineCache_.clear();
     updateScrollbars();
+}
+
+int VirtualTextEditor::leftGutterWidth() const {
+    return (numberGutterSide_ == GutterSide::Left ? numberGutterWidth_ : 0) +
+           (arrowGutterSide_ == GutterSide::Left ? kArrowGutterWidth : 0);
+}
+
+int VirtualTextEditor::rightGutterWidth() const {
+    return (numberGutterSide_ == GutterSide::Right ? numberGutterWidth_ : 0) +
+           (arrowGutterSide_ == GutterSide::Right ? kArrowGutterWidth : 0);
+}
+
+int VirtualTextEditor::contentLeft() const { return leftGutterWidth(); }
+
+int VirtualTextEditor::contentRight() const {
+    return qMax(contentLeft(), viewport()->width() - rightGutterWidth());
 }
 
 void VirtualTextEditor::updateScrollbars() {
@@ -146,7 +163,7 @@ void VirtualTextEditor::updateScrollbars() {
     verticalScrollBar()->setPageStep(mapper_.pageStep());
     verticalScrollBar()->setSingleStep(1);
     verticalScrollBar()->setValue(mapper_.toScrollbar(topRow_));
-    const int textArea = qMax(1, viewport()->width() - gutterWidth_);
+    const int textArea = qMax(1, contentRight() - contentLeft());
     const int hmax = qMax(0, maxContentWidth_ + charWidth_ * 2 - textArea);
     horizontalScrollBar()->setRange(0, hmax);
     horizontalScrollBar()->setPageStep(textArea);
@@ -200,7 +217,7 @@ void VirtualTextEditor::ensureRowVisible(quint64 row, bool center) {
 }
 
 void VirtualTextEditor::ensureColumnVisible(int pixelX) {
-    const int area = qMax(1, viewport()->width() - gutterWidth_);
+    const int area = qMax(1, contentRight() - contentLeft());
     if (pixelX < hOffset_) setHorizontalPixelOffset(qMax(0, pixelX - charWidth_ * 4));
     else if (pixelX > hOffset_ + area - charWidth_) setHorizontalPixelOffset(pixelX - area + charWidth_ * 4);
 }
@@ -332,7 +349,9 @@ void VirtualTextEditor::paintRow(QPainter& p, quint64 row, int y) {
     }
     if (row == cursor_.row) p.fillRect(full, QColor(255, 255, 255, 22));
 
-    const int originX = gutterWidth_ + (d.windowed ? static_cast<int>(d.windowStart) * charWidth_ : 0) - hOffset_;
+    const int textLeft = contentLeft();
+    const int textRight = contentRight();
+    const int originX = textLeft + (d.windowed ? static_cast<int>(d.windowStart) * charWidth_ : 0) - hOffset_;
 
     if (!d.filler && !d.text.isEmpty()) {
         const int n = d.text.size();
@@ -402,10 +421,11 @@ void VirtualTextEditor::paintRow(QPainter& p, quint64 row, int y) {
         }
         if (selToEnd && layout->lineCount() > 0) {
             const int endX = originX + qRound(layout->lineAt(0).naturalTextWidth());
-            p.fillRect(QRect(qMax(endX, gutterWidth_), y, width, lineHeight_), pal.color(QPalette::Highlight));
+            p.fillRect(QRect(qMax(endX, textLeft), y, textRight - qMax(endX, textLeft), lineHeight_),
+                       pal.color(QPalette::Highlight));
         }
         p.save();
-        p.setClipRect(QRect(gutterWidth_, y, width - gutterWidth_, lineHeight_));
+        p.setClipRect(QRect(textLeft, y, textRight - textLeft, lineHeight_));
         p.setPen(pal.color(QPalette::Text));
         layout->draw(&p, QPointF(originX, y), formats);
         p.restore();
@@ -424,19 +444,40 @@ void VirtualTextEditor::paintRow(QPainter& p, quint64 row, int y) {
         p.fillRect(QRect(originX, y, 2, lineHeight_), pal.color(QPalette::Text));
     }
 
-    // Gutter (drawn last so horizontally scrolled text never shows through).
-    if (gutterWidth_ > 4 || !showLineNumbers_) {
-        p.fillRect(QRect(0, y, gutterWidth_, lineHeight_), pal.color(QPalette::Window));
-        if (showLineNumbers_ && !d.filler) {
-            p.setPen(QColor(0x62, 0x72, 0xa4));
-            p.drawText(QRect(0, y, gutterWidth_ - 8, lineHeight_), Qt::AlignRight | Qt::AlignVCenter,
-                       QString::number(d.line + 1));
+    // Number and copy-arrow gutters mirror the paired LineNumberEditors.
+    const QColor gutter = pal.color(QPalette::Window);
+    if (leftGutterWidth() > 0) p.fillRect(QRect(0, y, leftGutterWidth(), lineHeight_), gutter);
+    if (rightGutterWidth() > 0)
+        p.fillRect(QRect(width - rightGutterWidth(), y, rightGutterWidth(), lineHeight_), gutter);
+    if (showLineNumbers_ && !d.filler) {
+        const int numberX = numberGutterSide_ == GutterSide::Left ? 0 : width - numberGutterWidth_;
+        p.setPen(QColor(0x62, 0x72, 0xa4));
+        p.drawText(QRect(numberX, y, numberGutterWidth_ - 6, lineHeight_),
+                   Qt::AlignRight | Qt::AlignVCenter, QString::number(d.line + 1));
+    }
+    if (d.row.kind != RowKind::Equal) {
+        const int arrowX = arrowGutterSide_ == GutterSide::Left ? 0 : width - kArrowGutterWidth;
+        const qreal midY = y + lineHeight_ / 2.0;
+        const qreal left = arrowX + 2.0;
+        const qreal right = arrowX + kArrowGutterWidth - 2.0;
+        QPolygonF arrow;
+        if (arrowGutterSide_ == GutterSide::Right) {
+            arrow << QPointF(left, midY - 2) << QPointF(right - 6, midY - 2)
+                  << QPointF(right - 6, midY - 5) << QPointF(right, midY)
+                  << QPointF(right - 6, midY + 5) << QPointF(right - 6, midY + 2)
+                  << QPointF(left, midY + 2);
+        } else {
+            arrow << QPointF(right, midY - 2) << QPointF(left + 6, midY - 2)
+                  << QPointF(left + 6, midY - 5) << QPointF(left, midY)
+                  << QPointF(left + 6, midY + 5) << QPointF(left + 6, midY + 2)
+                  << QPointF(right, midY + 2);
         }
-        if (d.row.kind != RowKind::Equal) {
-            const QColor mark = d.row.kind == RowKind::Replace ? QColor(0xe0, 0xa0, 0x30)
-                                : (d.row.kind == RowKind::Insert ? QColor(0x50, 0xc8, 0x78) : QColor(0xe0, 0x60, 0x60));
-            p.fillRect(QRect(0, y, 3, lineHeight_), mark);
-        }
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0xf2, 0xc0, 0x4a, 150));
+        p.drawPolygon(arrow);
+        p.restore();
     }
 }
 
@@ -452,7 +493,12 @@ void VirtualTextEditor::paintEvent(QPaintEvent*) {
         if (row >= total) break;
         paintRow(p, row, i * lineHeight_);
     }
-    p.fillRect(QRect(gutterWidth_ - 1, 0, 1, viewport()->height()), palette().color(QPalette::Mid));
+    if (arrowGutterSide_ == GutterSide::Right)
+        p.fillRect(QRect(width() - rightGutterWidth(), 0, 1, viewport()->height()),
+                   palette().color(QPalette::Mid));
+    else
+        p.fillRect(QRect(leftGutterWidth() - 1, 0, 1, viewport()->height()),
+                   palette().color(QPalette::Mid));
     if (contentWidthDirty_) {
         contentWidthDirty_ = false;
         QTimer::singleShot(0, this, [this] { updateScrollbars(); });
@@ -620,7 +666,8 @@ VirtualTextEditor::Pos VirtualTextEditor::hitTest(const QPoint& pt) {
     if (d.filler) return pos;
     std::unique_ptr<QTextLayout> layout = makeLayout(d);
     if (layout->lineCount() == 0) return pos;
-    const int originX = gutterWidth_ + (d.windowed ? static_cast<int>(d.windowStart) * charWidth_ : 0) - hOffset_;
+    const int originX = contentLeft() +
+                        (d.windowed ? static_cast<int>(d.windowStart) * charWidth_ : 0) - hOffset_;
     const int col = layout->lineAt(0).xToCursor(pt.x() - originX);
     pos.col = col + (d.windowed ? static_cast<int>(d.windowStart) : 0);
     return pos;

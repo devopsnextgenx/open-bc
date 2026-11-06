@@ -400,6 +400,17 @@ static void testCompareTab() {
     CHECK(tab.leftEditor()->model() == tab.rightEditor()->model());      // one shared model
     CHECK(tab.statusText().contains("difference blocks"));
     CHECK(tab.statusText().contains("Virtual editor"));
+    CHECK(tab.findChild<QToolBar*>(QStringLiteral("textCompareToolbar")) != nullptr);
+    CHECK(tab.findChildren<QWidget*>(QStringLiteral("sidePathSelector")).size() == 2);
+    CHECK(tab.findChildren<QToolButton*>(QStringLiteral("saveSideBtn")).size() == 2);
+    CHECK(tab.findChild<QFrame*>(QStringLiteral("textCompareMinimap")) != nullptr);
+    CHECK(tab.leftEditor()->numberGutterSide() == VirtualTextEditor::GutterSide::Left);
+    CHECK(tab.leftEditor()->arrowGutterSide() == VirtualTextEditor::GutterSide::Right);
+    CHECK(tab.rightEditor()->numberGutterSide() == VirtualTextEditor::GutterSide::Right);
+    CHECK(tab.rightEditor()->arrowGutterSide() == VirtualTextEditor::GutterSide::Left);
+    CHECK(tab.editMenuItems().size() == 6);
+    CHECK(!tab.editMenuItems()[0]->isEnabled() && !tab.editMenuItems()[1]->isEnabled() &&
+          !tab.editMenuItems()[2]->isEnabled());
 
     // Scroll sync, caret sync and difference navigation through the tab's wiring.
     tab.leftEditor()->setFirstVisibleRow(30000);
