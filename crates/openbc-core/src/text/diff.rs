@@ -13,68 +13,116 @@ use strsim::jaro_winkler;
 /// Synchronous text comparison engine with optional log normalization.
 pub struct TextCompareEngine;
 
-/// Total UTF-8 byte length of a character slice.
-fn utf8_len(chars: &[char]) -> usize {
-    chars.iter().map(|c| c.len_utf8()).sum()
-}
-
-/// Compute character ranges for two already-aligned lines.
+/// Compute word-aware ranges for two already-aligned lines.
 ///
-/// Ranges are UTF-8 byte offsets: an equal prefix, one changed middle, an equal suffix.
+/// Words and separators are diffed independently, so multiple changes on one line do not
+/// highlight the unchanged text between them. Ranges are UTF-8 byte offsets.
 #[must_use]
 pub fn compute_inline_diff(left: &str, right: &str) -> InlineDiff {
-    let left_chars: Vec<char> = left.chars().collect();
-    let right_chars: Vec<char> = right.chars().collect();
-    let prefix = left_chars.iter().zip(&right_chars).take_while(|(l, r)| l == r).count();
-    let suffix = left_chars[prefix..]
-        .iter()
-        .rev()
-        .zip(right_chars[prefix..].iter().rev())
-        .take_while(|(l, r)| l == r)
-        .count();
-    let left_middle = &left_chars[prefix..left_chars.len() - suffix];
-    let right_middle = &right_chars[prefix..right_chars.len() - suffix];
-    let whitespace_only = left_middle.iter().chain(right_middle).all(|c| *c == ' ' || *c == '\t');
-    let kind = if whitespace_only {
-        CharChangeKind::WhitespaceMismatch
-    } else {
-        CharChangeKind::Mismatch
-    };
-    let side = |chars: &[char], middle: &[char]| {
-        build_inline_ranges(
-            utf8_len(&chars[..prefix]),
-            utf8_len(middle),
-            utf8_len(&chars[chars.len() - suffix..]),
-            kind,
-        )
-    };
-    InlineDiff {
-        left: side(&left_chars, left_middle),
-        right: side(&right_chars, right_middle),
+    let left_tokens = inline_tokens(left);
+    let right_tokens = inline_tokens(right);
+    let left_values: Vec<&str> = left_tokens.iter().map(|token| token.text).collect();
+    let right_values: Vec<&str> = right_tokens.iter().map(|token| token.text).collect();
+    let diff = TextDiff::from_slices(&left_values, &right_values);
+    let (mut left, mut right) = (Vec::new(), Vec::new());
+    let (mut left_index, mut right_index) = (0, 0);
+
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Equal => {
+                append_inline_token(&mut left, left_tokens[left_index], CharChangeKind::Equal);
+                append_inline_token(&mut right, right_tokens[right_index], CharChangeKind::Equal);
+                left_index += 1;
+                right_index += 1;
+            }
+            ChangeTag::Delete => {
+                let token = left_tokens[left_index];
+                append_inline_token(&mut left, token, token.change_kind());
+                left_index += 1;
+            }
+            ChangeTag::Insert => {
+                let token = right_tokens[right_index];
+                append_inline_token(&mut right, token, token.change_kind());
+                right_index += 1;
+            }
+        }
+    }
+    InlineDiff { left, right }
+}
+
+#[derive(Clone, Copy)]
+struct InlineToken<'a> {
+    text: &'a str,
+    start: usize,
+    kind: InlineTokenKind,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum InlineTokenKind {
+    Word,
+    Whitespace,
+    Punctuation,
+}
+
+impl InlineToken<'_> {
+    fn change_kind(self) -> CharChangeKind {
+        if self.kind == InlineTokenKind::Whitespace {
+            CharChangeKind::WhitespaceMismatch
+        } else {
+            CharChangeKind::Mismatch
+        }
     }
 }
 
-fn build_inline_ranges(
-    start: usize,
-    middle_len: usize,
-    suffix_len: usize,
-    kind: CharChangeKind,
-) -> Vec<CharDiff> {
-    let mut ranges = Vec::new();
-    if start > 0 {
-        ranges.push(CharDiff { start: 0, length: start, kind: CharChangeKind::Equal });
+fn inline_tokens(text: &str) -> Vec<InlineToken<'_>> {
+    let mut tokens = Vec::new();
+    let mut start = 0;
+    let mut active_kind = None;
+
+    for (offset, ch) in text.char_indices() {
+        let kind = if ch.is_alphanumeric() || ch == '_' {
+            InlineTokenKind::Word
+        } else if ch.is_whitespace() {
+            InlineTokenKind::Whitespace
+        } else {
+            InlineTokenKind::Punctuation
+        };
+        if active_kind == Some(kind) && kind != InlineTokenKind::Punctuation {
+            continue;
+        }
+        if let Some(previous_kind) = active_kind {
+            tokens.push(InlineToken {
+                text: &text[start..offset],
+                start,
+                kind: previous_kind,
+            });
+        }
+        start = offset;
+        active_kind = Some(kind);
     }
-    if middle_len > 0 {
-        ranges.push(CharDiff { start, length: middle_len, kind });
-    }
-    if suffix_len > 0 {
-        ranges.push(CharDiff {
-            start: start + middle_len,
-            length: suffix_len,
-            kind: CharChangeKind::Equal,
+    if start < text.len() {
+        tokens.push(InlineToken {
+            text: &text[start..],
+            start,
+            kind: active_kind.expect("non-empty token has a kind"),
         });
     }
-    ranges
+    tokens
+}
+
+fn append_inline_token(ranges: &mut Vec<CharDiff>, token: InlineToken<'_>, kind: CharChangeKind) {
+    let length = token.text.len();
+    if let Some(previous) = ranges.last_mut() {
+        if previous.kind == kind && previous.start + previous.length == token.start {
+            previous.length += length;
+            return;
+        }
+    }
+    ranges.push(CharDiff {
+        start: token.start,
+        length,
+        kind,
+    });
 }
 
 /// Both inputs split into lines, with the raw text (reported) and normalized text (compared).
@@ -289,5 +337,28 @@ mod tests {
         assert_eq!(result.left[0].kind, CharChangeKind::Equal);
         assert_eq!(result.left[1].kind, CharChangeKind::Mismatch);
         assert_eq!(result.left[1].start, "préfix ".len());
+    }
+
+    #[test]
+    fn inline_diff_matches_unchanged_words_between_multiple_insertions() {
+        let left = "# 2. Integrate Rust Cargo via Corrosion";
+        let right = "# 2. Integrate in Rust Cargo via Corrosion rust";
+        let result = compute_inline_diff(left, right);
+
+        let mismatches = |text: &str, ranges: &[CharDiff]| {
+            ranges
+                .iter()
+                .filter(|range| range.kind == CharChangeKind::Mismatch)
+                .map(|range| text[range.start..range.start + range.length].to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert!(mismatches(left, &result.left).is_empty());
+        assert_eq!(mismatches(right, &result.right), ["in", "rust"]);
+        for word in ["Rust", "Cargo", "via", "Corrosion"] {
+            assert!(result.left.iter().any(|range| {
+                range.kind == CharChangeKind::Equal
+                    && left[range.start..range.start + range.length].contains(word)
+            }));
+        }
     }
 }
