@@ -455,30 +455,6 @@ void VirtualTextEditor::paintRow(QPainter& p, quint64 row, int y) {
         p.drawText(QRect(numberX, y, numberGutterWidth_ - 6, lineHeight_),
                    Qt::AlignRight | Qt::AlignVCenter, QString::number(d.line + 1));
     }
-    if (d.row.kind != RowKind::Equal) {
-        const int arrowX = arrowGutterSide_ == GutterSide::Left ? 0 : width - kArrowGutterWidth;
-        const qreal midY = y + lineHeight_ / 2.0;
-        const qreal left = arrowX + 2.0;
-        const qreal right = arrowX + kArrowGutterWidth - 2.0;
-        QPolygonF arrow;
-        if (arrowGutterSide_ == GutterSide::Right) {
-            arrow << QPointF(left, midY - 2) << QPointF(right - 6, midY - 2)
-                  << QPointF(right - 6, midY - 5) << QPointF(right, midY)
-                  << QPointF(right - 6, midY + 5) << QPointF(right - 6, midY + 2)
-                  << QPointF(left, midY + 2);
-        } else {
-            arrow << QPointF(right, midY - 2) << QPointF(left + 6, midY - 2)
-                  << QPointF(left + 6, midY - 5) << QPointF(left, midY)
-                  << QPointF(left + 6, midY + 5) << QPointF(left + 6, midY + 2)
-                  << QPointF(right, midY + 2);
-        }
-        p.save();
-        p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(Qt::NoPen);
-        p.setBrush(QColor(0xf2, 0xc0, 0x4a, 150));
-        p.drawPolygon(arrow);
-        p.restore();
-    }
 }
 
 void VirtualTextEditor::paintEvent(QPaintEvent*) {
@@ -493,6 +469,68 @@ void VirtualTextEditor::paintEvent(QPaintEvent*) {
         if (row >= total) break;
         paintRow(p, row, i * lineHeight_);
     }
+
+    const auto isChanged = [this, total](quint64 row) {
+        return row < total && model_->row(row).kind != RowKind::Equal;
+    };
+    const int arrowX = arrowGutterSide_ == GutterSide::Left
+                           ? 0
+                           : viewport()->width() - kArrowGutterWidth;
+    const auto drawSpanArrow = [this, &p, arrowX](int top, int bottom, bool drawArrow,
+                                                   bool drawEnd) {
+        const bool right = arrowGutterSide_ == GutterSide::Right;
+        const auto x = [right, arrowX](qreal offset) {
+            return arrowX + (right ? offset : kArrowGutterWidth - offset);
+        };
+        const int mid = top + lineHeight_ / 2;
+        if (bottom - top > lineHeight_ + 2) {
+            p.setPen(QPen(QColor(0x9a, 0x9a, 0x9a), 1));
+            const qreal lineX = x(2.5);
+            const qreal lineEnd = drawEnd ? bottom - 2.5 : bottom;
+            p.drawLine(QPointF(lineX, drawArrow ? mid + 7 : top),
+                       QPointF(lineX, lineEnd));
+            if (drawEnd)
+                p.drawLine(QPointF(lineX, lineEnd), QPointF(x(8.5), lineEnd));
+        }
+        if (!drawArrow) return;
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0xf2, 0xc0, 0x4a, 150));
+        QPolygonF arrow;
+        arrow << QPointF(x(2), mid - 2) << QPointF(x(9), mid - 2)
+              << QPointF(x(9), mid - 5) << QPointF(x(16), mid)
+              << QPointF(x(9), mid + 5) << QPointF(x(9), mid + 2)
+              << QPointF(x(2), mid + 2);
+        p.drawPolygon(arrow);
+    };
+
+    int row = 0;
+    while (row < rows && topRow_ + static_cast<quint64>(row) < total) {
+        const quint64 firstRow = topRow_ + static_cast<quint64>(row);
+        if (!isChanged(firstRow)) {
+            ++row;
+            continue;
+        }
+
+        const int start = row;
+        while (row + 1 < rows &&
+               topRow_ + static_cast<quint64>(row + 1) < total &&
+               isChanged(topRow_ + static_cast<quint64>(row + 1))) {
+            ++row;
+        }
+        const int end = row;
+        const quint64 after = topRow_ + static_cast<quint64>(end) + 1;
+        const bool startVisible = start != 0 || topRow_ == 0 || !isChanged(topRow_ - 1);
+        const bool endVisible = end != rows - 1 || after >= total || !isChanged(after);
+        const int top = start * lineHeight_;
+        const int bottom = qMin((end + 1) * lineHeight_, viewport()->height());
+
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        drawSpanArrow(top, bottom, startVisible, endVisible);
+        p.restore();
+        ++row;
+    }
+
     if (arrowGutterSide_ == GutterSide::Right)
         p.fillRect(QRect(width() - rightGutterWidth(), 0, 1, viewport()->height()),
                    palette().color(QPalette::Mid));
