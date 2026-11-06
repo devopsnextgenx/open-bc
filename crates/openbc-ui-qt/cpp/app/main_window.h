@@ -54,6 +54,8 @@
 #include "viewers/media/media_compare_viewer.h"
 #include "viewers/folder/folder_compare_viewer.h"
 #include "viewers/text/text_compare_viewer.h"
+#include "viewers/text/text_editor_choice.h"
+#include "viewers/text/virtual/virtual_text_compare_viewer.h"
 #include "backend/backend_api.h"
 #include "common/drop_filter.h"
 #include "common/drop_payload.h"
@@ -295,6 +297,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         FolderCompareViewer* session = currentSession();
         QWidget* current = tabs->currentWidget();
         auto* textView = dynamic_cast<TextCompareViewer*>(current);
+        auto* virtualTextView = dynamic_cast<VirtualTextCompareViewer*>(current);
         auto* pictureView = dynamic_cast<PictureCompareViewer*>(current);
         auto* model3dView = dynamic_cast<Model3dCompareViewer*>(current);
         auto* tableView = dynamic_cast<TableCompareViewer*>(current);
@@ -303,6 +306,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         auto* mediaView = dynamic_cast<MediaCompareViewer*>(current);
         fill(actionsMenu, session   ? session->actionsMenuItems()
                           : textView ? textView->actionsMenuItems()
+                          : virtualTextView ? virtualTextView->actionsMenuItems()
                           : pictureView ? pictureView->actionsMenuItems()
                           : model3dView ? model3dView->actionsMenuItems()
                           : tableView ? tableView->actionsMenuItems()
@@ -312,6 +316,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
                                      : QList<QAction*>());
         fill(editMenu, session   ? session->editMenuItems()
                        : textView ? textView->editMenuItems()
+                       : virtualTextView ? virtualTextView->editMenuItems()
                        : pictureView ? pictureView->editMenuItems()
                        : model3dView ? model3dView->editMenuItems()
                        : tableView ? tableView->editMenuItems()
@@ -319,6 +324,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
                                   : QList<QAction*>());
         fill(searchMenu, session   ? session->searchMenuItems()
                          : textView ? textView->searchMenuItems()
+                         : virtualTextView ? virtualTextView->searchMenuItems()
                          : pictureView ? pictureView->searchMenuItems()
                          : model3dView ? model3dView->searchMenuItems()
                          : tableView ? tableView->searchMenuItems()
@@ -327,6 +333,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
                                     : QList<QAction*>());
         fill(viewMenu, session   ? session->viewMenuItems()
                        : textView ? textView->viewMenuItems()
+                       : virtualTextView ? virtualTextView->viewMenuItems()
                        : pictureView ? pictureView->viewMenuItems()
                        : model3dView ? model3dView->viewMenuItems()
                        : tableView ? tableView->viewMenuItems()
@@ -348,6 +355,8 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
             window.setWindowTitle(session->title() + " - Folder Compare - OpenBC");
         } else if (auto* textView = dynamic_cast<TextCompareViewer*>(tabs->currentWidget())) {
             window.setWindowTitle(textView->title() + " - Text Compare - OpenBC");
+        } else if (auto* virtualView = dynamic_cast<VirtualTextCompareViewer*>(tabs->currentWidget())) {
+            window.setWindowTitle(virtualView->title() + " - Text Compare - OpenBC");
         } else if (auto* pictureView = dynamic_cast<PictureCompareViewer*>(tabs->currentWidget())) {
             window.setWindowTitle(pictureView->title() + " - Picture Compare - OpenBC");
         } else if (auto* model3dView = dynamic_cast<Model3dCompareViewer*>(tabs->currentWidget())) {
@@ -468,6 +477,34 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
 
     addTextView = [&](const QString& leftPath, const QString& rightPath, const QString& leftText,
                       const QString& rightText, FolderCompareViewer* origin) {
+        // Tools > Options > Text Compare: pick the editor implementation BEFORE any file content is
+        // read (sizes come from QFileInfo only). Explicit modes override Hybrid; open tabs are never
+        // switched, the choice applies to this new comparison only.
+        const EditorChoice choice = chooseTextEditor(optionsStore.options().textEditor, leftPath, rightPath,
+                                                     leftText, rightText);
+        if (!choice.note.isEmpty()) window.statusBar()->showMessage(choice.note, 10000);
+        if (choice.editor == openbc::app::text_editor::Editor::Virtual) {
+            auto* virtualView = new VirtualTextCompareViewer(leftPath, rightPath);
+            const int virtualIndex = tabs->addTab(
+                virtualView, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Compare), virtualView->title());
+            tabs->setTabToolTip(virtualIndex, leftPath + " <-> " + rightPath);
+            attachCloseButton(virtualIndex, virtualView);
+            virtualView->onHomeRequested = [&, origin]() {
+                const int index = origin ? tabs->indexOf(origin) : homeIndex;
+                if (index >= 0) tabs->setCurrentIndex(index);
+            };
+            virtualView->onSessionsRequested = virtualView->onHomeRequested;
+            virtualView->onTitleChanged = [&, virtualView]() {
+                const int i = tabs->indexOf(virtualView);
+                if (i < 0) return;
+                tabs->setTabText(i, virtualView->title());
+                if (tabs->currentIndex() == i) updateWindowTitle();
+            };
+            SessionHistory::record("text", leftPath, rightPath);
+            home->refreshHistory();
+            tabs->setCurrentIndex(virtualIndex);
+            return;
+        }
         auto* textView = new TextCompareViewer(leftPath, rightPath, leftText, rightText);
         registerInstrumentationSession(textView->instrumentationSessionId(), textView->title());
         const int textIndex = tabs->addTab(
@@ -697,6 +734,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         }
         if (auto* v = dynamic_cast<FolderCompareViewer*>(w)) { ctx.tab = drop::TabKind::Folder; left = v->leftText(); right = v->rightText(); }
         else if (auto* v = dynamic_cast<TextCompareViewer*>(w)) { ctx.tab = drop::TabKind::Text; left = v->leftText(); right = v->rightText(); dirty = v->hasUnsavedChanges(); }
+        else if (auto* v = dynamic_cast<VirtualTextCompareViewer*>(w)) { ctx.tab = drop::TabKind::Text; left = v->leftText(); right = v->rightText(); }
         else if (auto* v = dynamic_cast<PictureCompareViewer*>(w)) { ctx.tab = drop::TabKind::Picture; left = v->leftText(); right = v->rightText(); }
         else if (auto* v = dynamic_cast<Model3dCompareViewer*>(w)) { ctx.tab = drop::TabKind::Model3d; left = v->leftText(); right = v->rightText(); }
         else if (auto* v = dynamic_cast<TableCompareViewer*>(w)) { ctx.tab = drop::TabKind::Table; left = v->leftText(); right = v->rightText(); dirty = v->hasUnsavedChanges(); }
@@ -713,6 +751,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     auto applyDroppedPaths = [&](QWidget* w, const QString& left, const QString& right) {
         if (auto* v = dynamic_cast<FolderCompareViewer*>(w)) v->applyDroppedPaths(left, right);
         else if (auto* v = dynamic_cast<TextCompareViewer*>(w)) v->applyDroppedPaths(left, right);
+        else if (auto* v = dynamic_cast<VirtualTextCompareViewer*>(w)) v->applyDroppedPaths(left, right);
         else if (auto* v = dynamic_cast<PictureCompareViewer*>(w)) v->applyDroppedPaths(left, right);
         else if (auto* v = dynamic_cast<Model3dCompareViewer*>(w)) v->applyDroppedPaths(left, right);
         else if (auto* v = dynamic_cast<TableCompareViewer*>(w)) v->applyDroppedPaths(left, right);
@@ -733,6 +772,11 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         case drop::TabKind::Media: addMediaView(left, right); break;
         case drop::TabKind::Text:
             // Text files are read by the viewer itself (async, remote-aware), not here on the GUI thread.
+            if (chooseTextEditor(optionsStore.options().textEditor, left, right, QString(), QString()).editor ==
+                openbc::app::text_editor::Editor::Virtual) {
+                addTextView(left, right, QString(), QString(), nullptr);   // virtual tab loads (and records) itself
+                break;
+            }
             addTextView(QString(), QString(), QString(), QString(), nullptr);
             if (auto* v = dynamic_cast<TextCompareViewer*>(tabs->currentWidget())) {
                 v->applyDroppedPaths(left, right);
@@ -964,6 +1008,14 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
                 return true;
             }
             if (kind == "text-compare") {
+                if (auto* vv = dynamic_cast<VirtualTextCompareViewer*>(w)) {
+                    if (!vv->leftText().isEmpty() || !vv->rightText().isEmpty()) continue;
+                    tabs->setCurrentIndex(i);
+                    vv->applyDroppedPaths(left, right);
+                    SessionHistory::record("text", left, right);
+                    home->refreshHistory();
+                    return true;
+                }
                 auto* view = dynamic_cast<TextCompareViewer*>(w);
                 if (!view || !view->leftText().isEmpty() || !view->rightText().isEmpty() ||
                     view->hasUnsavedChanges())

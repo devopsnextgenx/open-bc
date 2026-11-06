@@ -31,6 +31,7 @@ inline constexpr PageStatus kPages[] = {
     {"Appearance", Status::Implemented, "Saved to preferences.ini and applied (theme, text font, colors)."},
     {"Startup", Status::InProgress, "Work in progress: changes are not saved or applied yet."},
     {"Tabs", Status::InProgress, "Work in progress: changes are not saved or applied yet."},
+    {"Text Compare", Status::Implemented, "Saved to preferences.ini; applies to comparisons opened afterwards."},
     {"Text Editing", Status::InProgress, "Work in progress: changes are not saved or applied yet."},
     {"Next Difference", Status::InProgress, "Work in progress: changes are not saved or applied yet."},
     {"Backups", Status::InProgress, "Work in progress: changes are not saved or applied yet."},

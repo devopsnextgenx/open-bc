@@ -1,12 +1,10 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+//! Legacy helpers; the engine in `text::engine` supersedes this module.
 
-/// Hash a single line in a stable, deterministic way.
+/// Hash a single line (XXH3-64: stable across runs, platforms and Rust versions, unlike
+/// `DefaultHasher`, whose output is explicitly unspecified).
 #[must_use]
 pub fn hash_line(input: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    input.hash(&mut hasher);
-    hasher.finish()
+    xxhash_rust::xxh3::xxh3_64(input)
 }
 
 /// Apply the same normalization strategy used by the line diff pipeline: strip trailing carriage

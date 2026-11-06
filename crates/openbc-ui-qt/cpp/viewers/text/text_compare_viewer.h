@@ -69,6 +69,8 @@
 #include "common/archive_support.h"
 #include "remote/remote_profile_store.h"
 #include "remote/remote_vfs_bridge.h"
+#include "viewers/text/engine/text_model.h"
+#include "viewers/text/plain_text_editor_adapter.h"
 #include "viewers/text/syntax_highlighter.h"
 
 namespace openbc::app {
@@ -131,6 +133,11 @@ public:
     QString leftText() const { return leftPath_; }
     QString rightText() const { return rightPath_; }
 
+    // The two panes behind the common ITextCompareEditor interface (same surface as the Virtual
+    // editor). Diff navigation is wired to this viewer's own difference list.
+    ITextCompareEditor& leftEditorInterface() { return adapterFor(leftAdapter_, leftEditor_); }
+    ITextCompareEditor& rightEditorInterface() { return adapterFor(rightAdapter_, rightEditor_); }
+
     // Drop target entry point (common/drop_router.h): an empty argument leaves that side untouched.
     void applyDroppedPaths(const QString& left, const QString& right) {
         if (left.isEmpty() && right.isEmpty()) return;
@@ -176,8 +183,8 @@ public:
         decltype(rightDirtyLines_){}.swap(rightDirtyLines_);
         leftRaw_ = QString();
         rightRaw_ = QString();
-        largeLeftNextOffset_ = -1;
-        largeRightNextOffset_ = -1;
+        largeModel_.reset();          // unmaps both files and frees the line/diff indexes
+        largeNextRow_ = 0;
         largeLeftLineCount_ = 0;
         largeRightLineCount_ = 0;
         currentRow_ = -1;
@@ -275,92 +282,33 @@ private:
         return inputBytes > kLargeCompareMemoryBudget / kEstimatedCompareBytesPerInputByte;
     }
 
-    struct LargePage {
-        QStringList lines;
-        QVector<qint64> lineOffsets;
-        qint64 nextOffset = -1;
-        QString error;
-    };
-
-    static int largePageBoundaryCarryRows(const QVector<TextDiffLine>& rows) {
-        if (rows.isEmpty()) return 0;
-        int carry = 0;
-        for (int i = rows.size() - 1; i >= 0; --i) {
-            const TextDiffLine& row = rows[i];
-            const bool leftHasLine = row.leftNumber > 0;
-            const bool rightHasLine = row.rightNumber > 0;
-            if (!leftHasLine && !rightHasLine) {
-                continue;
-            }
-            if (leftHasLine == rightHasLine) {
-                break;
-            }
-            ++carry;
-            if (carry >= kLargePageBoundaryCarryRows) break;
-        }
-        return carry;
-    }
-
-    static LargePage readLargePage(const QString& path, qint64 offset) {
-        LargePage page;
-        if (path.isEmpty() || offset < 0) return page;
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly)) {
-            page.error = file.errorString();
-            return page;
-        }
-        if (!file.seek(offset)) {
-            page.error = file.errorString();
-            return page;
-        }
-        qint64 pageBytes = 0;
-        while (page.lines.size() < kLargePageLineCount &&
-               pageBytes < kLargePageByteLimit && !file.atEnd()) {
-            const qint64 lineStart = file.pos();
-            QByteArray line = file.readLine(kLargeLineByteLimit + 1);
-            if (line.isEmpty()) break;
-            page.lineOffsets.push_back(lineStart);
-            const bool truncated = line.size() > kLargeLineByteLimit ||
-                                   (!line.endsWith('\n') && !file.atEnd() &&
-                                    line.size() >= kLargeLineByteLimit);
-            if (truncated) {
-                line.truncate(kLargeLineByteLimit);
-                while (!file.atEnd()) {
-                    const QByteArray tail = file.readLine(4096);
-                    if (tail.isEmpty() || tail.endsWith('\n')) break;
-                }
-                line += QByteArrayLiteral(" ... [line truncated at 64 KiB]");
-            }
-            if (line.endsWith('\n')) line.chop(1);
-            if (line.endsWith('\r')) line.chop(1);
-            page.lines.push_back(QString::fromUtf8(line));
-            pageBytes += file.pos() - lineStart;
-        }
-        page.nextOffset = file.atEnd() ? -1 : file.pos();
-        return page;
-    }
-
+    // LARGE-FILE MODE (existing QPlainTextEdit editor).
+    //
+    // Alignment is computed ONCE, globally, by the Qt-independent engine (hash-indexed lines, patience /
+    // histogram / Myers, memory-mapped files). The editor then receives the already-aligned rows in
+    // pages of kLargePageLineCount rows. The previous implementation diffed each page on its own and
+    // patched page boundaries with a 128-row heuristic, which drifted whenever an insertion or deletion
+    // was larger than that window. No page boundary can influence alignment any more.
+    //
+    // Memory note: this editor still stores the loaded rows in one QTextDocument (inherent to
+    // QPlainTextEdit). Per-row text copies are no longer kept in rows_/inline vectors beyond what the
+    // document needs; files that do not fit comfortably should use the Virtual Editor (Tools > Options >
+    // Text Compare), which never materialises the file.
     void loadLargePage() {
         if (!largeFileMode_ || largePageLoading_) return;
         if (largePageIndex_ < 0) {
-            largeLeftNextOffset_ = 0;
-            largeRightNextOffset_ = 0;
             largePageIndex_ = 0;
+            largeNextRow_ = 0;
             miniMap_->beginProgressiveRows();
         } else {
-            if ((leftPath_.isEmpty() || largeLeftNextOffset_ < 0) &&
-                (rightPath_.isEmpty() || largeRightNextOffset_ < 0)) return;
+            if (largeModel_ && largeNextRow_ >= largeModel_->rowCount()) return;
             ++largePageIndex_;
         }
         largePageLoading_ = true;
         ++loadGeneration_;
         progress_->show();
         const int generation = ++largePageGeneration_;
-        const QString leftPath = leftPath_;
-        const QString rightPath = rightPath_;
-        const qint64 leftOffset = largeLeftNextOffset_;
-        const qint64 rightOffset = largeRightNextOffset_;
-        for (const QString& path : {leftPath, rightPath}) {
+        for (const QString& path : {leftPath_, rightPath_}) {
             if (!path.isEmpty() && (!QFileInfo(path).exists() || !QFileInfo(path).isFile())) {
                 largePageLoading_ = false;
                 progress_->hide();
@@ -368,111 +316,82 @@ private:
                 return;
             }
         }
-        if ((leftOffset >= 0 && QFileInfo(leftPath).size() > static_cast<qint64>(kMaxLargeCompareFileBytes)) ||
-            (rightOffset >= 0 && QFileInfo(rightPath).size() > static_cast<qint64>(kMaxLargeCompareFileBytes))) {
-            largePageLoading_ = false;
-            progress_->hide();
-            status_->setText(QString("Large-file mode supports local files up to 500 MiB per side."));
-            setEditabilityIndicator(false, false);
+        for (const QString& path : {leftPath_, rightPath_}) {
+            if (!path.isEmpty() && QFileInfo(path).size() > static_cast<qint64>(kMaxLargeCompareFileBytes)) {
+                largePageLoading_ = false;
+                progress_->hide();
+                status_->setText(QString("The Existing editor supports local files up to 500 MiB per side in large-file mode; use the Virtual Editor for larger files."));
+                setEditabilityIndicator(false, false);
+                return;
+            }
+        }
+        if (largeModel_) {
+            appendNextLargeModelPage();
             return;
         }
-        const QPointer<TextCompareViewer> view(this);
-        QThreadPool::globalInstance()->start([view, generation, leftPath, rightPath,
-                                               leftOffset, rightOffset]() {
-            const LargePage left = readLargePage(leftPath, leftOffset);
-            const LargePage right = readLargePage(rightPath, rightOffset);
-            if (!view) return;
-            QMetaObject::invokeMethod(view, [view, generation, left, right]() {
-                if (!view || generation != view->largePageGeneration_) return;
-                view->largePageLoading_ = false;
-                view->progress_->hide();
-                if (!left.error.isEmpty() || !right.error.isEmpty()) {
-                    view->status_->setText("Could not load large-file block: " +
-                                            (!left.error.isEmpty() ? left.error : right.error));
-                    return;
-                }
-                if (left.nextOffset < 0 && right.nextOffset < 0 &&
-                    left.lines.isEmpty() && right.lines.isEmpty()) {
-                    view->finishLargeFileLoading();
-                    return;
-                }
-                view->compareLargePage(left, right, view->largeLeftLineCount_,
-                                       view->largeRightLineCount_);
-            }, Qt::QueuedConnection);
-        });
+        // First call: build the global alignment off the GUI thread.
+        if (!largeLoader_) largeLoader_ = new TextModelLoader(this);
+        largeLoader_->onProgress = [this, generation](const QString& phase, quint64 done, quint64 total) {
+            if (generation != largePageGeneration_) return;
+            status_->setText(QString("Large file mode · %1 · %2%").arg(phase).arg(total ? done * 100 / total : 0));
+        };
+        largeLoader_->onFinished = [this, generation](std::shared_ptr<TextModel> model) {
+            if (generation != largePageGeneration_ || !largeFileMode_) return;
+            largeModel_ = std::move(model);
+            appendNextLargeModelPage();
+        };
+        largeLoader_->onFailed = [this, generation](const QString& message) {
+            if (generation != largePageGeneration_) return;
+            largePageLoading_ = false;
+            progress_->hide();
+            status_->setText("Could not compare large files: " + message);
+        };
+        largeLoader_->start(leftPath_, rightPath_, ModelOptions{});
     }
 
-    void compareLargePage(const LargePage& leftPage, const LargePage& rightPage,
-                          int leftLineStart, int rightLineStart) {
-        const QString ignoreSample = activeIgnoreSample();
-        const QString sessionId = instrumentationSessionId_;
+    // Converts the next kLargePageLineCount aligned rows of the global model into editor rows.
+    void appendNextLargeModelPage() {
+        if (!largeModel_) return;
+        const quint64 total = largeModel_->rowCount();
+        if (largeNextRow_ >= total) {
+            finishLargeFileLoading();
+            return;
+        }
+        const quint64 first = largeNextRow_;
+        const quint64 last = qMin<quint64>(total, first + static_cast<quint64>(kLargePageLineCount));
         const bool minor = minorAction_->isChecked();
-        const int generation = ++loadGeneration_;
-        const int pageIndex = largePageIndex_;
-        const QPointer<TextCompareViewer> view(this);
-        QThreadPool::globalInstance()->start(
-            [view, generation, pageIndex, leftPage, rightPage, ignoreSample, sessionId,
-             minor, leftLineStart, rightLineStart]() {
-            QVector<TextDiffLine> rows = alignTextLines(leftPage.lines, rightPage.lines,
-                                                        ignoreSample, sessionId);
-            int leftCarry = 0;
-            int rightCarry = 0;
-            if (leftPage.nextOffset >= 0 || rightPage.nextOffset >= 0) {
-                // Keep only a bounded trailing boundary window across chunk boundaries. This avoids
-                // the old page-local desynchronization where a single insertion/deletion larger than
-                // the current 512-line page could permanently drift the alignments.
-                const int retainedRows = largePageBoundaryCarryRows(rows);
-                if (retainedRows > 0) {
-                    for (int i = rows.size() - retainedRows; i < rows.size(); ++i) {
-                        if (rows[i].leftNumber > 0) ++leftCarry;
-                        if (rows[i].rightNumber > 0) ++rightCarry;
-                    }
-                    rows.resize(rows.size() - retainedRows);
-                }
-            }
-            const int leftConsumed = leftPage.lines.size() - leftCarry;
-            const int rightConsumed = rightPage.lines.size() - rightCarry;
-            const qint64 leftNextOffset = leftCarry > 0
-                ? leftPage.lineOffsets.value(leftConsumed, leftPage.nextOffset)
-                : leftPage.nextOffset;
-            const qint64 rightNextOffset = rightCarry > 0
-                ? rightPage.lineOffsets.value(rightConsumed, rightPage.nextOffset)
-                : rightPage.nextOffset;
-            if (minor) {
-                for (auto& row : rows) if (row.whitespaceOnly) row.changed = false;
-            }
-            for (auto& row : rows) {
-                if (row.leftNumber > 0) row.leftNumber += leftLineStart;
-                if (row.rightNumber > 0) row.rightNumber += rightLineStart;
-            }
-            const auto inlineDiffs = computeInlineDiffsForRows(rows, sessionId);
-            if (!view) return;
-            QMetaObject::invokeMethod(
-                view, [view, generation, pageIndex, leftLineStart, rightLineStart,
-                       leftConsumed, rightConsumed, leftNextOffset, rightNextOffset,
-                       rows = std::move(rows), inlineDiffs]() mutable {
-                if (!view || generation != view->loadGeneration_) return;
-                view->largeLeftNextOffset_ = leftNextOffset;
-                view->largeRightNextOffset_ = rightNextOffset;
-                view->appendLargeRows(std::move(rows), inlineDiffs, leftConsumed, rightConsumed);
-                view->largeLeftLineCount_ = leftLineStart + leftConsumed;
-                view->largeRightLineCount_ = rightLineStart + rightConsumed;
-                view->largePageLoading_ = false;
-                view->progress_->hide();
-                view->status_->setText(
-                    QString("Large file mode · block %1 matched · %2 left line(s), %3 right line(s) loaded")
-                        .arg(pageIndex + 1).arg(view->largeLeftLineCount_)
-                        .arg(view->largeRightLineCount_));
-                if (view->largeLeftNextOffset_ >= 0 || view->largeRightNextOffset_ >= 0) {
-                    QTimer::singleShot(100, view, [view]() {
-                        if (view && view->largeFileMode_ && !view->largePageLoading_)
-                            view->loadLargePage();
-                    });
-                } else {
-                    view->finishLargeFileLoading();
-                }
-            }, Qt::QueuedConnection);
-        });
+        QVector<TextDiffLine> rows;
+        rows.reserve(static_cast<int>(last - first));
+        int leftConsumed = 0, rightConsumed = 0;
+        const auto lineText = [this](Side side, qint64 line) {
+            const LineWindow w = largeModel_->window(side, static_cast<quint64>(line), 0, kLargeLineByteLimit);
+            return w.moreAfter ? w.text + QStringLiteral(" ... [line truncated at 64 KiB]") : w.text;
+        };
+        for (quint64 r = first; r < last; ++r) {
+            const ModelRow m = largeModel_->row(r);
+            TextDiffLine row;
+            if (m.left >= 0) { row.left = lineText(Side::Left, m.left); row.leftNumber = static_cast<int>(m.left) + 1; ++leftConsumed; }
+            if (m.right >= 0) { row.right = lineText(Side::Right, m.right); row.rightNumber = static_cast<int>(m.right) + 1; ++rightConsumed; }
+            row.changed = m.kind != RowKind::Equal;
+            row.whitespaceOnly = m.kind == RowKind::Replace && normalizedTextLine(row.left) == normalizedTextLine(row.right);
+            if (minor && row.whitespaceOnly) row.changed = false;
+            rows.push_back(std::move(row));
+        }
+        largeNextRow_ = last;
+        const auto inlineDiffs = computeInlineDiffsForRows(rows, instrumentationSessionId_);
+        appendLargeRows(std::move(rows), inlineDiffs, leftConsumed, rightConsumed);
+        largePageLoading_ = false;
+        progress_->hide();
+        status_->setText(QString("Large file mode · globally aligned · %1 of %2 rows loaded")
+                             .arg(largeNextRow_).arg(total));
+        if (largeNextRow_ < total) {
+            const int generation = largePageGeneration_;
+            QTimer::singleShot(0, this, [this, generation]() {
+                if (generation == largePageGeneration_ && largeFileMode_ && !largePageLoading_) loadLargePage();
+            });
+        } else {
+            finishLargeFileLoading();
+        }
     }
 
     void appendLargeRows(QVector<TextDiffLine> rows,
@@ -2345,8 +2264,8 @@ private:
             leftEditor_->setLargeContentMode(true);
             rightEditor_->setLargeContentMode(true);
             largePageIndex_ = -1;
-            largeLeftNextOffset_ = 0;
-            largeRightNextOffset_ = 0;
+            largeModel_.reset();          // a reloaded side must be re-aligned globally
+            largeNextRow_ = 0;
             largeLeftLineCount_ = 0;
             largeRightLineCount_ = 0;
             leftOriginal_.clear();
@@ -2626,8 +2545,32 @@ private:
     bool largePageLoading_ = false;
     int largePageGeneration_ = 0;
     int largePageIndex_ = -1;
-    qint64 largeLeftNextOffset_ = 0;
-    qint64 largeRightNextOffset_ = 0;
+    std::unique_ptr<PlainTextEditorAdapter> leftAdapter_, rightAdapter_;
+    PlainTextEditorAdapter& adapterFor(std::unique_ptr<PlainTextEditorAdapter>& slot, QPlainTextEdit* edit) {
+        if (!slot) {
+            slot = std::make_unique<PlainTextEditorAdapter>(edit);
+            slot->nextDifferenceRow = [this](quint64 from) -> std::optional<quint64> {
+                for (int i = static_cast<int>(from) + 1; i < rows_.size(); ++i)
+                    if (rows_[i].changed && (i == 0 || !rows_[i - 1].changed)) return static_cast<quint64>(i);
+                return std::nullopt;
+            };
+            slot->prevDifferenceRow = [this](quint64 from) -> std::optional<quint64> {
+                for (int i = qMin(static_cast<int>(from), static_cast<int>(rows_.size())) - 1; i >= 0; --i)
+                    if (rows_[i].changed && (i == 0 || !rows_[i - 1].changed)) return static_cast<quint64>(i);
+                return std::nullopt;
+            };
+            slot->rowForLine = [this, edit](quint64 line1) -> std::optional<quint64> {
+                const bool left = edit == static_cast<QPlainTextEdit*>(leftEditor_);
+                for (int i = 0; i < rows_.size(); ++i)
+                    if ((left ? rows_[i].leftNumber : rows_[i].rightNumber) == static_cast<int>(line1)) return static_cast<quint64>(i);
+                return std::nullopt;
+            };
+        }
+        return *slot;
+    }
+    std::shared_ptr<TextModel> largeModel_;     // global alignment of both files (engine)
+    quint64 largeNextRow_ = 0;                  // next aligned row to hand to the editor
+    TextModelLoader* largeLoader_ = nullptr;
     int largeLeftLineCount_ = 0;
     int largeRightLineCount_ = 0;
     QProgressBar* progress_ = nullptr;

@@ -1,5 +1,4 @@
 use std::cmp;
-use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -33,8 +32,6 @@ pub struct LargeTextSource {
     path: PathBuf,
     len: u64,
     modified: Option<SystemTime>,
-    max_cache_bytes: usize,
-    cache: VecDeque<(u64, Vec<u8>)>,
 }
 
 impl LargeTextSource {
@@ -46,15 +43,7 @@ impl LargeTextSource {
             path,
             len: metadata.len(),
             modified: metadata.modified().ok(),
-            max_cache_bytes: 64 * 1024 * 1024,
-            cache: VecDeque::new(),
         })
-    }
-
-    /// Set the maximum bounded cache size for the window.
-    pub fn with_cache_bytes(mut self, max_cache_bytes: usize) -> Self {
-        self.max_cache_bytes = max_cache_bytes.max(1024 * 1024);
-        self
     }
 
     #[must_use]
@@ -81,12 +70,17 @@ impl LargeTextSource {
         let mut file = File::open(&self.path)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut out = vec![0; length];
-        let read = file.read(&mut out)?;
-        out.truncate(read);
-
-        self.cache.clear();
-        self.cache.push_back((offset, out.clone()));
-        self.trim_cache();
+        let mut filled = 0;
+        while filled < length {
+            let read = file.read(&mut out[filled..])?;
+            if read == 0 {
+                break;
+            }
+            filled += read;
+        }
+        out.truncate(filled);
+        // Nothing is retained: the previous implementation cloned every read into a cache that was
+        // immediately cleared again on the next call (a pure extra copy).
         Ok(out)
     }
 
@@ -116,19 +110,6 @@ impl LargeTextSource {
         let mut out = Vec::new();
         file.read_to_end(&mut out)?;
         Ok(out)
-    }
-
-    fn trim_cache(&mut self) {
-        let mut kept = VecDeque::new();
-        let mut total = 0usize;
-        for (start, bytes) in self.cache.drain(..).rev() {
-            let next = total + bytes.len();
-            if next <= self.max_cache_bytes {
-                total = next;
-                kept.push_front((start, bytes));
-            }
-        }
-        self.cache = kept;
     }
 }
 

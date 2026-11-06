@@ -18,6 +18,7 @@ mod html;
 mod language;
 mod registry;
 mod spans;
+mod stateful;
 mod syntect_backend;
 mod tree_painter_backend;
 
@@ -26,6 +27,7 @@ pub use language::{
     set_user_mappings_text, LanguageInfo,
 };
 pub use spans::HighlightSpan;
+pub use stateful::{HighlightSession, LexerState, LineProvider, SessionLimits, StyleInfo, StyleSpan, SyntaxEngine};
 
 use std::time::Instant;
 

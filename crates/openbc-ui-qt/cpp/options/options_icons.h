@@ -215,7 +215,7 @@ inline QIcon forPage(const QString& title) {
     if (title == "Startup") return startup();
     if (title == "Tabs") return tabs();
     if (title == "Appearance") return appearance();
-    if (title == "Text Editing") return textEditing();
+    if (title == "Text Editing" || title == "Text Compare") return textEditing();
     if (title == "Syntax Highlighting") return syntaxHighlighting();
     if (title == "Next Difference") return nextDifference();
     if (title == "Backups") return backups();

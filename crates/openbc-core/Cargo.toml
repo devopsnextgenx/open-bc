@@ -5,12 +5,15 @@ edition.workspace = true
 
 [dependencies]
 openbc-observability = { path = "../openbc-observability" }
+memchr = "2"
+memmap2 = "0.9"
 regex = "1.10"
 serde.workspace = true
 serde_bytes = "0.11"
 similar = "2.4"
 strsim = "0.11"
 tree-painter = "0.0.0"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 syntect = "5.3"
 thiserror.workspace = true
 

@@ -24,6 +24,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSettings>
+
+#include "options/text_editor_selection.h"
 #include <QList>
 #include <QMap>
 #include <QString>
@@ -143,6 +145,11 @@ struct AppOptions {
     bool initFindWithCurrentWord = true;
     bool showFilteredLineCounts = true;
     int contextLines = 6;
+
+    // ---- Text Compare (editor implementation) -----------------------------
+    // Existing / Virtual / Hybrid, and the Hybrid size threshold (value + KB/MB/GB unit). Applies to
+    // comparisons opened after the change; open tabs are never switched under the user.
+    text_editor::Settings textEditor;
 
     // ---- Next Difference --------------------------------------------------
     bool goToFirstDifferenceOnLoad = false;
@@ -264,6 +271,16 @@ public:
         } else if (p.contains("theme/dark")) {   // before Options existed: View > Dark Theme
             options_.theme = p.value("theme/dark").toBool() ? ThemeChoice::Dark : ThemeChoice::Light;
         }
+        {   // Text Compare editor selection. Anything out of range (hand-edited ini, future versions)
+            // falls back to the defaults instead of disabling the feature.
+            text_editor::Settings t;
+            t.mode = static_cast<text_editor::Mode>(p.value("textCompare/editorMode", static_cast<int>(t.mode)).toInt());
+            bool ok = false;
+            const qulonglong v = p.value("textCompare/thresholdValue", static_cast<qulonglong>(t.thresholdValue)).toULongLong(&ok);
+            t.thresholdValue = ok ? static_cast<std::uint64_t>(v) : 0;   // 0 is invalid -> sanitized to default
+            t.thresholdUnit = static_cast<text_editor::Unit>(p.value("textCompare/thresholdUnit", static_cast<int>(t.thresholdUnit)).toInt());
+            options_.textEditor = text_editor::sanitized(t);
+        }
         options_.useSystemFont = p.value("appearance/useDefaultFont", options_.useSystemFont).toBool();
         options_.customFont = p.value("appearance/customFont").toString();
         options_.colorFoldersToReflectContent =
@@ -339,6 +356,12 @@ public:
     void persist() {
         if (!preferences_) return;
         QSettings& p = *preferences_;
+        {
+            const text_editor::Settings t = text_editor::sanitized(options_.textEditor);
+            p.setValue("textCompare/editorMode", static_cast<int>(t.mode));
+            p.setValue("textCompare/thresholdValue", static_cast<qulonglong>(t.thresholdValue));
+            p.setValue("textCompare/thresholdUnit", static_cast<int>(t.thresholdUnit));
+        }
         p.setValue("appearance/theme", static_cast<int>(options_.theme));
         p.setValue("appearance/useDefaultFont", options_.useSystemFont);
         p.setValue("appearance/customFont", options_.customFont);

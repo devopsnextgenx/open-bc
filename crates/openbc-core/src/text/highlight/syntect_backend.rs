@@ -11,15 +11,15 @@ use syntect::util::LinesWithEndings;
 use super::html::plain_html;
 use super::spans::{merge_adjacent_spans, HighlightSpan};
 
-const DARK_THEME: &str = "base16-ocean.dark";
-const LIGHT_THEME: &str = "InspiredGitHub";
+pub(super) const DARK_THEME: &str = "base16-ocean.dark";
+pub(super) const LIGHT_THEME: &str = "InspiredGitHub";
 
-fn syntax_set() -> &'static SyntaxSet {
+pub(super) fn syntax_set() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
     SET.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
-fn theme_set() -> &'static ThemeSet {
+pub(super) fn theme_set() -> &'static ThemeSet {
     static SET: OnceLock<ThemeSet> = OnceLock::new();
     SET.get_or_init(ThemeSet::load_defaults)
 }

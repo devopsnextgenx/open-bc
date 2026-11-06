@@ -115,3 +115,11 @@ Which extension or file name uses which grammar is decided in **one** place: `cr
 ## 11. Options dialog
 
 Everything about Tools > Options is in `cpp/options/` (model + persistence in `app_options.h`, pages in `options_dialog.h`, behaviour in `*_controller.h`, status in `options_status.h`). Per-page and per-field state and the steps to finish a page are in `cpp/options/options.md`: read it before working on options, and update it and `options_status.h` together. Keep settings logic there; viewers only read the result (e.g. `TextFont::instance()`, `appearance::state()`).
+
+## 12. Text compare engine and the two editors
+Text compare = Qt-independent Rust engine (`openbc-core/src/text/engine/`, C ABI in `src/ffi/text_engine.rs`,
+C++ face in `cpp/viewers/text/engine/text_model.h`) + two editors over the same `TextModel`: the existing
+`QPlainTextEdit` one and `VirtualTextEditor`. **Never add comparison or diff logic to a widget**; extend the
+engine. New code in this area is `.h` + `.cpp` where it owns a QWidget, and stays `Q_OBJECT`-free (callbacks).
+Which editor opens is decided in `addTextView` by `options/text_editor_selection.h` + `viewers/text/text_editor_choice.h`.
+Full design, limitations, benchmarks and test commands: `docs/TEXT_COMPARE_ENGINE.md`.

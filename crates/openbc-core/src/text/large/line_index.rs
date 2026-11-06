@@ -68,19 +68,14 @@ impl LineIndex {
         (start, end.saturating_sub(start) as u32)
     }
 
-    /// Resolve the containing line for a byte offset.
+    /// Resolve the containing line for a byte offset (binary search).
     #[must_use]
     pub fn line_for_offset(&self, offset: u64) -> Option<u64> {
-        for (index, start) in self.starts.iter().enumerate() {
-            if *start > offset {
-                return Some((index.saturating_sub(1)) as u64);
-            }
+        if self.count == 0 {
+            return None;
         }
-        if self.count > 0 {
-            Some(self.count - 1)
-        } else {
-            None
-        }
+        let after = self.starts.partition_point(|&start| start <= offset);
+        Some(after.saturating_sub(1) as u64)
     }
 }
 

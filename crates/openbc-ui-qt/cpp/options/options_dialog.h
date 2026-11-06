@@ -3,7 +3,7 @@
 // OptionsDialog: Tools > Options. A searchable page list on the left and a
 // stacked settings page on the right, with OK / Cancel / Apply.
 //
-// Pages: Startup, Tabs, Appearance, Text Editing, Syntax Highlighting, Next Difference, Backups,
+// Pages: Startup, Tabs, Appearance, Text Editing, Text Compare, Syntax Highlighting, Next Difference, Backups,
 // File Operations, Archive Types, Commands, Open With, Tweaks.
 // The page list is grouped by completion status (options/options_status.h): IMPLEMENTED, IN PROGRESS
 // and PENDING, with a separator row per group and a banner on every unfinished page. Open With
@@ -190,6 +190,7 @@ public:
             {"Tabs", buildTabs()},
             {"Appearance", buildAppearance()},
             {"Text Editing", buildTextEditing()},
+            {"Text Compare", buildTextCompare()},
             {"Syntax Highlighting", buildSyntaxHighlighting()},
             {"Next Difference", buildNextDifference()},
             {"Backups", buildBackups()},
@@ -749,6 +750,95 @@ private:
         v->addSpacing(8);
         v->addWidget(note("To set tab stops, use <b>Tools &gt; File Formats</b>"));
         v->addStretch(1);
+        return page;
+    }
+
+    // ---- Text Compare -----------------------------------------------------
+    // Which editor implementation NEW text comparisons use (see text_editor_selection.h):
+    //   Existing = QPlainTextEdit, Virtual = VirtualTextEditor, Hybrid = chosen per comparison from
+    //   the file sizes. Only draft_.textEditor is edited; OK/Apply persists it (preferences.ini).
+    QWidget* buildTextCompare() {
+        namespace te = openbc::app::text_editor;
+        QVBoxLayout* v;
+        auto* page = pageShell(&v);
+        v->addWidget(heading("Text Compare"));
+        v->addWidget(new QLabel("Editor used for text comparisons:"));
+        auto* mode = new QComboBox;
+        mode->addItem("Existing Editor");
+        mode->addItem("Virtual Editor");
+        mode->addItem("Hybrid Mode (Recommended)");
+        mode->setCurrentIndex(static_cast<int>(draft_.textEditor.mode));
+        v->addWidget(mode, 0, Qt::AlignLeft);
+        auto* modeNote = note("");
+        v->addWidget(modeNote);
+        v->addSpacing(8);
+
+        auto* thresholdBox = new QWidget;
+        auto* tv = new QVBoxLayout(thresholdBox);
+        tv->setContentsMargins(0, 0, 0, 0);
+        tv->addWidget(new QLabel("Large-file threshold (used by Hybrid Mode):"));
+        auto* row = new QHBoxLayout;
+        auto* value = new QSpinBox;
+        auto* unit = new QComboBox;
+        for (const te::Unit u : {te::Unit::KB, te::Unit::MB, te::Unit::GB}) unit->addItem(te::unitName(u));
+        unit->setCurrentIndex(static_cast<int>(draft_.textEditor.thresholdUnit));
+        // Largest value per unit so the byte count can never exceed te::kMaxThresholdBytes (64 GB):
+        // validation by construction, plus the overflow-safe check in text_editor_selection.h.
+        auto limitFor = [](int unitIndex) {
+            return static_cast<int>(te::kMaxThresholdBytes / te::unitBytes(static_cast<te::Unit>(unitIndex)));
+        };
+        value->setRange(1, limitFor(unit->currentIndex()));
+        value->setValue(static_cast<int>(qMin<std::uint64_t>(draft_.textEditor.thresholdValue, value->maximum())));
+        row->addWidget(value);
+        row->addWidget(unit);
+        row->addStretch(1);
+        tv->addLayout(row);
+        auto* validation = note("");
+        tv->addWidget(validation);
+        v->addWidget(thresholdBox);
+        v->addWidget(note("In Hybrid Mode a comparison uses the <b>Virtual Editor</b> when <b>either</b> file is "
+                          "at least this large (or its size cannot be determined), and the <b>Existing Editor</b> "
+                          "otherwise. The default is <b>3 MB</b>. Units are binary: 1 KB = 1024 bytes."));
+        v->addSpacing(6);
+        v->addWidget(note("Changes apply to comparisons opened afterwards; open tabs keep their editor. The Virtual "
+                          "Editor is read-only and needs local files; the Existing Editor is always available as an "
+                          "explicit choice."));
+        v->addStretch(1);
+
+        auto refresh = [this, mode, modeNote, thresholdBox, value, unit, validation]() {
+            namespace te = openbc::app::text_editor;
+            static const char* const kModeText[] = {
+                "Always use the current QPlainTextEdit editor (editable, all features).",
+                "Always use the virtual editor: memory-mapped, renders only visible rows, practical for very large "
+                "files. Read-only.",
+                "Choose automatically per comparison from the file sizes and the threshold below."};
+            modeNote->setText(kModeText[qBound(0, mode->currentIndex(), 2)]);
+            thresholdBox->setEnabled(mode->currentIndex() == static_cast<int>(te::Mode::Hybrid));
+            std::string error;
+            te::Settings s = draft_.textEditor;
+            const bool ok = te::isValid(s, &error);
+            validation->setText(ok ? QString() : QString::fromStdString(error));
+            Q_UNUSED(value) Q_UNUSED(unit)
+        };
+        connect(mode, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, refresh](int i) {
+            draft_.textEditor.mode = static_cast<openbc::app::text_editor::Mode>(i);
+            markDirty();
+            refresh();
+        });
+        connect(unit, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                [this, value, limitFor, refresh](int i) {
+                    value->setMaximum(limitFor(i));          // clamps the value into the new unit's range
+                    draft_.textEditor.thresholdUnit = static_cast<openbc::app::text_editor::Unit>(i);
+                    draft_.textEditor.thresholdValue = static_cast<std::uint64_t>(value->value());
+                    markDirty();
+                    refresh();
+                });
+        connect(value, qOverload<int>(&QSpinBox::valueChanged), this, [this, refresh](int n) {
+            draft_.textEditor.thresholdValue = static_cast<std::uint64_t>(qMax(0, n));
+            markDirty();
+            refresh();
+        });
+        refresh();
         return page;
     }
 
