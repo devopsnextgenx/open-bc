@@ -29,13 +29,10 @@ VirtualTextCompareViewer::VirtualTextCompareViewer(const QString& leftPath, cons
     wireEditors();
     applyFont();
     TextFont::instance().subscribe(this, [this]() { applyFont(); });
-    reloadTimer_.setSingleShot(true);
-    reloadTimer_.setInterval(400);
-    reloadTimer_.callOnTimeout([this] { reload(true); });
-    QObject::connect(&watcher_, &QFileSystemWatcher::fileChanged, this, [this](const QString&) {
-        reloadTimer_.start();          // debounce bursts of writes
-        watchFiles();                  // editors that replace the file drop the watch; re-add it
-    });
+    changes_ = std::make_unique<FileChangeController>(
+        this, [this](std::uint8_t) { startLoad(true); }, /*wholeTab=*/true);
+    changes_->track(0, leftPath_);
+    changes_->track(1, rightPath_);
     startLoad(false);
 }
 
@@ -223,6 +220,8 @@ void VirtualTextCompareViewer::buildActions() {
 
     swapAction_ = make(tr("S&wap Sides"), QKeySequence(), [this] {
         std::swap(leftPath_, rightPath_);
+        changes_->track(0, leftPath_);
+        changes_->track(1, rightPath_);
         if (onTitleChanged) onTitleChanged();
         startLoad(false);
     });
@@ -345,28 +344,24 @@ void VirtualTextCompareViewer::commitPath(bool left, const QString& path) {
         return;
     }
     currentPath = selectedPath;
+    changes_->track(left ? 0 : 1, selectedPath);
     selector->remember(selectedPath);
     selector->setText(selectedPath);
     if (onTitleChanged) onTitleChanged();
     startLoad(false);
 }
 
-void VirtualTextCompareViewer::watchFiles() {
-    const QStringList watched = watcher_.files();
-    if (!watched.isEmpty()) watcher_.removePaths(watched);
-    for (const QString& p : {leftPath_, rightPath_})
-        if (!p.isEmpty() && QFileInfo::exists(p)) watcher_.addPath(p);
-}
-
 void VirtualTextCompareViewer::applyDroppedPaths(const QString& left, const QString& right) {
     if (left.isEmpty() && right.isEmpty()) return;
     if (!left.isEmpty()) {
         leftPath_ = left;
+        changes_->track(0, leftPath_);
         leftSelector_->remember(left);
         leftSelector_->setText(left);
     }
     if (!right.isEmpty()) {
         rightPath_ = right;
+        changes_->track(1, rightPath_);
         rightSelector_->remember(right);
         rightSelector_->setText(right);
     }
@@ -374,12 +369,15 @@ void VirtualTextCompareViewer::applyDroppedPaths(const QString& left, const QStr
     startLoad(false);
 }
 
-void VirtualTextCompareViewer::reload(bool keepScroll) { startLoad(keepScroll); }
+void VirtualTextCompareViewer::reload(bool keepScroll) {
+    changes_->track(0, leftPath_);
+    changes_->track(1, rightPath_);
+    startLoad(keepScroll);
+}
 
 void VirtualTextCompareViewer::startLoad(bool keepScroll) {
     refreshSideHeader(true);
     refreshSideHeader(false);
-    watchFiles();
     if (leftPath_.isEmpty() && rightPath_.isEmpty()) {
         status_->setText(tr("Drop two files here to compare them."));
         return;

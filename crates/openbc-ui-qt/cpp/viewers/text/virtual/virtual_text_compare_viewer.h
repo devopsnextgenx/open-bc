@@ -10,7 +10,7 @@
 //
 // Read-only. Supported: line numbers, syntax highlighting, changed-line + inline-difference
 // colouring, selection/copy, keyboard navigation, find / next / previous, go to line, next/previous
-// difference, synchronised scrolling, overview bar, reload when a file changes on disk, Swap sides.
+// difference, synchronised scrolling, overview bar, file-change notices with explicit reload, Swap sides.
 // Not supported (documented limitations): editing, merge/copy-to-other-side, "ignore text" regex
 // rules, replace. Use the Existing editor for those.
 //
@@ -20,12 +20,10 @@
 
 #include <QAction>
 #include <QCheckBox>
-#include <QFileSystemWatcher>
 #include <QLabel>
 #include <QLineEdit>
 #include <QList>
 #include <QProgressBar>
-#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QWidget>
@@ -34,6 +32,7 @@
 
 #include "common/minimap.h"
 #include "common/path_selector.h"
+#include "common/file_change_controller.h"
 #include "viewers/text/engine/text_model.h"
 #include "viewers/text/virtual/virtual_text_editor.h"
 
@@ -86,7 +85,6 @@ private:
     void showFindBar(bool show);
     void findNext(bool forward);
     VirtualTextEditor* activeEditor() const;
-    void watchFiles();
 
     QString leftPath_, rightPath_;
     std::shared_ptr<TextModel> model_;
@@ -110,8 +108,6 @@ private:
     QWidget* findBar_ = nullptr;
     QLineEdit* findEdit_ = nullptr;
     QCheckBox* caseBox_ = nullptr;
-    QFileSystemWatcher watcher_;
-    QTimer reloadTimer_;
     VirtualTextEditor* lastFocused_ = nullptr;
     bool syncing_ = false;
 
@@ -122,6 +118,8 @@ private:
             *findAction_ = nullptr, *findNextAction_ = nullptr, *findPrevAction_ = nullptr,
             *gotoLineAction_ = nullptr, *nextDiffAction_ = nullptr, *prevDiffAction_ = nullptr,
             *syntaxAction_ = nullptr;
+
+    std::unique_ptr<FileChangeController> changes_;  // destroy before the viewer state it calls back into
 };
 
 }  // namespace openbc::app

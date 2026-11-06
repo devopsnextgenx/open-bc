@@ -6,7 +6,9 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QFrame>
 #include <QKeyEvent>
+#include <QPushButton>
 #include <QScrollBar>
 #include <QTemporaryDir>
 #include <QTextDocument>
@@ -437,17 +439,29 @@ static void testCompareTab() {
     CHECK_EQ(after.deletedRows, before.insertedRows);
     CHECK(titleChanges >= 1);
 
-    // A file changing on disk triggers an automatic reload.
+    // A file change is announced first; content changes only after Reload Latest.
     tab.actionsMenuItems()[1]->trigger();                    // swap back
     CHECK(waitFor([&] { return !tab.loading() && tab.title() == QStringLiteral("big_l.txt <-> big_r.txt"); }, 30000));
     pump(300);
     const auto oldModel = tab.model();
+    auto* bannerFrame = tab.findChild<QFrame*>(QStringLiteral("fileChangeBanner"));
+    auto* banner = static_cast<FileChangeBanner*>(bannerFrame);
+    CHECK(banner != nullptr);
     {
         QFile f(r);
         f.open(QIODevice::Append);
         f.write("brand new trailing line\n");
     }
-    CHECK(waitFor([&] { return tab.model() != oldModel && !tab.loading(); }, 15000));
+    CHECK(waitFor([&] { return banner && banner->isStale(1); }, 15000));
+    CHECK(tab.model() == oldModel);
+    QPushButton* reloadLatest = nullptr;
+    if (banner) {
+        for (auto* button : banner->findChildren<QPushButton*>())
+            if (button->text() == QStringLiteral("Reload Latest")) reloadLatest = button;
+    }
+    CHECK(reloadLatest != nullptr);
+    if (reloadLatest) reloadLatest->click();
+    CHECK(waitFor([&] { return tab.model() != oldModel && !tab.loading(); }, 30000));
     CHECK(tab.model()->lineCount(Side::Right) == oldModel->lineCount(Side::Right) + 1);
 
     // Dropping new paths on the tab reloads it. An empty tab shows a hint and loads nothing.
