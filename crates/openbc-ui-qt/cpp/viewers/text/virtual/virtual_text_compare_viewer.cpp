@@ -8,6 +8,7 @@
 #include <QInputDialog>
 #include <QLocale>
 #include <QPushButton>
+#include <QSplitter>
 #include <QToolBar>
 #include <QVBoxLayout>
 
@@ -105,19 +106,24 @@ void VirtualTextCompareViewer::buildUi() {
     header->addWidget(buildSideHeader(false), 1);
     root->addLayout(header);
 
-    auto* body = new QHBoxLayout;
-    body->setContentsMargins(0, 0, 0, 0);
-    body->setSpacing(0);
+    auto* editors = new QSplitter(Qt::Horizontal, this);
+    editors->setChildrenCollapsible(false);
+
+    auto* leftPane = new QWidget(editors);
+    auto* leftLayout = new QHBoxLayout(leftPane);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(0);
     left_ = new VirtualTextEditor;
+    overview_ = new DifferenceOverview(leftPane, true);
     right_ = new VirtualTextEditor;
     left_->setGutterSides(VirtualTextEditor::GutterSide::Left, VirtualTextEditor::GutterSide::Right);
     right_->setGutterSides(VirtualTextEditor::GutterSide::Right, VirtualTextEditor::GutterSide::Left);
     right_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    overview_ = new DifferenceOverview(this, true);
-    body->addWidget(overview_);
-    body->addWidget(left_, 1);
-    body->addWidget(right_, 1);
-    root->addLayout(body, 1);
+    leftLayout->addWidget(overview_);
+    leftLayout->addWidget(left_, 1);
+    editors->addWidget(leftPane);
+    editors->addWidget(right_);
+    root->addWidget(editors, 1);
 
     findBar_ = new QWidget;
     auto* fl = new QHBoxLayout(findBar_);
