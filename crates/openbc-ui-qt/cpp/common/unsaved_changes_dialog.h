@@ -107,7 +107,7 @@ public:
         buttons->addStretch(1);
         cancel_ = new QPushButton("Cancel", this);
         cancel_->setAutoDefault(false);
-        continue_ = new QPushButton("Continue", this);
+        continue_ = new QPushButton("Close Tabs", this); // "Continue" -> "Close Tabs"
         continue_->setAutoDefault(false);
         continue_->setMinimumWidth(96);
         buttons->addWidget(cancel_);
