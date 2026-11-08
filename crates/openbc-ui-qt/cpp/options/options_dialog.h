@@ -253,7 +253,10 @@ public:
 
 private:
     // ---- plumbing ---------------------------------------------------------
-    void markDirty() { apply_->setEnabled(true); }
+    void markDirty() {
+        apply_->setText(tr("Apply"));
+        apply_->setEnabled(true);
+    }
 
     // Appearance > Preview: show the draft theme now, or fall back to the committed one.
     void previewDraftTheme() {
@@ -266,6 +269,7 @@ private:
     void commit() {
         store_.commit(draft_);
         apply_->setEnabled(false);
+        apply_->setText(tr("Applied \u2713"));  // greyed out + label = visible confirmation
     }
 
     // Separator row that starts a status group. Not selectable, so keyboard and mouse skip it.

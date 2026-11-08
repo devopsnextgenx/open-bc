@@ -78,6 +78,7 @@ public:
         lineNumberArea_ = new QWidget(this);
         lineNumberArea_->setObjectName("lineNumberGutter");
         lineNumberArea_->setCursor(Qt::ArrowCursor);
+        lineNumberArea_->setFont(font());
         lineNumberArea_->installEventFilter(this);
         if (arrowSide_ != GutterSide::None) {
             arrowArea_ = new QWidget(this);
@@ -314,7 +315,11 @@ protected:
         cursor.mergeCharFormat(format);
         document()->setModified(wasModified);
         setTabStopDistance(fontMetrics().horizontalAdvance(' ') * 4);
+        if (lineNumberArea_) lineNumberArea_->setFont(editorFont);
+        if (arrowArea_) arrowArea_->setFont(editorFont);
         updateMarginWidths();
+        repositionGutters();
+        lineNumberArea_->update();
         viewport()->update();
     }
 

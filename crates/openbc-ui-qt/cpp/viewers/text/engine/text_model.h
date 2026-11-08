@@ -250,7 +250,7 @@ public:
     std::optional<std::pair<quint64, quint64>> blockAt(quint64 row) const {
         std::uint64_t start = 0, len = 0;
         if (!openbc_tm_block_at(handle_, row, &start, &len)) return std::nullopt;
-        return std::make_pair<quint64, quint64>(start, len);
+        return std::pair<quint64, quint64>(static_cast<quint64>(start), static_cast<quint64>(len));
     }
     // Next line index of each side at the start of `row` (where a new line on a filler row goes).
     std::pair<quint64, quint64> lineCursors(quint64 row) const {
@@ -557,4 +557,3 @@ private:
 };
 
 }  // namespace openbc::app
-
