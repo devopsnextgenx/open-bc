@@ -1,5 +1,10 @@
 # OpenBC
 
+## Dev Start
+```bash
+sudo apt install build-essential qt6-base-dev qt6-multimedia-dev liblzma-dev libssl-dev
+```
+
 ## Support the Project
 
 OpenBC is built with passion as a free, open-source alternative to commercial comparison tools. Maintaining the codebase, improving performance, adding new filesystem adapters, and polishing the Qt interface takes a lot of time and dedication. 
