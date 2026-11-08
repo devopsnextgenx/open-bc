@@ -180,18 +180,48 @@ impl DiffEngine {
         cancel: &CancelToken,
         progress: &mut dyn FnMut(Progress),
     ) -> Result<DiffIndex, EngineError> {
+        let (nl, nr) = (left.index.line_count(), right.index.line_count());
+        let builder =
+            self.diff_region(left, right, (0, nl as usize), (0, nr as usize), cancel, progress)?;
+        let index = builder.finish();
+        debug_assert_eq!(index.line_counts(), (nl, nr), "alignment must cover every line exactly once");
+        Ok(index)
+    }
+
+    /// Align only the line ranges `left_range` (`start..end`) and `right_range`. The result's
+    /// segments are relative to the start of the ranges (cursors begin at 0), ready to be spliced
+    /// into an existing [`DiffIndex`] with `DiffIndex::splice_region`. This is what makes editing
+    /// cheap: only the region around an edit is re-aligned.
+    pub fn diff_region(
+        &self,
+        left: Side<'_>,
+        right: Side<'_>,
+        left_range: (usize, usize),
+        right_range: (usize, usize),
+        cancel: &CancelToken,
+        progress: &mut dyn FnMut(Progress),
+    ) -> Result<DiffIndexBuilder, EngineError> {
         let opts = left.index.normalize_options();
-        if opts != right.index.normalize_options() {
+        if opts != right.index.normalize_options() || left.index.rules_key() != right.index.rules_key() {
             return Err(EngineError::OptionsMismatch);
         }
         let (nl, nr) = (left.index.line_count(), right.index.line_count());
         if nl > MAX_LINES || nr > MAX_LINES {
             return Err(EngineError::TooManyLines(nl.max(nr), MAX_LINES));
         }
-        let (prefix, suffix) = common_affixes(left, right, opts, cancel)?;
-        let (mid_l, mid_r) = (nl as usize - prefix - suffix, nr as usize - prefix - suffix);
-        let (lid, rid, classes) =
-            self.intern(left, right, opts, (prefix, mid_l), (prefix, mid_r), cancel, progress)?;
+        let (l_first, l_len) = (left_range.0, left_range.1 - left_range.0);
+        let (r_first, r_len) = (right_range.0, right_range.1 - right_range.0);
+        let (prefix, suffix) = common_affixes(left, right, opts, cancel, left_range, right_range)?;
+        let (mid_l, mid_r) = (l_len - prefix - suffix, r_len - prefix - suffix);
+        let (lid, rid, classes) = self.intern(
+            left,
+            right,
+            opts,
+            (l_first + prefix, mid_l),
+            (r_first + prefix, mid_r),
+            cancel,
+            progress,
+        )?;
         let mut occ = vec![Occ::default(); classes];
         let mut emitter = Emitter {
             builder: DiffIndex::builder(),
@@ -199,7 +229,7 @@ impl DiffEngine {
             ins: 0,
             resolved: 0,
         };
-        let total = nl + nr;
+        let total = (l_len + r_len) as u64;
         let mut last_report = 0u64;
         // The identical head and tail never enter the matching/aligning machinery.
         emitter.equal(prefix);
@@ -219,9 +249,8 @@ impl DiffEngine {
         }
         emitter.flush();
         progress(Progress { phase: Phase::Aligning, done: total, total });
-        let index = emitter.builder.finish();
-        debug_assert_eq!(index.line_counts(), (nl, nr), "alignment must cover every line exactly once");
-        Ok(index)
+        debug_assert_eq!(emitter.builder.line_counts(), (l_len as u64, r_len as u64));
+        Ok(emitter.builder)
     }
 
     // ---- step 1: verified line classes ---------------------------------------------------------
@@ -420,8 +449,11 @@ fn common_affixes(
     right: Side<'_>,
     opts: NormalizeOptions,
     cancel: &CancelToken,
+    left_range: (usize, usize),
+    right_range: (usize, usize),
 ) -> Result<(usize, usize), EngineError> {
-    let (nl, nr) = (left.index.line_count(), right.index.line_count());
+    let (l0, r0) = (left_range.0 as u64, right_range.0 as u64);
+    let (nl, nr) = ((left_range.1 - left_range.0) as u64, (right_range.1 - right_range.0) as u64);
     let mut scratch = EqScratch::default();
     let (mut a, mut b) = (Vec::new(), Vec::new());
     let mut same = |li: u64, ri: u64| -> Result<bool, EngineError> {
@@ -440,7 +472,7 @@ fn common_affixes(
         if prefix & 0xFFFF == 0 {
             cancel.check()?;
         }
-        if !same(prefix, prefix)? {
+        if !same(l0 + prefix, r0 + prefix)? {
             break;
         }
         prefix += 1;
@@ -450,7 +482,7 @@ fn common_affixes(
         if suffix & 0xFFFF == 0 {
             cancel.check()?;
         }
-        if !same(nl - 1 - suffix, nr - 1 - suffix)? {
+        if !same(l0 + nl - 1 - suffix, r0 + nr - 1 - suffix)? {
             break;
         }
         suffix += 1;
@@ -518,6 +550,11 @@ fn lines_equal(
 ) -> Result<bool, EngineError> {
     let x = text_bytes(a, a_line, buf_a)?;
     let y = text_bytes(b, b_line, buf_b)?;
+    // Ignore rules first (same order as hashing), then whitespace/case normalisation.
+    if let Some(rules) = a.index.rules() {
+        let (mx, my) = (rules.apply(&x), rules.apply(&y));
+        return Ok(normalized_eq(&mx, &my, opts, scratch));
+    }
     Ok(normalized_eq(&x, &y, opts, scratch))
 }
 

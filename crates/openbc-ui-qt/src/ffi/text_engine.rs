@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use openbc_core::text::engine::{
-    CancelToken, CompareConfig, FindOptions, MapPolicy, Phase, SideId, TextCompareModel,
+    CancelToken, CompareConfig, EditOutcome, EngineError, FindOptions, MapPolicy, Phase, SideId, TextCompareModel,
 };
 use openbc_core::text::{HighlightSession, SessionLimits};
 
@@ -117,6 +117,18 @@ pub struct TmMemory {
     pub index_resident_bytes: u64,
     pub diff_bytes: u64,
     pub inline_cache_entries: u64,
+    pub edit_bytes: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct TmEdit {
+    pub first_row: u64,
+    pub old_rows: u64,
+    pub new_rows: u64,
+    pub first_line: u64,
+    pub inserted_lines: u64,
+    pub side: u8,
 }
 
 #[repr(C)]
@@ -474,7 +486,7 @@ pub unsafe extern "C" fn openbc_tm_row_for_line(m: *const TmModel, s: u8, line: 
 pub unsafe extern "C" fn openbc_tm_stats(m: *const TmModel, out: *mut TmStats) {
     let model = model!(m, ());
     let s = model.stats();
-    let (l, r) = model.diff_index().line_counts();
+    let (l, r) = model.line_counts();
     if let Some(o) = out.as_mut() {
         *o = TmStats {
             rows: model.row_count(),
@@ -485,7 +497,7 @@ pub unsafe extern "C" fn openbc_tm_stats(m: *const TmModel, out: *mut TmStats) {
             deleted_rows: s.deleted_rows,
             replaced_rows: s.replaced_rows,
             blocks: s.blocks,
-            degraded: u8::from(model.diff_index().is_degraded()),
+            degraded: u8::from(model.is_degraded()),
         };
     }
 }
@@ -496,7 +508,7 @@ pub unsafe extern "C" fn openbc_tm_stats(m: *const TmModel, out: *mut TmStats) {
 /// `out` valid for `buckets` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn openbc_tm_overview(m: *const TmModel, buckets: usize, out: *mut u8) {
-    let cells = model!(m, ()).diff_index().overview(buckets);
+    let cells = model!(m, ()).overview(buckets);
     if !out.is_null() {
         std::ptr::copy_nonoverlapping(cells.as_ptr(), out, cells.len());
     }
@@ -513,6 +525,7 @@ pub unsafe extern "C" fn openbc_tm_memory(m: *const TmModel, out: *mut TmMemory)
             index_resident_bytes: r.index_resident_bytes,
             diff_bytes: r.diff_bytes,
             inline_cache_entries: r.inline_cache_entries,
+            edit_bytes: r.edit_bytes,
         };
     }
 }
@@ -576,7 +589,245 @@ pub unsafe extern "C" fn openbc_tm_find(
     }
 }
 
-// ---- syntax ---------------------------------------------------------------------------------------
+// ---- editing ----------------------------------------------------------------------------------------
+
+fn fill_edit(out: *mut TmEdit, e: &EditOutcome) {
+    if let Some(o) = unsafe { out.as_mut() } {
+        *o = TmEdit {
+            first_row: e.first_row,
+            old_rows: e.old_rows,
+            new_rows: e.new_rows,
+            first_line: e.first_line,
+            inserted_lines: e.inserted_lines,
+            side: u8::from(e.side == SideId::Right),
+        };
+    }
+}
+
+fn edit_result(result: Result<Option<EditOutcome>, EngineError>, out: *mut TmEdit) -> i32 {
+    match result {
+        Ok(Some(e)) => {
+            fill_edit(out, &e);
+            1
+        }
+        Ok(None) => 0,
+        Err(e) => {
+            set_error(e);
+            -1
+        }
+    }
+}
+
+/// Replace `remove` lines of `side` starting at `first_line` by `text` (UTF-8; line breaks in it
+/// make several lines; null `text` inserts nothing, i.e. a pure delete; an empty non-null text
+/// inserts one empty line). `coalesce` merges typing into one undo step. Returns 1, or -1 with
+/// [`openbc_tm_last_error`] set.
+///
+/// # Safety
+/// `text` valid for `len` bytes (or null); `out` writable or null.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_replace_lines(
+    m: *const TmModel,
+    s: u8,
+    first_line: u64,
+    remove: u64,
+    text: *const u8,
+    len: usize,
+    coalesce: u8,
+    out: *mut TmEdit,
+) -> i32 {
+    let model = model!(m, -1);
+    let owned: Option<String> =
+        (!text.is_null()).then(|| String::from_utf8_lossy(std::slice::from_raw_parts(text, len)).into_owned());
+    let lines: Vec<&str> = owned.as_deref().into_iter().collect();
+    edit_result(model.replace_lines(side(s), first_line, remove, &lines, coalesce != 0).map(Some), out)
+}
+
+/// # Safety
+/// `out` writable or null.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_undo(m: *const TmModel, s: u8, out: *mut TmEdit) -> i32 {
+    edit_result(model!(m, -1).undo(side(s)), out)
+}
+
+/// # Safety
+/// `out` writable or null.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_redo(m: *const TmModel, s: u8, out: *mut TmEdit) -> i32 {
+    edit_result(model!(m, -1).redo(side(s)), out)
+}
+
+/// # Safety
+/// `m` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_can_undo(m: *const TmModel, s: u8) -> u8 {
+    u8::from(model!(m, 0).can_undo(side(s)))
+}
+
+/// # Safety
+/// `m` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_can_redo(m: *const TmModel, s: u8) -> u8 {
+    u8::from(model!(m, 0).can_redo(side(s)))
+}
+
+/// End the current typing run (next edit becomes a new undo step).
+///
+/// # Safety
+/// `m` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_seal_undo(m: *const TmModel, s: u8) {
+    model!(m, ()).seal_undo(side(s));
+}
+
+/// Undoable edit steps applied to `side`.
+///
+/// # Safety
+/// `m` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_edit_count(m: *const TmModel, s: u8) -> u64 {
+    model!(m, 0).edit_count(side(s)) as u64
+}
+
+/// 1 when `side` has unsaved edits.
+///
+/// # Safety
+/// `m` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_is_dirty(m: *const TmModel, s: u8) -> u8 {
+    u8::from(model!(m, 0).is_dirty(side(s)))
+}
+
+/// Make the other side's lines of the changed block containing `row` equal to `from_side`'s.
+/// Returns 1 (done, `out` describes the destination side), 0 (row is in no changed block) or -1.
+///
+/// # Safety
+/// `out` writable or null.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_copy_block(m: *const TmModel, from_side: u8, row: u64, out: *mut TmEdit) -> i32 {
+    edit_result(model!(m, -1).copy_block(side(from_side), row), out)
+}
+
+/// Start row and row count of the changed block containing `row`.
+///
+/// # Safety
+/// `start` and `len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_block_at(m: *const TmModel, row: u64, start: *mut u64, len: *mut u64) -> u8 {
+    match model!(m, 0).block_at(row) {
+        Some((s, l)) => {
+            *start = s;
+            *len = l;
+            1
+        }
+        None => 0,
+    }
+}
+
+/// Lines of each side consumed by the rows before `row`.
+///
+/// # Safety
+/// `left` and `right` writable.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_line_cursors(m: *const TmModel, row: u64, left: *mut u64, right: *mut u64) -> u8 {
+    let Some(model) = m.as_ref() else { return 0 };
+    let (l, r) = model.0.line_cursors(row);
+    *left = l;
+    *right = r;
+    1
+}
+
+/// Copy the side's current file path into `buf`; returns the full length (0 = no path).
+///
+/// # Safety
+/// `buf` valid for `cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_path(m: *const TmModel, s: u8, buf: *mut u8, cap: usize) -> usize {
+    let Some(path) = model!(m, 0).path(side(s)) else { return 0 };
+    let text = path.to_string_lossy();
+    let n = text.len().min(cap);
+    if !buf.is_null() {
+        std::ptr::copy_nonoverlapping(text.as_ptr(), buf, n);
+    }
+    text.len()
+}
+
+/// Copy the active ignore-rule text into `buf`; returns its full length.
+///
+/// # Safety
+/// `buf` valid for `cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_rules_text(m: *const TmModel, buf: *mut u8, cap: usize) -> usize {
+    let text = model!(m, 0).rules_text();
+    let n = text.len().min(cap);
+    if !buf.is_null() {
+        std::ptr::copy_nonoverlapping(text.as_ptr(), buf, n);
+    }
+    text.len()
+}
+
+pub const TASK_SET_RULES: u8 = 0;
+pub const TASK_REDIFF: u8 = 1;
+pub const TASK_SAVE: u8 = 2;
+pub const TASK_SAVE_AS: u8 = 3;
+
+/// Run a long operation on a worker thread: set ignore rules (`text` = rule text), re-diff,
+/// save (`s` = side) or save as (`text` = path). Events as for `openbc_tm_open_async`:
+/// `EV_PROGRESS`, then `EV_RESULT` (message = written path for saves, handle null) or `EV_ERROR`.
+/// The model stays usable for reads meanwhile; writers wait for the operation.
+///
+/// # Safety
+/// `m` valid and kept alive until the final event; `text` valid for `len`; `cancel` null or valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_tm_task_async(
+    m: *const TmModel,
+    task: u8,
+    s: u8,
+    text: *const u8,
+    len: usize,
+    cancel: *const TmCancel,
+    callback: TmCallback,
+    user: *mut c_void,
+) {
+    let Some(model) = m.as_ref().map(|m| m.0.clone()) else { return };
+    let text = if text.is_null() { String::new() } else { String::from_utf8_lossy(std::slice::from_raw_parts(text, len)).into_owned() };
+    let token = cancel.as_ref().map_or_else(CancelToken::new, |c| c.0.clone());
+    let user = user as usize;
+    std::thread::Builder::new()
+        .name("openbc-text-task".into())
+        .spawn(move || {
+            let say = |kind: i32, text: &str| {
+                let c = CString::new(text.replace('\0', " ")).unwrap_or_default();
+                callback(user as *mut c_void, kind, c.as_ptr(), std::ptr::null_mut());
+            };
+            let mut last = u64::MAX;
+            let mut report = |p: openbc_core::text::engine::Progress| {
+                let pct = if p.total == 0 { 0 } else { p.done * 100 / p.total };
+                let key = pct + (p.phase as u64) * 1000;
+                if key != last {
+                    last = key;
+                    say(EV_PROGRESS, &format!("{}|{}|{}", phase_name(p.phase), p.done, p.total));
+                }
+            };
+            let result: Result<String, EngineError> = match task {
+                TASK_SET_RULES => model.set_rules(&text, &token, &mut report).map(|()| String::new()),
+                TASK_REDIFF => model.rediff(&token, &mut report).map(|()| String::new()),
+                TASK_SAVE => model.save(side(s), None).map(|r| r.path.to_string_lossy().into_owned()),
+                TASK_SAVE_AS => model
+                    .save(side(s), Some(std::path::Path::new(&text)))
+                    .map(|r| r.path.to_string_lossy().into_owned()),
+                _ => Ok(String::new()),
+            };
+            match result {
+                Ok(message) => say(EV_RESULT, &message),
+                Err(EngineError::Cancelled) => say(EV_ERROR, "cancelled"),
+                Err(e) => say(EV_ERROR, &e.to_string()),
+            }
+        })
+        .ok();
+}
+
+// ---- syntax -------------------------------------------------------------------------------------------
 
 /// Create a highlighting session. `language` is a file name, extension or language name.
 ///
@@ -758,6 +1009,84 @@ mod tests {
             let first = spans[0];
             assert_eq!(first.start, 0);
             openbc_syn_destroy(syn);
+            openbc_tm_destroy(m);
+        }
+    }
+
+    static EVENTS: Mutex<Vec<(i32, String)>> = Mutex::new(Vec::new());
+
+    extern "C" fn collect(_: *mut c_void, kind: i32, message: *const c_char, _: *mut c_void) {
+        let text = if message.is_null() { String::new() } else { unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned() };
+        EVENTS.lock().unwrap().push((kind, text));
+    }
+
+    fn wait_final() -> (i32, String) {
+        for _ in 0..400 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let mut ev = EVENTS.lock().unwrap();
+            if let Some(pos) = ev.iter().position(|(k, _)| *k == EV_RESULT || *k == EV_ERROR) {
+                let last = ev[pos].clone();
+                ev.clear();
+                return last;
+            }
+        }
+        panic!("task did not finish");
+    }
+
+    #[test]
+    fn editing_through_the_c_abi_with_undo_copy_and_async_save() {
+        let l = tmp("el.txt", "one\ntwo\nthree\n");
+        let r = tmp("er.txt", "one\nTWO\nthree\n");
+        unsafe {
+            let m = openbc_tm_open_sync(l.as_ptr(), r.as_ptr(), std::ptr::null());
+            assert!(!m.is_null());
+            let mut edit = TmEdit::default();
+            assert_eq!(openbc_tm_is_dirty(m, 0), 0);
+            // replace line 0 on the left with "uno"
+            let text = b"uno";
+            assert_eq!(openbc_tm_replace_lines(m, 0, 0, 1, text.as_ptr(), text.len(), 1, &mut edit), 1);
+            assert_eq!((edit.first_row, edit.old_rows, edit.new_rows, edit.side), (0, 1, 1, 0));
+            assert_eq!(openbc_tm_is_dirty(m, 0), 1);
+            assert_eq!(openbc_tm_can_undo(m, 0), 1);
+            // pure delete (null text)
+            assert_eq!(openbc_tm_replace_lines(m, 0, 2, 1, std::ptr::null(), 0, 0, &mut edit), 1);
+            let mut row = TmRow::default();
+            assert_eq!(openbc_tm_row(m, 2, &mut row), 1);
+            assert_eq!(row.kind, 1); // the right side's "three" has no counterpart any more
+            // undo both
+            assert_eq!(openbc_tm_undo(m, 0, &mut edit), 1);
+            assert_eq!(openbc_tm_undo(m, 0, &mut edit), 1);
+            assert_eq!(openbc_tm_undo(m, 0, &mut edit), 0);
+            assert_eq!(openbc_tm_is_dirty(m, 0), 0);
+            // copy the block holding the changed row 1 from right to left
+            let (mut start, mut len) = (0u64, 0u64);
+            assert_eq!(openbc_tm_block_at(m, 1, &mut start, &mut len), 1);
+            assert_eq!((start, len), (1, 1));
+            assert_eq!(openbc_tm_copy_block(m, 1, 1, &mut edit), 1);
+            assert_eq!(edit.side, 0);
+            assert_eq!(openbc_tm_copy_block(m, 1, 0, &mut edit), 0); // row 0 is outside any block
+            // async save of the left side
+            EVENTS.lock().unwrap().clear();
+            openbc_tm_task_async(m, TASK_SAVE, 0, std::ptr::null(), 0, std::ptr::null(), collect, std::ptr::null_mut());
+            let (kind, message) = wait_final();
+            assert_eq!(kind, EV_RESULT, "{message}");
+            assert!(message.ends_with("el.txt"));
+            assert_eq!(std::fs::read_to_string(message).unwrap(), "one\nTWO\nthree\n");
+            assert_eq!(openbc_tm_is_dirty(m, 0), 0);
+            // async rules, then an invalid one reports an error
+            let rules = b"/^T.*/";
+            openbc_tm_task_async(m, TASK_SET_RULES, 0, rules.as_ptr(), rules.len(), std::ptr::null(), collect, std::ptr::null_mut());
+            assert_eq!(wait_final().0, EV_RESULT);
+            let mut buf = [0u8; 32];
+            let n = openbc_tm_rules_text(m, buf.as_mut_ptr(), buf.len());
+            assert_eq!(&buf[..n], rules);
+            let bad = b"/(x/";
+            openbc_tm_task_async(m, TASK_SET_RULES, 0, bad.as_ptr(), bad.len(), std::ptr::null(), collect, std::ptr::null_mut());
+            assert_eq!(wait_final().0, EV_ERROR);
+            // path accessor
+            let mut pbuf = [0u8; 256];
+            let pn = openbc_tm_path(m, 1, pbuf.as_mut_ptr(), pbuf.len());
+            assert!(String::from_utf8_lossy(&pbuf[..pn]).ends_with("er.txt"));
             openbc_tm_destroy(m);
         }
     }

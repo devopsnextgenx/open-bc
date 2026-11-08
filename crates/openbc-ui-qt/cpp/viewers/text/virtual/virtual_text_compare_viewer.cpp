@@ -2,11 +2,15 @@
 #include "viewers/text/virtual/virtual_text_compare_viewer.h"
 
 #include <QDateTime>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLocale>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
 #include <QPushButton>
 #include <QSplitter>
 #include <QToolBar>
@@ -20,6 +24,46 @@ namespace openbc::app {
 
 namespace icons = openbc::ui::icons;
 
+namespace {
+
+// Lock states. Red = read-only, green = editing; the flash cycles red, blue, yellow, red.
+const QColor kLockRed(0xe5, 0x39, 0x35);
+const QColor kLockGreen(0x2e, 0xa0, 0x43);
+const QColor kLockBlue(0x1e, 0x88, 0xe5);
+const QColor kLockYellow(0xfd, 0xd8, 0x35);
+constexpr int kLockFlashStepMs = 100;   // 4 colours x 3 rounds x 100 ms = 1.2 s per flash
+constexpr int kLockFlashSteps = 12;
+
+// Painted instead of loaded: the icon set has no lock glyph, and this keeps the colour exact.
+QIcon lockIcon(bool unlocked, const QColor& color) {
+    const qreal size = 18, dpr = 2;
+    QPixmap pm(QSize(static_cast<int>(size * dpr), static_cast<int>(size * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen shackle(color, size * 0.11, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    p.setPen(shackle);
+    p.setBrush(Qt::NoBrush);
+    QPainterPath arc;
+    const QRectF top(size * 0.29, size * 0.10, size * 0.42, size * 0.42);
+    arc.moveTo(size * 0.29, size * 0.48);
+    arc.lineTo(size * 0.29, size * 0.31);
+    arc.arcTo(top, 180, -180);
+    if (unlocked) arc.lineTo(size * 0.71, size * 0.20);   // shackle lifted on one side
+    else arc.lineTo(size * 0.71, size * 0.48);
+    p.drawPath(arc);
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    p.drawRoundedRect(QRectF(size * 0.17, size * 0.45, size * 0.66, size * 0.44), 2.2, 2.2);
+    p.setBrush(QColor(0, 0, 0, 120));
+    p.drawEllipse(QPointF(size * 0.5, size * 0.63), size * 0.07, size * 0.07);
+    p.drawRect(QRectF(size * 0.5 - size * 0.025, size * 0.63, size * 0.05, size * 0.14));
+    return QIcon(pm);
+}
+
+}  // namespace
+
 // ---- VirtualTextCompareViewer ---------------------------------------------------------------------
 
 VirtualTextCompareViewer::VirtualTextCompareViewer(const QString& leftPath, const QString& rightPath, QWidget* parent)
@@ -29,21 +73,38 @@ VirtualTextCompareViewer::VirtualTextCompareViewer(const QString& leftPath, cons
     wireEditors();
     applyFont();
     TextFont::instance().subscribe(this, [this]() { applyFont(); });
+    // A change on disk asks before it throws unsaved edits away (the controller shows its banner first).
     changes_ = std::make_unique<FileChangeController>(
-        this, [this](std::uint8_t) { startLoad(true); }, /*wholeTab=*/true);
+        this, [this](std::uint8_t) { startLoad(true); }, /*wholeTab=*/true,
+        [this]() { return confirmDiscard(); });
     changes_->track(0, leftPath_);
     changes_->track(1, rightPath_);
+    lockTimer_.setInterval(kLockFlashStepMs);
+    lockTimer_.callOnTimeout([this] {
+        ++lockFlashStep_;
+        if (lockFlashStep_ >= kLockFlashSteps) {
+            lockTimer_.stop();
+            lockColor_ = writeEnabled_ ? kLockGreen : kLockRed;
+        } else {
+            static const QColor sequence[4] = {kLockRed, kLockBlue, kLockYellow, kLockRed};
+            lockColor_ = sequence[lockFlashStep_ % 4];
+        }
+        updateLockIcon();
+    });
+    updateLockIcon();
+    updateEditActions();
     startLoad(false);
 }
 
 VirtualTextCompareViewer::~VirtualTextCompareViewer() {
     if (loader_) loader_->cancel();
+    if (taskRunner_) taskRunner_->cancel();
 }
 
 QString VirtualTextCompareViewer::title() const {
     const QString l = leftPath_.isEmpty() ? QStringLiteral("(missing)") : QFileInfo(leftPath_).fileName();
     const QString r = rightPath_.isEmpty() ? QStringLiteral("(missing)") : QFileInfo(rightPath_).fileName();
-    return l + QStringLiteral(" <-> ") + r;
+    return l + QStringLiteral(" <-> ") + r + (anyDirty() ? QStringLiteral(" *") : QString());
 }
 
 void VirtualTextCompareViewer::buildUi() {
@@ -87,8 +148,9 @@ void VirtualTextCompareViewer::buildUi() {
         saveButton->setObjectName(QStringLiteral("saveSideBtn"));
         saveButton->setIcon(icons::glyph(icons::Glyph::Save));
         saveButton->setIconSize(QSize(15, 15));
-        saveButton->setToolTip(tr("Saving is unavailable in the Virtual editor (read-only)"));
+        saveButton->setToolTip(tr("Save this side (no unsaved changes)"));
         saveButton->setEnabled(false);
+        QObject::connect(saveButton, &QToolButton::clicked, this, [this, left] { saveSide(left); });
         pathRow->addWidget(saveButton, 0);
         layout->addLayout(pathRow);
 
@@ -143,10 +205,47 @@ void VirtualTextCompareViewer::buildUi() {
     findBar_->hide();
     root->addWidget(findBar_);
 
+    rulesBar_ = new QWidget;
+    rulesBar_->setObjectName(QStringLiteral("rulesBar"));
+    auto* rl = new QHBoxLayout(rulesBar_);
+    rl->setContentsMargins(6, 3, 6, 3);
+    rl->addWidget(new QLabel(tr("Rules:")));
+    rulesEdit_ = new QLineEdit;
+    rulesEdit_->setObjectName(QStringLiteral("rulesEdit"));
+    rulesEdit_->setPlaceholderText(tr("timestamp, correlation-id, pod-123, /regex/, or a,,b for a literal comma"));
+    rulesEdit_->setToolTip(tr("Parts of lines matching these samples or /regular expressions/ are ignored, so lines that "
+                              "differ only there count as matched."));
+    auto* applyRulesButton = new QPushButton(tr("Apply"));
+    auto* clearRulesButton = new QPushButton(tr("Clear"));
+    rulesStatus_ = new QLabel;
+    rl->addWidget(rulesEdit_, 1);
+    rl->addWidget(applyRulesButton);
+    rl->addWidget(clearRulesButton);
+    rl->addWidget(rulesStatus_);
+    QObject::connect(rulesEdit_, &QLineEdit::returnPressed, this, [this] { applyRules(rulesEdit_->text()); });
+    QObject::connect(applyRulesButton, &QPushButton::clicked, this, [this] { applyRules(rulesEdit_->text()); });
+    QObject::connect(clearRulesButton, &QPushButton::clicked, this, [this] {
+        rulesEdit_->clear();
+        applyRules(QString());
+    });
+    rulesBar_->hide();
+    root->addWidget(rulesBar_);
+
     status_ = new QLabel;
     status_->setObjectName(QStringLiteral("compareStatus"));
     status_->setContentsMargins(6, 2, 6, 2);
-    root->addWidget(status_);
+    lockButton_ = new QToolButton(this);
+    lockButton_->setObjectName(QStringLiteral("lockButton"));
+    lockButton_->setAutoRaise(true);
+    lockButton_->setIconSize(QSize(18, 18));
+    lockButton_->setFocusPolicy(Qt::NoFocus);
+    QObject::connect(lockButton_, &QToolButton::clicked, this, [this] { setWriteMode(!writeEnabled_); });
+    auto* statusRow = new QHBoxLayout;
+    statusRow->setContentsMargins(0, 0, 4, 0);
+    statusRow->setSpacing(2);
+    statusRow->addWidget(status_, 1);
+    statusRow->addWidget(lockButton_, 0);
+    root->addLayout(statusRow);
 
     progress_ = new QProgressBar;
     progress_->setRange(0, 100);
@@ -191,7 +290,10 @@ void VirtualTextCompareViewer::buildActions() {
     contextAction->setCheckable(true);
     toolbar_->addSeparator();
     unavailable(icons::Glyph::Minor, tr("Minor"), tr("Whitespace filtering is unavailable in the Virtual editor"));
-    unavailable(icons::Glyph::Rules, tr("Rules"), tr("Ignore rules are unavailable in the Virtual editor"));
+    rulesAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::Rules), tr("Rules"));
+    rulesAction_->setCheckable(true);
+    rulesAction_->setToolTip(tr("Ignore parts of lines that match samples or /regular expressions/"));
+    QObject::connect(rulesAction_, &QAction::toggled, this, [this](bool on) { showRulesBar(on); });
     unavailable(icons::Glyph::Format, tr("Word Wrap"), tr("Word wrapping is unavailable in the Virtual editor"));
     toolbar_->addSeparator();
 
@@ -205,8 +307,8 @@ void VirtualTextCompareViewer::buildActions() {
     toolbar_->addSeparator();
 
     copyDiffAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::CopyLine), tr("Copy"));
-    copyDiffAction_->setToolTip(tr("Copy changes to the other side (unavailable in the read-only Virtual editor)"));
-    copyDiffAction_->setEnabled(false);
+    copyDiffAction_->setToolTip(tr("Copy the difference at the caret to the other side (needs write mode)"));
+    QObject::connect(copyDiffAction_, &QAction::triggered, this, [this] { copyCurrentBlock(); });
     toolbar_->addSeparator();
     nextDiffAction_ = make(tr("&Next Difference"), QKeySequence(Qt::Key_F8),
                            [this] { if (auto* e = activeEditor()) e->goToNextDifference(); });
@@ -219,6 +321,7 @@ void VirtualTextCompareViewer::buildActions() {
     toolbar_->addSeparator();
 
     swapAction_ = make(tr("S&wap Sides"), QKeySequence(), [this] {
+        if (!confirmDiscard()) return;
         std::swap(leftPath_, rightPath_);
         changes_->track(0, leftPath_);
         changes_->track(1, rightPath_);
@@ -227,17 +330,16 @@ void VirtualTextCompareViewer::buildActions() {
     });
     swapAction_->setIcon(icons::glyph(icons::Glyph::Swap));
     toolbar_->addAction(swapAction_);
-    reloadAction_ = make(tr("&Reload"), QKeySequence(Qt::Key_F5), [this] { reload(true); });
+    reloadAction_ = make(tr("&Reload"), QKeySequence(Qt::Key_F5), [this] {
+        if (confirmDiscard()) reload(true);
+    });
     reloadAction_->setIcon(icons::glyph(icons::Glyph::Refresh));
     toolbar_->addAction(reloadAction_);
 
-    saveAction_ = make(tr("&Save"), QKeySequence::Save, [] {});
-    undoAction_ = make(tr("&Undo"), QKeySequence::Undo, [] {});
-    redoAction_ = make(tr("&Redo"), QKeySequence::Redo, [] {});
-    for (QAction* readOnlyAction : {saveAction_, undoAction_, redoAction_}) {
-        readOnlyAction->setEnabled(false);
-        readOnlyAction->setToolTip(tr("Unavailable in the Virtual editor (read-only)"));
-    }
+    saveAction_ = make(tr("&Save"), QKeySequence::Save, [this] { saveActive(false); });
+    saveAsAction_ = make(tr("Save &As..."), QKeySequence::SaveAs, [this] { saveActive(true); });
+    undoAction_ = make(tr("&Undo"), QKeySequence::Undo, [this] { activeEditor()->undo(); });
+    redoAction_ = make(tr("&Redo"), QKeySequence::Redo, [this] { activeEditor()->redo(); });
 
     copyAction_ = make(tr("&Copy"), QKeySequence::Copy, [this] { if (auto* e = activeEditor()) e->copySelection(); });
     selectAllAction_ = make(tr("Select &All"), QKeySequence::SelectAll, [this] { if (auto* e = activeEditor()) e->selectAllText(); });
@@ -276,7 +378,13 @@ void VirtualTextCompareViewer::wireEditors() {
             peer->setCurrentRowQuietly(row);
             overview_->setVirtualCurrentRow(row);
         };
-        self->onFocused = [this, self]() { lastFocused_ = self; };
+        self->onFocused = [this, self]() {
+            lastFocused_ = self;
+            updateEditActions();
+        };
+        self->onEditBlocked = [this]() { flashLock(); };
+        self->onEdited = [this](const ModelEdit& edit) { handleEdited(edit); };
+        self->onCopyBlockRequested = [this, self](quint64 row) { copyBlockAt(row, self->side()); };
         self->onStatusMessage = [this](const QString& text) { status_->setText(text); };
     };
     link(left_, right_);
@@ -329,9 +437,11 @@ void VirtualTextCompareViewer::refreshSideHeader(bool left) {
         encoding = QString::fromLatin1(encodings[qMin(code & 0x7f, 3)]);
         if (code & 0x80) encoding += tr(" (binary?)");
     }
-    attrs->setText(QStringLiteral("%1    %2    %3")
+    QString line = QStringLiteral("%1    %2    %3")
                        .arg(info.lastModified().toString(QStringLiteral("M/d/yyyy h:mm:ss AP")),
-                            QLocale().toString(info.size()) + tr(" bytes"), encoding));
+                            QLocale().toString(info.size()) + tr(" bytes"), encoding);
+    if (model_ && model_->isDirty(left ? Side::Left : Side::Right)) line += tr("    ● modified");
+    attrs->setText(line);
 }
 
 void VirtualTextCompareViewer::commitPath(bool left, const QString& path) {
@@ -341,6 +451,10 @@ void VirtualTextCompareViewer::commitPath(bool left, const QString& path) {
     PathSelector* selector = left ? leftSelector_ : rightSelector_;
     if (currentPath == selectedPath) {
         selector->setText(selectedPath);
+        return;
+    }
+    if (!confirmDiscard()) {                 // keep the edits: put the old path back
+        selector->setText(currentPath);
         return;
     }
     currentPath = selectedPath;
@@ -353,6 +467,7 @@ void VirtualTextCompareViewer::commitPath(bool left, const QString& path) {
 
 void VirtualTextCompareViewer::applyDroppedPaths(const QString& left, const QString& right) {
     if (left.isEmpty() && right.isEmpty()) return;
+    if (!confirmDiscard()) return;
     if (!left.isEmpty()) {
         leftPath_ = left;
         changes_->track(0, leftPath_);
@@ -399,7 +514,9 @@ void VirtualTextCompareViewer::startLoad(bool keepScroll) {
         progress_->hide();
         status_->setText(message == QLatin1String("cancelled") ? tr("Cancelled.") : tr("Could not compare: %1").arg(message));
     };
-    loader_->start(leftPath_, rightPath_, ModelOptions{});
+    ModelOptions options;
+    options.bufferedIo = bufferedIo_;
+    loader_->start(leftPath_, rightPath_, options);
 }
 
 void VirtualTextCompareViewer::onModelReady(std::shared_ptr<TextModel> model) {
@@ -421,8 +538,16 @@ void VirtualTextCompareViewer::onModelReady(std::shared_ptr<TextModel> model) {
     overview_->setViewportRows(left_->firstVisibleRow(),
                                static_cast<quint64>(left_->visibleRowCount()));
     overview_->setVirtualCurrentRow(left_->currentRow());
+    for (VirtualTextEditor* e : {left_, right_}) e->setReadOnly(!writeEnabled_);
     updateStatus();
+    refreshDirtyUi();
+    updateEditActions();
     if (onTitleChanged) onTitleChanged();
+    if (!rulesText_.isEmpty()) {            // rules survive reloads, swaps and path changes
+        const QString text = rulesText_;
+        rulesText_.clear();
+        applyRules(text);
+    }
 }
 
 void VirtualTextCompareViewer::updateStatus() {
@@ -433,11 +558,258 @@ void VirtualTextCompareViewer::updateStatus() {
         const int code = model_->encodingCode(side);
         return QString::fromLatin1(kEnc[qMin(code & 0x7f, 3)]) + ((code & 0x80) ? tr(" (binary?)") : QString());
     };
-    QString text = tr("%1 rows · %2 difference blocks · %3 / %4 · Virtual editor (read-only)")
-                       .arg(s.rows).arg(s.blocks).arg(enc(Side::Left), enc(Side::Right));
+    QString text = tr("%1 rows · %2 difference blocks · %3 / %4 · Virtual editor (%5)")
+                       .arg(s.rows).arg(s.blocks).arg(enc(Side::Left), enc(Side::Right),
+                                                      writeEnabled_ ? tr("editing") : tr("read-only"));
+    if (anyDirty()) text += tr(" · unsaved changes");
+    if (!rulesText_.isEmpty()) text += tr(" · rules active");
     if (s.blocks == 0 && s.rows > 0) text = tr("Files are identical · ") + text;
     if (s.degraded) text += tr(" · coarse alignment used for a very large unmatched region");
     status_->setText(text);
+}
+
+// ---- write mode and the lock icon -----------------------------------------------------------------
+
+void VirtualTextCompareViewer::updateLockIcon() {
+    if (!lockFlashing()) lockColor_ = writeEnabled_ ? kLockGreen : kLockRed;
+    if (!lockButton_) return;
+    lockButton_->setIcon(lockIcon(writeEnabled_, lockColor_));
+    lockButton_->setToolTip(writeEnabled_ ? tr("Editing is enabled - click to lock (read-only)")
+                                          : tr("Read-only - click to unlock and enable editing"));
+}
+
+void VirtualTextCompareViewer::flashLock() {
+    lockFlashStep_ = 0;
+    lockColor_ = kLockRed;            // first colour of red-blue-yellow-red
+    lockTimer_.start();               // restarts the 1.2 s sequence when a flash is already running
+    updateLockIcon();
+    status_->setText(tr("Read-only: click the lock icon to enable editing."));
+}
+
+void VirtualTextCompareViewer::setWriteMode(bool enabled) {
+    if (writeEnabled_ == enabled) return;
+    writeEnabled_ = enabled;
+    for (VirtualTextEditor* e : {left_, right_}) e->setReadOnly(!enabled);
+    if (lockTimer_.isActive()) lockTimer_.stop();
+    updateLockIcon();
+    updateEditActions();
+    updateStatus();
+#ifdef Q_OS_WIN
+    // A memory-mapped file cannot be replaced on Windows. Nothing can be dirty before the first
+    // unlock, so reopen with buffered I/O once (it keeps the scroll position).
+    if (enabled && !bufferedIo_ && model_ && !anyDirty()) {
+        bufferedIo_ = true;
+        startLoad(true);
+    }
+#endif
+}
+
+void VirtualTextCompareViewer::updateEditActions() {
+    VirtualTextEditor* e = activeEditor();
+    // While locked the actions stay enabled so using them flashes the lock; in write mode they
+    // follow what can actually be undone.
+    undoAction_->setEnabled(!writeEnabled_ || (model_ && e->canUndo()));
+    redoAction_->setEnabled(!writeEnabled_ || (model_ && e->canRedo()));
+    saveAction_->setEnabled(model_ && model_->isDirty(e->side()));
+    saveAsAction_->setEnabled(model_ != nullptr);
+    copyDiffAction_->setEnabled(model_ != nullptr);
+}
+
+bool VirtualTextCompareViewer::anyDirty() const {
+    return model_ && (model_->isDirty(Side::Left) || model_->isDirty(Side::Right));
+}
+
+bool VirtualTextCompareViewer::hasUnsavedChanges() const { return anyDirty(); }
+
+void VirtualTextCompareViewer::refreshDirtyUi() {
+    for (const bool left : {true, false}) {
+        const Side side = left ? Side::Left : Side::Right;
+        const bool dirty = model_ && model_->isDirty(side);
+        QToolButton* button = left ? leftSaveButton_ : rightSaveButton_;
+        button->setEnabled(dirty);
+        const QString path = left ? leftPath_ : rightPath_;
+        button->setToolTip(dirty ? (path.isEmpty() ? tr("Save this side as...") : tr("Save %1").arg(path))
+                                 : tr("Save this side (no unsaved changes)"));
+        refreshSideHeader(left);
+    }
+    const bool dirty = anyDirty();
+    if (dirty != lastDirty_) {
+        lastDirty_ = dirty;
+        if (onTitleChanged) onTitleChanged();
+    }
+}
+
+void VirtualTextCompareViewer::handleEdited(const ModelEdit& edit) {
+    left_->modelEdited(edit);
+    right_->modelEdited(edit);
+    updateOverview();
+    updateStatus();
+    refreshDirtyUi();
+    updateEditActions();
+}
+
+void VirtualTextCompareViewer::copyBlockAt(quint64 row, Side from) {
+    if (!model_) return;
+    if (!writeEnabled_) {
+        flashLock();
+        return;
+    }
+    QString error;
+    const auto edit = model_->copyBlock(from, row, &error);
+    if (!edit) {
+        status_->setText(error.isEmpty() ? tr("Nothing to copy here.") : error);
+        return;
+    }
+    handleEdited(*edit);
+    VirtualTextEditor* destination = edit->side == Side::Left ? left_ : right_;
+    VirtualTextEditor* source = from == Side::Left ? left_ : right_;
+    destination->setCurrentRowQuietly(qMin<quint64>(edit->firstRow, model_->rowCount() ? model_->rowCount() - 1 : 0));
+    source->setCurrentRowQuietly(destination->currentRow());
+}
+
+void VirtualTextCompareViewer::copyCurrentBlock() {
+    if (!model_) return;
+    if (!writeEnabled_) {
+        flashLock();
+        return;
+    }
+    VirtualTextEditor* e = activeEditor();
+    if (!model_->blockAt(e->currentRow())) {
+        status_->setText(tr("Place the caret in a difference (or press F8) to copy it to the other side."));
+        return;
+    }
+    copyBlockAt(e->currentRow(), e->side());
+}
+
+// ---- saving ---------------------------------------------------------------------------------------
+
+void VirtualTextCompareViewer::saveActive(bool saveAs) {
+    VirtualTextEditor* e = activeEditor();
+    const bool left = e->side() == Side::Left;
+    if (!saveAs) {
+        saveSide(left);
+        return;
+    }
+    if (!model_ || taskBusy()) return;
+    const QString current = left ? leftPath_ : rightPath_;
+    const QString target = QFileDialog::getSaveFileName(this, tr("Save As"), current, tr("All files (*.*)"));
+    if (target.isEmpty()) return;
+    if (!taskRunner_) taskRunner_ = std::make_unique<ModelTaskRunner>();
+    const Side side = e->side();
+    taskRunner_->onProgress = {};
+    taskRunner_->onFailed = [this](const QString& message) {
+        progress_->hide();
+        status_->setText(tr("Could not save: %1").arg(message));
+    };
+    taskRunner_->onFinished = [this, left, target](const QString&) {
+        (left ? leftPath_ : rightPath_) = target;
+        changes_->track(left ? 0 : 1, target);   // our own write is not an external change
+        (left ? leftSelector_ : rightSelector_)->remember(target);
+        progress_->hide();
+        refreshDirtyUi();
+        updateEditActions();
+        status_->setText(tr("Saved %1").arg(target));
+        if (onTitleChanged) onTitleChanged();
+    };
+    progress_->setValue(0);
+    progress_->show();
+    status_->setText(tr("Saving..."));
+    taskRunner_->start(model_, ModelTaskRunner::Task::SaveAs, side, target);
+}
+
+void VirtualTextCompareViewer::saveSide(bool left, SaveDone done) {
+    const auto finish = [done](bool ok, const QString& error) { if (done) done(ok, error); };
+    if (!model_) { finish(false, tr("Nothing is loaded.")); return; }
+    const Side side = left ? Side::Left : Side::Right;
+    if (!model_->isDirty(side)) { finish(true, QString()); return; }
+    if (taskBusy()) { finish(false, tr("Another operation is still running.")); return; }
+    QString saveAsPath;
+    if ((left ? leftPath_ : rightPath_).isEmpty()) {          // a side that had no file yet
+        saveAsPath = QFileDialog::getSaveFileName(this, left ? tr("Save left side as") : tr("Save right side as"),
+                                                  QString(), tr("All files (*.*)"));
+        if (saveAsPath.isEmpty()) { finish(false, tr("Save was cancelled.")); return; }
+    }
+    if (!taskRunner_) taskRunner_ = std::make_unique<ModelTaskRunner>();
+    taskRunner_->onProgress = {};
+    taskRunner_->onFailed = [this, finish](const QString& message) {
+        progress_->hide();
+        status_->setText(tr("Could not save: %1").arg(message));
+        finish(false, message);
+    };
+    taskRunner_->onFinished = [this, left, saveAsPath, finish](const QString& written) {
+        QString& path = left ? leftPath_ : rightPath_;
+        if (!saveAsPath.isEmpty()) {
+            path = saveAsPath;
+            (left ? leftSelector_ : rightSelector_)->remember(saveAsPath);
+        }
+        changes_->track(left ? 0 : 1, path);       // re-baseline: our own write must not raise "changed on disk"
+        progress_->hide();
+        refreshDirtyUi();
+        updateEditActions();
+        updateStatus();
+        status_->setText(tr("Saved %1").arg(written.isEmpty() ? path : written));
+        if (onTitleChanged) onTitleChanged();
+        finish(true, QString());
+    };
+    progress_->setValue(0);
+    progress_->show();
+    status_->setText(tr("Saving..."));
+    taskRunner_->start(model_, saveAsPath.isEmpty() ? ModelTaskRunner::Task::Save : ModelTaskRunner::Task::SaveAs, side,
+                       saveAsPath);
+}
+
+bool VirtualTextCompareViewer::confirmDiscard() {
+    if (!anyDirty()) return true;
+    const auto info = [this](Side side, const QString& path) {
+        return UnsavedSide{path, model_->isDirty(side) ? static_cast<int>(qMax<quint64>(1, model_->editCount(side))) : 0};
+    };
+    return confirmUnsavedChanges(this, info(Side::Left, leftPath_), info(Side::Right, rightPath_),
+                                 [this](bool left, SaveDone done) { saveSide(left, std::move(done)); });
+}
+
+// ---- rules ------------------------------------------------------------------------------------------
+
+void VirtualTextCompareViewer::showRulesBar(bool show) {
+    rulesBar_->setVisible(show);
+    if (show) rulesEdit_->setFocus();
+    else if (VirtualTextEditor* e = activeEditor()) e->setFocus();
+}
+
+void VirtualTextCompareViewer::applyRules(const QString& text) {
+    if (rulesEdit_->text() != text) rulesEdit_->setText(text);
+    if (!model_) {
+        rulesText_ = text;
+        return;
+    }
+    if (text == model_->rulesText() && text == rulesText_) return;
+    if (taskBusy()) {
+        rulesStatus_->setText(tr("Busy - try again in a moment."));
+        return;
+    }
+    if (!taskRunner_) taskRunner_ = std::make_unique<ModelTaskRunner>();
+    taskRunner_->onProgress = [this](const QString&, quint64 done, quint64 total) {
+        progress_->setValue(total ? static_cast<int>(done * 100 / total) : 0);
+    };
+    taskRunner_->onFailed = [this](const QString& message) {
+        progress_->hide();
+        rulesStatus_->setStyleSheet(QStringLiteral("color: #e53935;"));
+        rulesStatus_->setText(message == QLatin1String("cancelled") ? tr("Cancelled.") : message);
+        status_->setText(tr("Rules not applied: %1").arg(message));
+    };
+    taskRunner_->onFinished = [this, text](const QString&) {
+        rulesText_ = text;
+        progress_->hide();
+        rulesStatus_->setStyleSheet(QString());
+        rulesStatus_->setText(text.isEmpty() ? QString() : tr("active"));
+        left_->invalidateAll();
+        right_->invalidateAll();
+        updateOverview();
+        updateStatus();
+        updateEditActions();
+    };
+    progress_->setValue(0);
+    progress_->show();
+    taskRunner_->start(model_, ModelTaskRunner::Task::SetRules, Side::Left, text);
 }
 
 void VirtualTextCompareViewer::showFindBar(bool show) {

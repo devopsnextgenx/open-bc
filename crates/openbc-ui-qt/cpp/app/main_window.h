@@ -602,7 +602,8 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         }
         // Tabs with editable sides ask first (shared UnsavedChangesDialog); Cancel keeps the tab.
         bool mayClose = true;
-        if (auto* v = dynamic_cast<TextCompareViewer*>(widget)) mayClose = v->confirmClose();
+        if (auto* vv = dynamic_cast<VirtualTextCompareViewer*>(widget)) mayClose = vv->confirmClose();
+        else if (auto* v = dynamic_cast<TextCompareViewer*>(widget)) mayClose = v->confirmClose();
         else if (auto* v = dynamic_cast<TableCompareViewer*>(widget)) mayClose = v->confirmClose();
         else if (auto* v = dynamic_cast<RegistryCompareViewer*>(widget)) mayClose = v->confirmClose();
         else if (auto* v = dynamic_cast<MediaCompareViewer*>(widget)) mayClose = v->confirmClose();
@@ -625,14 +626,16 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         for (int i = 0; i < tabs->count(); ++i) {
             QWidget* w = tabs->widget(i);
             bool dirty = false;
-            if (auto* v = dynamic_cast<TextCompareViewer*>(w)) dirty = v->hasUnsavedChanges();
+            if (auto* vv = dynamic_cast<VirtualTextCompareViewer*>(w)) dirty = vv->hasUnsavedChanges();
+            else if (auto* v = dynamic_cast<TextCompareViewer*>(w)) dirty = v->hasUnsavedChanges();
             else if (auto* v = dynamic_cast<TableCompareViewer*>(w)) dirty = v->hasUnsavedChanges();
             else if (auto* v = dynamic_cast<RegistryCompareViewer*>(w)) dirty = v->hasUnsavedChanges();
             else if (auto* v = dynamic_cast<MediaCompareViewer*>(w)) dirty = v->hasUnsavedChanges();
             if (!dirty) continue;
             tabs->setCurrentIndex(i);
             bool ok = true;
-            if (auto* v = dynamic_cast<TextCompareViewer*>(w)) ok = v->confirmClose();
+            if (auto* vv = dynamic_cast<VirtualTextCompareViewer*>(w)) ok = vv->confirmClose();
+            else if (auto* v = dynamic_cast<TextCompareViewer*>(w)) ok = v->confirmClose();
             else if (auto* v = dynamic_cast<TableCompareViewer*>(w)) ok = v->confirmClose();
             else if (auto* v = dynamic_cast<RegistryCompareViewer*>(w)) ok = v->confirmClose();
             else if (auto* v = dynamic_cast<MediaCompareViewer*>(w)) ok = v->confirmClose();
@@ -734,7 +737,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         }
         if (auto* v = dynamic_cast<FolderCompareViewer*>(w)) { ctx.tab = drop::TabKind::Folder; left = v->leftText(); right = v->rightText(); }
         else if (auto* v = dynamic_cast<TextCompareViewer*>(w)) { ctx.tab = drop::TabKind::Text; left = v->leftText(); right = v->rightText(); dirty = v->hasUnsavedChanges(); }
-        else if (auto* v = dynamic_cast<VirtualTextCompareViewer*>(w)) { ctx.tab = drop::TabKind::Text; left = v->leftText(); right = v->rightText(); }
+        else if (auto* v = dynamic_cast<VirtualTextCompareViewer*>(w)) { ctx.tab = drop::TabKind::Text; left = v->leftText(); right = v->rightText(); dirty = v->hasUnsavedChanges(); }
         else if (auto* v = dynamic_cast<PictureCompareViewer*>(w)) { ctx.tab = drop::TabKind::Picture; left = v->leftText(); right = v->rightText(); }
         else if (auto* v = dynamic_cast<Model3dCompareViewer*>(w)) { ctx.tab = drop::TabKind::Model3d; left = v->leftText(); right = v->rightText(); }
         else if (auto* v = dynamic_cast<TableCompareViewer*>(w)) { ctx.tab = drop::TabKind::Table; left = v->leftText(); right = v->rightText(); dirty = v->hasUnsavedChanges(); }

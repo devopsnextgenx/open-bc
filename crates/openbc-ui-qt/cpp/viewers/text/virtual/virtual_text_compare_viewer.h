@@ -8,11 +8,19 @@
 // Both editors read ONE shared TextModel (memory-mapped files, hash index, global diff). The model
 // is built on a worker thread (progress + cancel); nothing here ever loads a file into a QString.
 //
-// Read-only. Supported: line numbers, syntax highlighting, changed-line + inline-difference
-// colouring, selection/copy, keyboard navigation, find / next / previous, go to line, next/previous
-// difference, synchronised scrolling, overview bar, file-change notices with explicit reload, Swap sides.
-// Not supported (documented limitations): editing, merge/copy-to-other-side, "ignore text" regex
-// rules, replace. Use the Existing editor for those.
+// Opens READ-ONLY. A lock icon in the status bar (red lock = read-only, green open lock = editing)
+// turns write mode on demand; trying to edit while locked flashes it red-blue-yellow-red (1.2 s).
+// In write mode: typing / paste / cut / delete / Enter on either side, copy a difference block to the
+// other side (arrow in the gutter or the Copy button), per-side undo / redo, Save (in place, atomic,
+// encoding + BOM + line endings preserved), Save As, and the usual unsaved-changes prompt when the tab
+// is closed or its content would be replaced. Edits live in the engine (piece-table overlay over the
+// memory-mapped file), never in a QTextDocument.
+//
+// Also: line numbers, syntax highlighting, changed-line + inline-difference colouring, selection /
+// copy, find, go to line, next/previous difference, synchronised scrolling, overview bar, file-change
+// notices with explicit reload, Swap sides, and Rules (ignore samples or /regex/ parts of lines, same
+// syntax as the Existing editor's Rules bar).
+// Not supported (documented limitations): "Minor"/row filtering, word wrap, replace.
 //
 // Header/moc-free like the other viewers: notifications are std::function callbacks.
 // ---------------------------------------------------------------------------
@@ -24,6 +32,7 @@
 #include <QLineEdit>
 #include <QList>
 #include <QProgressBar>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QWidget>
@@ -32,6 +41,7 @@
 
 #include "common/minimap.h"
 #include "common/path_selector.h"
+#include "common/unsaved_changes_dialog.h"
 #include "common/file_change_controller.h"
 #include "viewers/text/engine/text_model.h"
 #include "viewers/text/virtual/virtual_text_editor.h"
@@ -55,7 +65,7 @@ public:
 
     QList<QAction*> actionsMenuItems() const { return {reloadAction_, swapAction_}; }
     QList<QAction*> editMenuItems() const {
-        return {undoAction_, redoAction_, saveAction_, nullptr, copyAction_, selectAllAction_};
+        return {undoAction_, redoAction_, saveAction_, saveAsAction_, nullptr, copyAction_, selectAllAction_};
     }
     QList<QAction*> searchMenuItems() const {
         return {findAction_, findNextAction_, findPrevAction_, gotoLineAction_, nextDiffAction_, prevDiffAction_};
@@ -71,6 +81,43 @@ public:
 
     void reload(bool keepScroll = true);
 
+    // ---- write mode -------------------------------------------------------------------------
+    bool writeEnabled() const { return writeEnabled_; }
+    // Lock (false) / unlock (true). Unlocking on Windows reopens the files with buffered I/O first,
+    // because a memory-mapped file cannot be replaced there.
+    void setWriteMode(bool enabled);
+    // Lock icon introspection (tests, accessibility).
+    QToolButton* lockButton() const { return lockButton_; }
+    QToolButton* saveButton(bool left) const { return left ? leftSaveButton_ : rightSaveButton_; }
+    QAction* copyDiffAction() const { return copyDiffAction_; }
+    QAction* rulesAction() const { return rulesAction_; }
+    QLabel* rulesStatusLabel() const { return rulesStatus_; }
+    bool lockFlashing() const { return lockTimer_.isActive(); }
+    QColor lockColor() const { return lockColor_; }
+    int lockFlashStep() const { return lockFlashStep_; }   // 0..11 while flashing
+    // Flash the lock: red-blue-yellow-red, 100 ms per colour, 3 rounds = 1.2 s. Restarts if running.
+    void flashLock();
+    // Copy the changed block containing `row` from `from` to the other side.
+    void copyBlockAt(quint64 row, Side from);
+
+    // ---- unsaved changes --------------------------------------------------------------------
+    bool hasUnsavedChanges() const;
+    // Shows the unsaved-changes dialog when needed. True = it is fine to close / replace the content.
+    bool confirmClose() { return confirmDiscard(); }
+    bool confirmDiscard();
+    // Saves one side; `done` is called exactly once (false carries a reason). A side without a file
+    // asks for a name (Save As).
+    void saveSide(bool left, SaveDone done = {});
+    bool taskBusy() const { return taskRunner_ && taskRunner_->busy(); }
+
+    // ---- rules ------------------------------------------------------------------------------
+    // Ignore rules (same syntax as the Existing editor: comma separated samples, `,,` = a comma,
+    // `/regex/` entries). Empty clears them. Runs on a worker thread; edits and undo are kept.
+    void applyRules(const QString& text);
+    QString rulesText() const { return rulesText_; }
+    bool rulesBarVisible() const { return rulesBar_ && !rulesBar_->isHidden(); }
+    QLineEdit* rulesEdit() const { return rulesEdit_; }
+
 private:
     void buildUi();
     void buildActions();
@@ -82,6 +129,14 @@ private:
     void updateOverview();
     void refreshSideHeader(bool left);
     void commitPath(bool left, const QString& path);
+    void handleEdited(const ModelEdit& edit);
+    void copyCurrentBlock();
+    void saveActive(bool saveAs);
+    void refreshDirtyUi();
+    void updateEditActions();
+    void updateLockIcon();
+    void showRulesBar(bool show);
+    bool anyDirty() const;
     void showFindBar(bool show);
     void findNext(bool forward);
     VirtualTextEditor* activeEditor() const;
@@ -111,9 +166,26 @@ private:
     VirtualTextEditor* lastFocused_ = nullptr;
     bool syncing_ = false;
 
+    // write mode / lock icon
+    bool writeEnabled_ = false;
+    bool bufferedIo_ = false;
+    QToolButton* lockButton_ = nullptr;
+    QTimer lockTimer_;
+    int lockFlashStep_ = 0;
+    QColor lockColor_;
+    bool lastDirty_ = false;
+    std::unique_ptr<ModelTaskRunner> taskRunner_;
+
+    // rules
+    QWidget* rulesBar_ = nullptr;
+    QLineEdit* rulesEdit_ = nullptr;
+    QLabel* rulesStatus_ = nullptr;
+    QString rulesText_;
+
     QAction *homeAction_ = nullptr, *sessionsAction_ = nullptr, *minimapAction_ = nullptr,
             *copyDiffAction_ = nullptr, *reloadAction_ = nullptr, *swapAction_ = nullptr,
-            *saveAction_ = nullptr, *undoAction_ = nullptr, *redoAction_ = nullptr,
+            *saveAction_ = nullptr, *saveAsAction_ = nullptr, *undoAction_ = nullptr, *redoAction_ = nullptr,
+            *rulesAction_ = nullptr,
             *copyAction_ = nullptr, *selectAllAction_ = nullptr,
             *findAction_ = nullptr, *findNextAction_ = nullptr, *findPrevAction_ = nullptr,
             *gotoLineAction_ = nullptr, *nextDiffAction_ = nullptr, *prevDiffAction_ = nullptr,

@@ -17,7 +17,9 @@
 #include <fstream>
 
 #include "viewers/text/virtual/scroll_mapping.h"
+#include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include "viewers/text/plain_text_editor_adapter.h"
 #include "viewers/text/virtual/virtual_text_compare_viewer.h"
 #include "viewers/text/virtual/virtual_text_editor.h"
@@ -410,9 +412,12 @@ static void testCompareTab() {
     CHECK(tab.leftEditor()->arrowGutterSide() == VirtualTextEditor::GutterSide::Right);
     CHECK(tab.rightEditor()->numberGutterSide() == VirtualTextEditor::GutterSide::Right);
     CHECK(tab.rightEditor()->arrowGutterSide() == VirtualTextEditor::GutterSide::Left);
-    CHECK(tab.editMenuItems().size() == 6);
-    CHECK(!tab.editMenuItems()[0]->isEnabled() && !tab.editMenuItems()[1]->isEnabled() &&
-          !tab.editMenuItems()[2]->isEnabled());
+    // Edit menu: Undo, Redo, Save, Save As, separator, Copy, Select All. While locked, Undo/Redo stay
+    // enabled (using them flashes the lock); Save is off because nothing is unsaved.
+    CHECK(tab.editMenuItems().size() == 7);
+    CHECK(tab.editMenuItems()[0]->isEnabled() && tab.editMenuItems()[1]->isEnabled());
+    CHECK(!tab.editMenuItems()[2]->isEnabled());
+    CHECK(!tab.writeEnabled());
 
     // Scroll sync, caret sync and difference navigation through the tab's wiring.
     tab.leftEditor()->setFirstVisibleRow(30000);
@@ -521,19 +526,551 @@ static void testCommonInterface() {
     CHECK_EQ(adapter.currentRow(), 3ULL);
 }
 
+// ======================================================================================================
+// Write mode: lock icon, flashing, editing, copy block, undo/redo, save, unsaved-changes, rules
+// ======================================================================================================
+
+static const QColor kRed(0xe5, 0x39, 0x35), kGreen(0x2e, 0xa0, 0x43), kBlue(0x1e, 0x88, 0xe5), kYellow(0xfd, 0xd8, 0x35);
+
+static std::unique_ptr<VirtualTextCompareViewer> makeTab(const QString& l, const QString& r) {
+    auto tab = std::make_unique<VirtualTextCompareViewer>(l, r);
+    tab->resize(1200, 500);
+    tab->show();
+    waitFor([&] { return tab->model() != nullptr && !tab->loading(); }, 30000);
+    return tab;
+}
+
+static void typeText(QWidget* w, const QString& text) {
+    for (const char32_t cp : text.toUcs4()) {              // one key event per CODE POINT (emoji = 2 UTF-16 units)
+        QKeyEvent ev(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier, QString::fromUcs4(&cp, 1));
+        QApplication::sendEvent(w, &ev);
+    }
+}
+
+static void key(QWidget* w, int k, Qt::KeyboardModifiers m = Qt::NoModifier) {
+    QKeyEvent ev(QEvent::KeyPress, k, m);
+    QApplication::sendEvent(w, &ev);
+}
+
+static QString lineOf(const std::shared_ptr<TextModel>& m, Side s, quint64 line) { return m->window(s, line, 0, 1000).text; }
+
+static QStringList linesOf(const std::shared_ptr<TextModel>& m, Side s) {
+    QStringList out;
+    for (quint64 i = 0; i < m->lineCount(s); ++i) out << lineOf(m, s, i);
+    return out;
+}
+
+// The alignment must still cover every line of both sides exactly once.
+static bool alignmentValid(const std::shared_ptr<TextModel>& m) {
+    quint64 nl = 0, nr = 0;
+    for (quint64 r = 0; r < m->rowCount(); ++r) {
+        const ModelRow row = m->row(r);
+        if (row.left >= 0) { if (static_cast<quint64>(row.left) != nl) return false; ++nl; }
+        if (row.right >= 0) { if (static_cast<quint64>(row.right) != nr) return false; ++nr; }
+    }
+    return nl == m->lineCount(Side::Left) && nr == m->lineCount(Side::Right);
+}
+
+// Presses a button of the (modal) unsaved-changes dialog as soon as it appears.
+static void answerDialog(const QStringList& buttons) {
+    auto* queue = new QStringList(buttons);
+    auto* timer = new QTimer;
+    timer->setInterval(40);
+    auto* elapsed = new QElapsedTimer;
+    elapsed->start();
+    QObject::connect(timer, &QTimer::timeout, [timer, queue, elapsed]() {
+        if (queue->isEmpty() || elapsed->elapsed() > 15000) {
+            timer->stop();
+            timer->deleteLater();
+            delete queue;
+            delete elapsed;
+            return;
+        }
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            if (w->objectName() != QLatin1String("unsavedChangesDialog") || !w->isVisible()) continue;
+            for (auto* b : w->findChildren<QPushButton*>())
+                if (b->isEnabled() && b->text() == queue->first()) {
+                    queue->removeFirst();
+                    b->click();
+                    return;
+                }
+        }
+    });
+    timer->start();
+}
+
+static bool dialogVisible() {
+    for (QWidget* w : QApplication::topLevelWidgets())
+        if (w->objectName() == QLatin1String("unsavedChangesDialog") && w->isVisible()) return true;
+    return false;
+}
+
+static void clickArrow(VirtualTextEditor* e, quint64 row, bool arrowOnRight) {
+    int y = -1;
+    for (int probe = 0; probe < e->viewport()->height(); ++probe)
+        if (e->rowAt(probe) == static_cast<qint64>(row)) { y = probe + 2; break; }
+    const int x = arrowOnRight ? e->viewport()->width() - 10 : 10;
+    const QPoint pos(x, y);
+    QMouseEvent press(QEvent::MouseButtonPress, pos, e->viewport()->mapToGlobal(pos), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, pos, e->viewport()->mapToGlobal(pos), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(e->viewport(), &press);
+    QApplication::sendEvent(e->viewport(), &release);
+}
+
+static QString readAll(const QString& path) {
+    QFile f(path);
+    f.open(QIODevice::ReadOnly);
+    return QString::fromUtf8(f.readAll());
+}
+
+static void focusEditor(VirtualTextEditor* e) {
+    e->setFocus();
+    if (e->onFocused) e->onFocused();
+}
+
+static void testLockFlashing() {
+    const QString l = writeFile("w1_l.txt", "alpha\nbeta\ngamma\ndelta\n");
+    const QString r = writeFile("w1_r.txt", "alpha\nBETA\ngamma\ndelta\nextra\n");
+    auto tab = makeTab(l, r);
+    auto* le = tab->leftEditor();
+    CHECK(!tab->writeEnabled());
+    CHECK(tab->lockColor() == kRed);                       // read-only = red lock
+    CHECK(le->isReadOnly() && tab->rightEditor()->isReadOnly());
+    CHECK(tab->lockButton()->toolTip().contains("Read-only"));
+    le->setCaret(0, 5);
+
+    // One blocked edit: the text is untouched and the lock flashes red-blue-yellow-red, three times, in 1.2 s.
+    QElapsedTimer clock;
+    clock.start();
+    typeText(le, "x");
+    CHECK(tab->lockFlashing());
+    CHECK_EQ(tab->lockFlashStep(), 0);
+    CHECK_EQ(lineOf(tab->model(), Side::Left, 0), QStringLiteral("alpha"));
+    QVector<QColor> sequence{tab->lockColor()};
+    qint64 flashMs = 0;
+    while (tab->lockFlashing() && clock.elapsed() < 4000) {
+        pump(5);
+        if (tab->lockColor() != sequence.last()) sequence.push_back(tab->lockColor());
+        flashMs = clock.elapsed();
+    }
+    const QVector<QColor> expected{kRed, kBlue, kYellow, kRed, kBlue, kYellow, kRed, kBlue, kYellow, kRed};
+    CHECK(sequence == expected);
+    std::printf("  lock flash: %lld ms, %d colour changes\n", static_cast<long long>(flashMs), static_cast<int>(sequence.size()));
+    CHECK(flashMs >= 1100 && flashMs <= 1700);
+    CHECK(!tab->lockFlashing());
+    CHECK(tab->lockColor() == kRed);                       // back to the steady red lock
+
+    // EVERY attempt restarts the flash: Backspace, Delete, Enter, Tab, paste, cut, undo, redo, copy arrow...
+    QGuiApplication::clipboard()->setText("clip");
+    le->setCaret(0, 2);
+    le->setCaret(0, 4, true, false);                       // a selection, so Cut has something to cut
+    struct Attempt { const char* name; std::function<void()> run; };
+    const QVector<Attempt> attempts{
+        {"backspace", [&] { key(le, Qt::Key_Backspace); }},
+        {"delete", [&] { key(le, Qt::Key_Delete); }},
+        {"enter", [&] { key(le, Qt::Key_Return); }},
+        {"paste", [&] { key(le, Qt::Key_V, Qt::ControlModifier); }},
+        {"cut", [&] { key(le, Qt::Key_X, Qt::ControlModifier); }},
+        {"undo shortcut", [&] { key(le, Qt::Key_Z, Qt::ControlModifier); }},
+        {"undo action", [&] { tab->editMenuItems()[0]->trigger(); }},
+        {"redo action", [&] { tab->editMenuItems()[1]->trigger(); }},
+        {"copy arrow", [&] { clickArrow(le, 1, true); }},
+        {"copy button", [&] { tab->copyDiffAction()->trigger(); }},
+        {"input method", [&] { QInputMethodEvent ev; ev.setCommitString("é"); QApplication::sendEvent(le, &ev); }},
+    };
+    for (const Attempt& a : attempts) {
+        pump(220);                                         // let the previous flash advance
+        CHECK(tab->lockFlashing() ? tab->lockFlashStep() > 0 : true);
+        a.run();
+        if (!(tab->lockFlashing() && tab->lockFlashStep() == 0)) std::printf("  attempt '%s' did not restart the flash\n", a.name);
+        CHECK(tab->lockFlashing() && tab->lockFlashStep() == 0);
+    }
+    CHECK_EQ(linesOf(tab->model(), Side::Left), (QStringList{"alpha", "beta", "gamma", "delta"}));   // nothing was edited
+    CHECK(!tab->hasUnsavedChanges());
+    CHECK_EQ(tab->model()->stats().blocks, 2ULL);                                                      // nothing was copied
+
+    // Tab keeps normal focus navigation while read-only, so it is not an edit attempt.
+    waitFor([&] { return !tab->lockFlashing(); }, 4000);
+    key(le, Qt::Key_Tab);
+    CHECK(!tab->lockFlashing());
+
+    // A restart extends the flash: at 1.4 s after the first attempt a second one made at 0.5 s still runs.
+    waitFor([&] { return !tab->lockFlashing(); }, 4000);
+    typeText(le, "x");
+    pump(500);
+    typeText(le, "x");
+    pump(900);
+    CHECK(tab->lockFlashing());
+    CHECK(waitFor([&] { return !tab->lockFlashing(); }, 3000));
+}
+
+static void testUnlockAndTyping() {
+    const QString l = writeFile("w2_l.txt", "alpha\nbeta\ngamma\ndelta\n");
+    const QString r = writeFile("w2_r.txt", "alpha\nBETA\ngamma\ndelta\nextra\n");
+    auto tab = makeTab(l, r);
+    auto* le = tab->leftEditor();
+    auto* re = tab->rightEditor();
+    auto model = tab->model();
+
+    tab->lockButton()->click();                            // click the lock: write mode on, icon green
+    CHECK(tab->writeEnabled());
+    CHECK(tab->lockColor() == kGreen);
+    CHECK(!tab->lockFlashing());
+    CHECK(tab->lockButton()->toolTip().contains("Editing"));
+    CHECK(!le->isReadOnly() && !re->isReadOnly());
+    CHECK(tab->statusText().contains("editing"));
+
+    // Typing on the right side edits the right file only.
+    focusEditor(re);
+    re->setCaret(1, 4);
+    typeText(re, "!??");
+    CHECK_EQ(lineOf(model, Side::Right, 1), QStringLiteral("BETA!??"));
+    CHECK(model->isDirty(Side::Right) && !model->isDirty(Side::Left));
+    CHECK(tab->title().endsWith(" *"));
+    CHECK(tab->saveButton(false)->isEnabled() && !tab->saveButton(true)->isEnabled());
+    CHECK(tab->statusText().contains("unsaved"));
+    CHECK_EQ(re->caret().second, 7);
+    CHECK(alignmentValid(model));
+    CHECK(!tab->lockFlashing());                           // editing while unlocked never flashes
+
+    // Typing is ONE undo step; redo brings it back; undo to the saved state clears "modified".
+    tab->editMenuItems()[0]->trigger();
+    CHECK_EQ(lineOf(model, Side::Right, 1), QStringLiteral("BETA"));
+    CHECK(!model->isDirty(Side::Right));
+    CHECK(!tab->title().endsWith(" *"));
+    tab->editMenuItems()[1]->trigger();
+    CHECK_EQ(lineOf(model, Side::Right, 1), QStringLiteral("BETA!??"));
+    CHECK(model->isDirty(Side::Right));
+    tab->editMenuItems()[0]->trigger();
+
+    // Typing on the left makes the row equal again, so the block disappears.
+    focusEditor(le);
+    const quint64 blocksBefore = model->stats().blocks;
+    le->setCaret(1, 4);
+    key(le, Qt::Key_Backspace);                            // "beta" -> "bet"
+    typeText(le, "A");                                     // "betA"
+    CHECK_EQ(lineOf(model, Side::Left, 1), QStringLiteral("betA"));
+    for (int i = 0; i < 3; ++i) key(le, Qt::Key_Backspace);
+    key(le, Qt::Key_Backspace);
+    CHECK_EQ(lineOf(model, Side::Left, 1), QStringLiteral(""));
+    typeText(le, "BETA");
+    CHECK_EQ(lineOf(model, Side::Left, 1), QStringLiteral("BETA"));
+    CHECK(model->row(1).kind == RowKind::Equal);
+    CHECK_EQ(model->stats().blocks, blocksBefore - 1);
+    CHECK(alignmentValid(model));
+
+    // Both editors repaint with the new state (no crash, caches in step).
+    CHECK(!le->grab().toImage().isNull() && !re->grab().toImage().isNull());
+
+    // Typing on a FILLER row creates a line.
+    const quint64 lastRow = model->rowCount() - 1;
+    CHECK(model->row(lastRow).kind == RowKind::Insert);
+    le->setCaret(lastRow, 0);
+    typeText(le, "Q");
+    CHECK_EQ(linesOf(model, Side::Left).last(), QStringLiteral("Q"));
+    CHECK(model->row(lastRow).kind == RowKind::Replace);
+    CHECK(alignmentValid(model));
+    tab->editMenuItems()[0]->trigger();                    // undo the typed line
+    CHECK_EQ(model->lineCount(Side::Left), 4ULL);
+}
+
+static void testLineEditing() {
+    const QString l = writeFile("w3_l.txt", "alpha\n    indented\nbeta\n");
+    const QString r = writeFile("w3_r.txt", "alpha\n    indented\nbeta\n");
+    auto tab = makeTab(l, r);
+    tab->setWriteMode(true);
+    auto* le = tab->leftEditor();
+    auto model = tab->model();
+    focusEditor(le);
+
+    le->setCaret(0, 5);
+    key(le, Qt::Key_Tab);                                  // write mode: Tab inserts a tab character
+    CHECK_EQ(lineOf(model, Side::Left, 0), QStringLiteral("alpha\t"));
+    key(le, Qt::Key_Backspace);
+    CHECK_EQ(lineOf(model, Side::Left, 0), QStringLiteral("alpha"));
+    le->setCaret(1, 12);
+    key(le, Qt::Key_Return);                               // auto-indent copies the leading whitespace
+    CHECK_EQ(linesOf(model, Side::Left), (QStringList{"alpha", "    indented", "    ", "beta"}));
+    CHECK(le->caret() == (std::pair<quint64, int>{2, 4}));
+    typeText(le, "x");
+    key(le, Qt::Key_Left);
+    key(le, Qt::Key_Home);
+    key(le, Qt::Key_Backspace);                            // at column 0: joins with the previous line
+    CHECK_EQ(linesOf(model, Side::Left), (QStringList{"alpha", "    indented    x", "beta"}));
+    le->setCaret(0, 5);
+    key(le, Qt::Key_Delete);                               // at the end of a line: joins the next one
+    CHECK_EQ(linesOf(model, Side::Left), (QStringList{"alpha    indented    x", "beta"}));
+    CHECK(alignmentValid(model));
+
+    // Select everything and type: replaces all lines.
+    key(le, Qt::Key_A, Qt::ControlModifier);
+    typeText(le, "Z");
+    CHECK_EQ(linesOf(model, Side::Left), (QStringList{"Z"}));
+    CHECK(alignmentValid(model));
+    tab->editMenuItems()[0]->trigger();
+    CHECK_EQ(linesOf(model, Side::Left), (QStringList{"alpha    indented    x", "beta"}));
+
+    // Paste multi-line text (mixed line endings), then cut a selection. Rows are not lines here: the
+    // right file has more lines, so the left pane shows filler rows; address lines through their rows.
+    const auto rowOf = [&](quint64 line) { return model->rowForLine(Side::Left, line).value(); };
+    QGuiApplication::clipboard()->setText("p1\np2\r\np3");
+    le->setCaret(rowOf(1), 4);
+    key(le, Qt::Key_V, Qt::ControlModifier);
+    CHECK_EQ(linesOf(model, Side::Left), (QStringList{"alpha    indented    x", "betap1", "p2", "p3"}));
+    CHECK(le->caret() == (std::pair<quint64, int>{rowOf(3), 2}));
+    le->setCaret(rowOf(0), 0);
+    le->setCaret(rowOf(0), 5, true, false);
+    key(le, Qt::Key_X, Qt::ControlModifier);
+    CHECK_EQ(QGuiApplication::clipboard()->text(), QStringLiteral("alpha"));
+    CHECK_EQ(lineOf(model, Side::Left, 0), QStringLiteral("    indented    x"));
+
+    // A selection spanning several rows is deleted as one edit.
+    le->setCaret(rowOf(0), 4);
+    le->setCaret(rowOf(2), 1, true, false);
+    key(le, Qt::Key_Backspace);
+    CHECK_EQ(linesOf(model, Side::Left), (QStringList{"    2", "p3"}));
+    CHECK(alignmentValid(model));
+
+    // Undo everything: back to the original file content, and clean.
+    while (le->canUndo()) CHECK(le->undo());
+    CHECK_EQ(linesOf(model, Side::Left), (QStringList{"alpha", "    indented", "beta"}));
+    CHECK(!tab->hasUnsavedChanges());
+    CHECK_EQ(model->stats().blocks, 0ULL);
+
+    // Unicode: emoji are deleted as a whole.
+    le->setCaret(0, 5);
+    typeText(le, QString::fromUtf8("😀"));
+    CHECK_EQ(lineOf(model, Side::Left, 0), QString::fromUtf8("alpha😀"));
+    key(le, Qt::Key_Backspace);
+    CHECK_EQ(lineOf(model, Side::Left, 0), QStringLiteral("alpha"));
+}
+
+static void testCopyBlocks() {
+    const QString l = writeFile("w4_l.txt", "alpha\nbeta\ngamma\ndelta\n");
+    const QString r = writeFile("w4_r.txt", "alpha\nBETA\ngamma\ndelta\nextra\n");
+    auto tab = makeTab(l, r);
+    auto* le = tab->leftEditor();
+    auto* re = tab->rightEditor();
+    auto model = tab->model();
+    CHECK_EQ(model->stats().blocks, 2ULL);
+
+    clickArrow(le, 1, true);                               // locked: flashes, copies nothing
+    CHECK(tab->lockFlashing());
+    CHECK_EQ(lineOf(model, Side::Right, 1), QStringLiteral("BETA"));
+    tab->setWriteMode(true);
+
+    clickArrow(le, 0, true);                               // row 0 is not a difference: no arrow there
+    CHECK_EQ(lineOf(model, Side::Right, 1), QStringLiteral("BETA"));
+    clickArrow(le, 1, true);                               // left -> right
+    CHECK_EQ(lineOf(model, Side::Right, 1), QStringLiteral("beta"));
+    CHECK_EQ(model->stats().blocks, 1ULL);
+    CHECK(model->isDirty(Side::Right) && !model->isDirty(Side::Left));
+
+    clickArrow(re, 4, false);                              // the right editor's arrow points left: right -> left
+    CHECK_EQ(linesOf(model, Side::Left), (QStringList{"alpha", "beta", "gamma", "delta", "extra"}));
+    CHECK_EQ(model->stats().blocks, 0ULL);
+    CHECK(model->isDirty(Side::Left));
+    CHECK(alignmentValid(model));
+
+    // Each copy is one undo step on the side that received it.
+    focusEditor(le);
+    tab->editMenuItems()[0]->trigger();
+    CHECK_EQ(model->lineCount(Side::Left), 4ULL);
+    focusEditor(re);
+    tab->editMenuItems()[0]->trigger();
+    CHECK_EQ(lineOf(model, Side::Right, 1), QStringLiteral("BETA"));
+    CHECK(!tab->hasUnsavedChanges());
+
+    // The toolbar Copy button copies the difference at the caret, in the direction of the active pane.
+    focusEditor(re);
+    re->setCaret(1, 0);
+    tab->copyDiffAction()->trigger();                      // right -> left
+    CHECK_EQ(lineOf(model, Side::Left, 1), QStringLiteral("BETA"));
+    re->setCaret(0, 0);                                    // not inside a difference
+    const quint64 undoDepth = model->editCount(Side::Left);
+    tab->copyDiffAction()->trigger();
+    CHECK_EQ(model->editCount(Side::Left), undoDepth);
+    CHECK(tab->statusText().contains("difference"));
+}
+
+static void testSaving() {
+    const QString l = writeFile("w5_l.txt", "alpha\nbeta\ngamma\n");
+    const QString r = writeFile("w5_r.txt", "alpha\r\nBETA\r\ngamma");    // CRLF, no trailing newline
+    auto tab = makeTab(l, r);
+    tab->setWriteMode(true);
+    auto* le = tab->leftEditor();
+    auto* re = tab->rightEditor();
+    auto model = tab->model();
+    focusEditor(re);
+    re->setCaret(1, 4);
+    typeText(re, "!");
+    CHECK(tab->saveButton(false)->isEnabled());
+    tab->saveButton(false)->click();                       // header Save button of the right side
+    CHECK(waitFor([&] { return !model->isDirty(Side::Right) && !tab->taskBusy(); }, 15000));
+    CHECK_EQ(readAll(r), QStringLiteral("alpha\r\nBETA!\r\ngamma"));     // CRLF and the missing final newline kept
+    CHECK_EQ(readAll(l), QStringLiteral("alpha\nbeta\ngamma\n"));          // the other file is untouched
+    CHECK(!tab->saveButton(false)->isEnabled());
+    CHECK(!tab->title().endsWith(" *"));
+    // Our own write must not look like an external change.
+    pump(600);
+    auto* banner = static_cast<FileChangeBanner*>(tab->findChild<QFrame*>(QStringLiteral("fileChangeBanner")));
+    CHECK(banner != nullptr && !banner->isStale(0) && !banner->isStale(1));
+
+    // Ctrl+S saves the active pane; undo after saving makes it dirty again (differs from disk).
+    focusEditor(le);
+    le->setCaret(2, 5);
+    typeText(le, "?");
+    CHECK(tab->editMenuItems()[2]->isEnabled());
+    tab->editMenuItems()[2]->trigger();                    // Save
+    CHECK(waitFor([&] { return !model->isDirty(Side::Left) && !tab->taskBusy(); }, 15000));
+    CHECK_EQ(readAll(l), QStringLiteral("alpha\nbeta\ngamma?\n"));
+    tab->editMenuItems()[0]->trigger();
+    CHECK(model->isDirty(Side::Left));
+    CHECK_EQ(readAll(l), QStringLiteral("alpha\nbeta\ngamma?\n"));         // nothing written until saved again
+    // Locking again keeps the edits and still allows saving.
+    tab->lockButton()->click();
+    CHECK(!tab->writeEnabled() && tab->lockColor() == kRed);
+    CHECK(model->isDirty(Side::Left));
+    typeText(le, "z");
+    CHECK_EQ(lineOf(model, Side::Left, 2), QStringLiteral("gamma"));
+    CHECK(tab->lockFlashing());
+    tab->saveButton(true)->click();
+    CHECK(waitFor([&] { return !model->isDirty(Side::Left) && !tab->taskBusy(); }, 15000));
+    CHECK_EQ(readAll(l), QStringLiteral("alpha\nbeta\ngamma\n"));
+}
+
+static void testUnsavedChangesProtocol() {
+    const QString l = writeFile("w6_l.txt", "one\ntwo\n");
+    const QString r = writeFile("w6_r.txt", "one\ntwo\n");
+    auto tab = makeTab(l, r);
+    CHECK(tab->confirmClose());                            // nothing to lose: no dialog at all
+    tab->setWriteMode(true);
+    auto* le = tab->leftEditor();
+    auto* re = tab->rightEditor();
+    focusEditor(le);
+    le->setCaret(0, 3);
+    typeText(le, "L");
+    focusEditor(re);
+    re->setCaret(1, 3);
+    typeText(re, "R");
+    CHECK(tab->hasUnsavedChanges());
+
+    answerDialog({"Cancel"});
+    CHECK(!tab->confirmClose());                           // Cancel keeps the tab (and the edits)
+    CHECK(tab->hasUnsavedChanges());
+    answerDialog({"Continue"});
+    CHECK(tab->confirmClose());                            // Continue discards
+    answerDialog({"Save Left", "Save Right"});
+    CHECK(tab->confirmClose());                            // both saved from the dialog; it closes itself
+    CHECK(!tab->hasUnsavedChanges());
+    CHECK_EQ(readAll(l), QStringLiteral("oneL\ntwo\n"));
+    CHECK_EQ(readAll(r), QStringLiteral("one\ntwoR\n"));
+    CHECK(!dialogVisible());
+
+    // Replacing the content asks first: Swap sides, Reload, dropped paths.
+    focusEditor(le);
+    le->setCaret(0, 4);
+    typeText(le, "!");
+    answerDialog({"Cancel"});
+    tab->actionsMenuItems()[1]->trigger();                 // Swap Sides -> cancelled
+    CHECK_EQ(tab->leftText(), l);
+    CHECK(tab->hasUnsavedChanges());
+    answerDialog({"Cancel"});
+    tab->actionsMenuItems()[0]->trigger();                 // Reload -> cancelled
+    CHECK(tab->hasUnsavedChanges());
+    answerDialog({"Cancel"});
+    tab->applyDroppedPaths(r, l);
+    CHECK_EQ(tab->leftText(), l);
+    CHECK(tab->hasUnsavedChanges());
+    answerDialog({"Continue"});
+    tab->actionsMenuItems()[1]->trigger();                 // Swap -> continue: edits are dropped, sides swap
+    CHECK(waitFor([&] { return !tab->loading() && tab->leftText() == r && tab->model() && !tab->hasUnsavedChanges(); }, 15000));
+    CHECK_EQ(readAll(l), QStringLiteral("oneL\ntwo\n"));   // the discarded edit never reached the disk
+}
+
+static void testRules() {
+    const QString l = writeFile("w7_l.txt", "id=1 ok\n# c1\nkeep\n");
+    const QString r = writeFile("w7_r.txt", "id=2 ok\n# c2\nkeep\n");
+    auto tab = makeTab(l, r);
+    CHECK_EQ(tab->model()->stats().blocks, 1ULL);
+    CHECK(!tab->rulesBarVisible());
+    tab->rulesAction()->setChecked(true);                  // the toolbar "Rules" button shows the bar
+    CHECK(tab->rulesBarVisible());
+
+    tab->rulesEdit()->setText("/^#.*$/,1");                // Enter in the bar applies
+    QMetaObject::invokeMethod(tab->rulesEdit(), "returnPressed");
+    CHECK(waitFor([&] { return tab->rulesText() == QStringLiteral("/^#.*$/,1") && !tab->taskBusy(); }, 15000));
+    CHECK_EQ(tab->model()->stats().blocks, 0ULL);          // masked parts count as matched
+    CHECK(tab->statusText().contains("rules active"));
+    CHECK(alignmentValid(tab->model()));
+
+    // Rules apply to edits made afterwards, and to the other side's lines.
+    tab->setWriteMode(true);
+    auto* re = tab->rightEditor();
+    focusEditor(re);
+    re->setCaret(0, 4);
+    key(re, Qt::Key_Backspace);
+    typeText(re, "9");                                     // id=9 ok  (only the masked digit differs)
+    CHECK_EQ(lineOf(tab->model(), Side::Right, 0), QStringLiteral("id=9 ok"));
+    CHECK_EQ(tab->model()->stats().blocks, 0ULL);
+    typeText(re, "X");                                     // "id=9X ok"... unmasked difference
+    CHECK_EQ(tab->model()->stats().blocks, 1ULL);
+
+    // Rules survive a reload (and the edit is discarded by it).
+    answerDialog({"Continue"});                            // arm the answer BEFORE the modal dialog opens
+    tab->actionsMenuItems()[0]->trigger();
+    CHECK(waitFor([&] { return !tab->loading() && !tab->hasUnsavedChanges() && tab->model() && tab->model()->stats().blocks == 0; }, 15000));
+    CHECK_EQ(tab->rulesText(), QStringLiteral("/^#.*$/,1"));
+
+    // An invalid regular expression is reported and changes nothing.
+    tab->applyRules("/(bad/");
+    CHECK(waitFor([&] { return !tab->taskBusy(); }, 15000));
+    CHECK_EQ(tab->rulesText(), QStringLiteral("/^#.*$/,1"));
+    CHECK(tab->rulesStatusLabel()->text().contains("regular expression"));
+    CHECK_EQ(tab->model()->stats().blocks, 0ULL);
+
+    // Clearing the rules restores the plain comparison.
+    tab->applyRules(QString());
+    CHECK(waitFor([&] { return tab->rulesText().isEmpty() && !tab->taskBusy(); }, 15000));
+    CHECK_EQ(tab->model()->stats().blocks, 1ULL);
+}
+
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
+    std::setvbuf(stdout, nullptr, _IONBF, 0);   // progress is visible even if a test hangs
     QApplication app(argc, argv);
     QTemporaryDir dir;
     g_dir = &dir;
+    std::printf("[ testScrollMapper ]\n");
     testScrollMapper();
+    std::printf("[ testModelBasics ]\n");
     testModelBasics();
+    std::printf("[ testEditorsShareModel ]\n");
     testEditorsShareModel();
+    std::printf("[ testSyntaxMultiline ]\n");
     testSyntaxMultiline();
+    std::printf("[ testVeryLongLinesStayCheap ]\n");
     testVeryLongLinesStayCheap();
+    std::printf("[ testLoaderAsyncAndCancel ]\n");
     testLoaderAsyncAndCancel();
+    std::printf("[ testCompareTab ]\n");
     testCompareTab();
+    std::printf("[ testCommonInterface ]\n");
     testCommonInterface();
+    std::printf("[ testLockFlashing ]\n");
+    testLockFlashing();
+    std::printf("[ testUnlockAndTyping ]\n");
+    testUnlockAndTyping();
+    std::printf("[ testLineEditing ]\n");
+    testLineEditing();
+    std::printf("[ testCopyBlocks ]\n");
+    testCopyBlocks();
+    std::printf("[ testSaving ]\n");
+    testSaving();
+    std::printf("[ testUnsavedChangesProtocol ]\n");
+    testUnsavedChangesProtocol();
+    std::printf("[ testRules ]\n");
+    testRules();
     std::printf(failures ? "%d FAILURE(S)\n" : "virtual_editor_test: all passed\n", failures);
     return failures ? 1 : 0;
 }

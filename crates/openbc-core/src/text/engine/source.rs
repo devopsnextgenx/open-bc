@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 
 use memmap2::Mmap;
@@ -232,5 +232,102 @@ impl TextSource for MemorySource {
 
     fn is_mapped(&self) -> bool {
         true
+    }
+}
+
+/// A read-only base (usually the memory-mapped file) plus an append-only edit buffer, presented as
+/// ONE address space: `[0, base_len)` is the base, `[base_len, ...)` is the edit buffer.
+///
+/// Line records created by edits simply point into the second region, so untouched lines keep their
+/// offsets and the base is never copied or modified. Appended bytes are never overwritten or moved
+/// (only appended), which keeps every record - including the ones held by the undo history -
+/// valid for the lifetime of the source.
+pub struct EditableSource {
+    base: Arc<dyn TextSource>,
+    base_len: u64,
+    edits: RwLock<Vec<u8>>,
+}
+
+impl EditableSource {
+    /// Wrap `base`.
+    #[must_use]
+    pub fn new(base: Arc<dyn TextSource>) -> Self {
+        let base_len = base.len();
+        Self { base, base_len, edits: RwLock::new(Vec::new()) }
+    }
+
+    /// Append `bytes` to the edit buffer and return the address of the first byte.
+    pub fn append(&self, bytes: &[u8]) -> u64 {
+        let mut edits = self.edits.write().unwrap_or_else(|e| e.into_inner());
+        let address = self.base_len + edits.len() as u64;
+        edits.extend_from_slice(bytes);
+        address
+    }
+
+    /// Bytes held by the edit buffer (the memory cost of all edits so far).
+    #[must_use]
+    pub fn edit_bytes(&self) -> u64 {
+        self.edits.read().unwrap_or_else(|e| e.into_inner()).len() as u64
+    }
+
+    /// Length of the untouched base.
+    #[must_use]
+    pub fn base_len(&self) -> u64 {
+        self.base_len
+    }
+
+    /// The wrapped base source.
+    #[must_use]
+    pub fn base(&self) -> &Arc<dyn TextSource> {
+        &self.base
+    }
+}
+
+impl TextSource for EditableSource {
+    fn len(&self) -> u64 {
+        self.base_len + self.edit_bytes()
+    }
+
+    fn read(&self, offset: u64, len: usize) -> io::Result<Cow<'_, [u8]>> {
+        if offset < self.base_len {
+            let n = len.min((self.base_len - offset).min(usize::MAX as u64) as usize);
+            return self.base.read(offset, n);
+        }
+        let edits = self.edits.read().unwrap_or_else(|e| e.into_inner());
+        let start = (offset - self.base_len) as usize;
+        if start >= edits.len() {
+            return Ok(Cow::Borrowed(&[]));
+        }
+        let end = start.saturating_add(len).min(edits.len());
+        Ok(Cow::Owned(edits[start..end].to_vec()))
+    }
+
+    fn is_mapped(&self) -> bool {
+        self.base.is_mapped()
+    }
+
+    fn verify_unchanged(&self) -> Result<(), EngineError> {
+        self.base.verify_unchanged()
+    }
+}
+
+#[cfg(test)]
+mod editable_tests {
+    use super::*;
+
+    #[test]
+    fn base_and_edit_regions_read_through_one_address_space() {
+        let src = EditableSource::new(Arc::new(MemorySource::new(b"base-bytes".to_vec())));
+        assert_eq!(src.len(), 10);
+        let a = src.append(b"HELLO");
+        let b = src.append(b"WORLD");
+        assert_eq!((a, b), (10, 15));
+        assert_eq!(src.len(), 20);
+        assert_eq!(src.read(0, 4).unwrap().as_ref(), b"base");
+        assert_eq!(src.read(a, 5).unwrap().as_ref(), b"HELLO");
+        assert_eq!(src.read(b, 99).unwrap().as_ref(), b"WORLD");
+        assert_eq!(src.read(8, 99).unwrap().as_ref(), b"es"); // never straddles into the edit buffer
+        assert!(src.read(99, 4).unwrap().is_empty());
+        assert_eq!(src.edit_bytes(), 10);
     }
 }

@@ -1,6 +1,6 @@
 // virtual_text_editor.h
 // ---------------------------------------------------------------------------
-// VirtualTextEditor: a read-only, viewport-based text compare editor.
+// VirtualTextEditor: a viewport-based text compare editor (read-only until write mode is enabled).
 //
 //   * QAbstractScrollArea; NO QTextDocument, NO QString/QStringList of the file, NO per-line widgets.
 //   * Renders only the visible rows (+ a small prefetch margin) with QPainter + QTextLayout.
@@ -47,8 +47,11 @@ public:
 
     // ---- ITextCompareEditor ----------------------------------------------------------------
     void setModel(std::shared_ptr<TextModel> model, Side side) override;
-    void setReadOnly(bool) override {}                 // always read-only for now (documented)
-    bool isReadOnly() const override { return true; }
+    // Starts read-only. In write mode edits go through the TextModel (piece-table overlay over the
+    // mapped file), never into a QTextDocument. While read-only, every attempt to edit calls
+    // onEditBlocked so the owner can tell the user (the lock icon flashes).
+    void setReadOnly(bool readOnly) override;
+    bool isReadOnly() const override { return readOnly_; }
     void goToLine(std::uint64_t line) override;
     void goToNextDifference() override;
     void goToPreviousDifference() override;
@@ -77,6 +80,25 @@ public:
         arrowGutterSide_ = arrowSide;
         updateMetrics();
     }
+
+    // ---- editing (all guarded by write mode) ---------------------------------------------------
+    // Each returns false when blocked (read-only, too-long line) or when nothing changed.
+    bool insertText(const QString& text);        // replaces the selection
+    bool deleteBackward();
+    bool deleteForward();
+    bool insertNewline();                         // honours auto-indent
+    bool cutSelection();
+    bool pasteClipboard();
+    bool undo();
+    bool redo();
+    bool canUndo() const { return model_ && model_->canUndo(side_); }
+    bool canRedo() const { return model_ && model_->canRedo(side_); }
+    void setAutoIndent(bool on) { autoIndent_ = on; }
+    // Called by the owner for BOTH editors after any model edit (including the other editor's):
+    // drops row-keyed caches, re-validates scrolling and keeps carets on the same text.
+    void modelEdited(const ModelEdit& edit);
+    // The whole alignment changed but no text did (ignore rules applied, global re-diff).
+    void invalidateAll();
 
     // ---- queries (also used by the tests) ----------------------------------------------------
     QString selectedText(qint64 maxBytes, bool* truncated = nullptr) const;
@@ -113,6 +135,12 @@ public:
     std::function<void()> onFocused;
     std::function<void()> onSelectionChanged;
     std::function<void(const QString& text)> onStatusMessage;
+    // An edit was attempted while read-only.
+    std::function<void()> onEditBlocked;
+    // This editor changed the model; the owner must call modelEdited() on both editors.
+    std::function<void(const ModelEdit& edit)> onEdited;
+    // The copy arrow of the change block starting at `row` was clicked (copy to the other side).
+    std::function<void(quint64 row)> onCopyBlockRequested;
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -127,6 +155,10 @@ protected:
     void focusOutEvent(QFocusEvent*) override;
     void contextMenuEvent(QContextMenuEvent*) override;
     void changeEvent(QEvent*) override;
+    void inputMethodEvent(QInputMethodEvent*) override;
+    // In write mode Tab belongs to the editor (it inserts a tab); read-only keeps normal focus navigation.
+    bool focusNextPrevChild(bool next) override;
+    QVariant inputMethodQuery(Qt::InputMethodQuery) const override;
 
 private:
     struct Pos {
@@ -171,6 +203,10 @@ private:
     void autoScrollTick();
     QColor rowBackground(const LineData& d) const;
     QString wordAt(const Pos& p, int* start, int* end);
+    bool guardEdit();
+    bool applyReplace(Pos from, Pos to, const QString& text, bool coalesce);
+    quint64 sideCursor(quint64 row) const;
+    bool arrowHit(const QPoint& viewportPos, quint64* row) const;
     int leftGutterWidth() const;
     int rightGutterWidth() const;
     int contentLeft() const;
@@ -190,6 +226,9 @@ private:
     int tabColumns_ = 4;
     int prefetchRows_ = 24;
     bool showLineNumbers_ = true;
+    bool readOnly_ = true;
+    bool inEdit_ = false;      // true while an edit places its caret: that must not end the typing run
+    bool autoIndent_ = true;
     static constexpr int kArrowGutterWidth = 20;
 
     quint64 topRow_ = 0;

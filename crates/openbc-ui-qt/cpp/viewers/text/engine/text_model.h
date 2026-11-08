@@ -78,6 +78,13 @@ struct ModelOptions {
     bool bufferedIo = false;
 };
 
+// What an edit changed in the displayed rows: rows [firstRow, firstRow+oldRows) were replaced by
+// newRows rows; everything after shifted. `side` is the side whose lines were edited.
+struct ModelEdit {
+    quint64 firstRow = 0, oldRows = 0, newRows = 0, firstLine = 0, insertedLines = 0;
+    Side side = Side::Left;
+};
+
 class TextModel {
 public:
     ~TextModel() { if (handle_) openbc_tm_destroy(handle_); }
@@ -207,9 +214,84 @@ public:
         return hit;
     }
 
+    // ---- editing -----------------------------------------------------------------------------
+    // Replace `remove` lines of `side` from `firstLine` by `text` (line breaks make several lines; a
+    // null `text` only deletes). `coalesce` merges typing into one undo step. Edits are thread-safe
+    // against concurrent readers; the second editor sees the new rows immediately.
+    std::optional<ModelEdit> replaceLines(Side side, quint64 firstLine, quint64 remove, const QString* text,
+                                          bool coalesce, QString* error = nullptr) {
+        QByteArray utf8;
+        if (text) utf8 = text->toUtf8();
+        OpenBcTmEdit e{};
+        const std::int32_t rc = openbc_tm_replace_lines(handle_, static_cast<std::uint8_t>(side), firstLine, remove,
+                                                        text ? reinterpret_cast<const std::uint8_t*>(utf8.constData()) : nullptr,
+                                                        static_cast<std::size_t>(utf8.size()), coalesce, &e);
+        return finishEdit(rc, e, error);
+    }
+    std::optional<ModelEdit> undo(Side side, QString* error = nullptr) {
+        OpenBcTmEdit e{};
+        return finishEdit(openbc_tm_undo(handle_, static_cast<std::uint8_t>(side), &e), e, error);
+    }
+    std::optional<ModelEdit> redo(Side side, QString* error = nullptr) {
+        OpenBcTmEdit e{};
+        return finishEdit(openbc_tm_redo(handle_, static_cast<std::uint8_t>(side), &e), e, error);
+    }
+    bool canUndo(Side side) const { return openbc_tm_can_undo(handle_, static_cast<std::uint8_t>(side)) != 0; }
+    bool canRedo(Side side) const { return openbc_tm_can_redo(handle_, static_cast<std::uint8_t>(side)) != 0; }
+    void sealUndo(Side side) { openbc_tm_seal_undo(handle_, static_cast<std::uint8_t>(side)); }
+    quint64 editCount(Side side) const { return openbc_tm_edit_count(handle_, static_cast<std::uint8_t>(side)); }
+    bool isDirty(Side side) const { return openbc_tm_is_dirty(handle_, static_cast<std::uint8_t>(side)) != 0; }
+    // Make the other side's lines of the changed block containing `row` equal to `from`'s.
+    std::optional<ModelEdit> copyBlock(Side from, quint64 row, QString* error = nullptr) {
+        OpenBcTmEdit e{};
+        return finishEdit(openbc_tm_copy_block(handle_, static_cast<std::uint8_t>(from), row, &e), e, error);
+    }
+    // First row and row count of the changed block containing `row`.
+    std::optional<std::pair<quint64, quint64>> blockAt(quint64 row) const {
+        std::uint64_t start = 0, len = 0;
+        if (!openbc_tm_block_at(handle_, row, &start, &len)) return std::nullopt;
+        return std::make_pair<quint64, quint64>(start, len);
+    }
+    // Next line index of each side at the start of `row` (where a new line on a filler row goes).
+    std::pair<quint64, quint64> lineCursors(quint64 row) const {
+        std::uint64_t l = 0, r = 0;
+        openbc_tm_line_cursors(handle_, row, &l, &r);
+        return {l, r};
+    }
+    QString path(Side side) const {
+        QByteArray buf(4096, '\0');
+        std::size_t n = openbc_tm_path(handle_, static_cast<std::uint8_t>(side), reinterpret_cast<std::uint8_t*>(buf.data()),
+                                       static_cast<std::size_t>(buf.size()));
+        if (n > static_cast<std::size_t>(buf.size())) {
+            buf.resize(static_cast<int>(n));
+            n = openbc_tm_path(handle_, static_cast<std::uint8_t>(side), reinterpret_cast<std::uint8_t*>(buf.data()), n);
+        }
+        return QString::fromUtf8(buf.constData(), static_cast<int>(n));
+    }
+    QString rulesText() const {
+        QByteArray buf(1024, '\0');
+        std::size_t n = openbc_tm_rules_text(handle_, reinterpret_cast<std::uint8_t*>(buf.data()), static_cast<std::size_t>(buf.size()));
+        if (n > static_cast<std::size_t>(buf.size())) {
+            buf.resize(static_cast<int>(n));
+            n = openbc_tm_rules_text(handle_, reinterpret_cast<std::uint8_t*>(buf.data()), n);
+        }
+        return QString::fromUtf8(buf.constData(), static_cast<int>(n));
+    }
+    static QString lastError() {
+        std::size_t n = 0;
+        const std::uint8_t* p = openbc_tm_last_error(&n);
+        return QString::fromUtf8(reinterpret_cast<const char*>(p), static_cast<int>(n));
+    }
+
     const OpenBcTmModel* handle() const { return handle_; }
 
 private:
+    static std::optional<ModelEdit> finishEdit(std::int32_t rc, const OpenBcTmEdit& e, QString* error) {
+        if (rc < 0 && error) *error = lastError();
+        if (rc != 1) return std::nullopt;
+        return ModelEdit{e.firstRow, e.oldRows, e.newRows, e.firstLine, e.insertedLines, e.side ? Side::Right : Side::Left};
+    }
+
     explicit TextModel(OpenBcTmModel* h) : handle_(h) {}
     friend class TextModelLoader;
 
@@ -317,6 +399,92 @@ private:
         if (deliver) {
             QCoreApplication* app = QCoreApplication::instance();
             if (app) QMetaObject::invokeMethod(app, std::move(deliver), Qt::QueuedConnection);
+        }
+        if (last) delete ctx;
+    }
+
+    std::shared_ptr<State> state_;
+    std::shared_ptr<Cancellation> cancellation_;
+};
+
+// Runs one long operation (set rules / re-diff / save / save as) on a Rust worker thread. Same
+// thread-safety design as TextModelLoader: the worker never touches a QObject; results are posted to
+// QCoreApplication and checked against a shared alive flag on the GUI thread. The model is kept alive
+// by the task itself, so the runner may be destroyed while an operation is running.
+class ModelTaskRunner : public QObject {
+public:
+    enum class Task : std::uint8_t { SetRules = 0, Rediff = 1, Save = 2, SaveAs = 3 };
+
+    explicit ModelTaskRunner(QObject* parent = nullptr) : QObject(parent), state_(std::make_shared<State>()) {
+        state_->self = this;
+    }
+    ~ModelTaskRunner() override {
+        cancel();
+        state_->alive = false;
+    }
+
+    std::function<void(const QString& phase, quint64 done, quint64 total)> onProgress;
+    // `message` is the written path for saves, empty otherwise.
+    std::function<void(const QString& message)> onFinished;
+    std::function<void(const QString& message)> onFailed;
+
+    bool busy() const { return state_->busy; }
+
+    // Returns false (and does nothing) while another operation is running.
+    bool start(const std::shared_ptr<TextModel>& model, Task task, Side side, const QString& text = QString()) {
+        if (state_->busy || !model) return false;
+        state_->busy = true;
+        cancellation_ = std::make_shared<Cancellation>();
+        ++state_->generation;
+        auto* ctx = new Context{state_, cancellation_, state_->generation};
+        const QByteArray utf8 = text.toUtf8();
+        openbc_tm_task_async(model->handle(), static_cast<std::uint8_t>(task), static_cast<std::uint8_t>(side),
+                             reinterpret_cast<const std::uint8_t*>(utf8.constData()), static_cast<std::size_t>(utf8.size()),
+                             cancellation_->get(), &ModelTaskRunner::onEvent, ctx);
+        return true;
+    }
+
+    void cancel() { if (cancellation_) cancellation_->cancel(); }
+
+private:
+    struct State {
+        bool alive = true;      // GUI thread only
+        bool busy = false;      // GUI thread only
+        int generation = 0;
+        ModelTaskRunner* self = nullptr;
+    };
+    struct Context {
+        std::shared_ptr<State> state;
+        std::shared_ptr<Cancellation> keepAlive;
+        int generation;
+    };
+
+    static void onEvent(void* user, std::int32_t kind, const char* message, void* /*handle*/) {
+        auto* ctx = static_cast<Context*>(user);
+        const bool last = kind == kOpenBcTmEvResult || kind == kOpenBcTmEvError;
+        std::shared_ptr<State> state = ctx->state;
+        const int generation = ctx->generation;
+        const QString text = QString::fromUtf8(message ? message : "");
+        std::function<void()> deliver;
+        if (kind == kOpenBcTmEvProgress) {
+            const QStringList parts = text.split('|');
+            if (parts.size() == 3)
+                deliver = [state, generation, parts]() {
+                    if (state->alive && state->generation == generation && state->self->onProgress)
+                        state->self->onProgress(parts[0], parts[1].toULongLong(), parts[2].toULongLong());
+                };
+        } else if (last) {
+            const bool ok = kind == kOpenBcTmEvResult;
+            deliver = [state, generation, text, ok]() {
+                if (!state->alive) return;
+                if (state->generation == generation) state->busy = false;
+                auto& cb = ok ? state->self->onFinished : state->self->onFailed;
+                if (state->generation == generation && cb) cb(text);
+            };
+        }
+        if (deliver) {
+            if (QCoreApplication* app = QCoreApplication::instance())
+                QMetaObject::invokeMethod(app, std::move(deliver), Qt::QueuedConnection);
         }
         if (last) delete ctx;
     }

@@ -108,8 +108,67 @@ pub fn decode_line_into(bytes: &[u8], encoding: TextEncoding, out: &mut Vec<u8>)
     }
 }
 
+/// Encode one line of text in `encoding` (no terminator).
+#[must_use]
+pub fn encode_line(text: &str, encoding: TextEncoding) -> Vec<u8> {
+    match encoding {
+        TextEncoding::Utf8 => text.as_bytes().to_vec(),
+        TextEncoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        TextEncoding::Utf16Be => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+    }
+}
+
+/// Bytes of a line terminator (`flags::EOL_*` value) in `encoding`.
+#[must_use]
+pub fn eol_bytes(eol: u32, encoding: TextEncoding) -> Vec<u8> {
+    let units: &[u16] = match eol {
+        1 => &[0x0A],
+        2 => &[0x0D, 0x0A],
+        3 => &[0x0D],
+        _ => &[],
+    };
+    let mut out = Vec::new();
+    for &u in units {
+        match encoding {
+            TextEncoding::Utf8 => out.push(u as u8),
+            TextEncoding::Utf16Le => out.extend_from_slice(&u.to_le_bytes()),
+            TextEncoding::Utf16Be => out.extend_from_slice(&u.to_be_bytes()),
+        }
+    }
+    out
+}
+
+/// The byte-order mark a file of this encoding started with (empty when it had none).
+#[must_use]
+pub fn bom_bytes(encoding: TextEncoding, bom_len: u8) -> &'static [u8] {
+    match (encoding, bom_len) {
+        (TextEncoding::Utf8, 3) => &[0xEF, 0xBB, 0xBF],
+        (TextEncoding::Utf16Le, 2) => &[0xFF, 0xFE],
+        (TextEncoding::Utf16Be, 2) => &[0xFE, 0xFF],
+        _ => &[],
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn encodes_lines_terminators_and_boms() {
+        use super::*;
+        assert_eq!(encode_line("é😀", TextEncoding::Utf8), "é😀".as_bytes());
+        let le = encode_line("é😀", TextEncoding::Utf16Le);
+        assert_eq!(decode_line(&le, TextEncoding::Utf16Le), "é😀");
+        let be = encode_line("hi", TextEncoding::Utf16Be);
+        assert_eq!(be, [0, b'h', 0, b'i']);
+        assert_eq!(eol_bytes(2, TextEncoding::Utf8), b"\r\n");
+        assert_eq!(eol_bytes(1, TextEncoding::Utf16Le), [0x0A, 0]);
+        assert_eq!(eol_bytes(0, TextEncoding::Utf8), b"");
+        assert_eq!(bom_bytes(TextEncoding::Utf16Le, 2), [0xFF, 0xFE]);
+        assert_eq!(bom_bytes(TextEncoding::Utf8, 0), b"");
+    }
+}
+
+#[cfg(test)]
+mod tests_detect {
     use super::*;
 
     #[test]

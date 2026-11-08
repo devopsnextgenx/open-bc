@@ -18,6 +18,7 @@ pub mod hasher;
 pub mod line_index;
 pub mod line_norm;
 pub mod model;
+pub mod rules;
 pub mod source;
 
 pub use cache::BoundedCache;
@@ -27,6 +28,7 @@ pub use encoding::TextEncoding;
 pub use error::{CancelToken, EngineError, Phase, Progress};
 pub use hasher::{HashStream, LineHasher, Xxh3Hasher};
 pub use line_index::{flags, IndexConfig, LineIndex, LineRecord, MAX_LINES};
-pub use model::{CompareConfig, FindOptions, LineWindow, Match, MemoryReport, SideId, TextCompareModel};
+pub use rules::{LineRules, MAX_RULE_LINE_BYTES};
+pub use model::{CompareConfig, EditOutcome, FindOptions, LineWindow, Match, MemoryReport, SaveReport, SideId, TextCompareModel};
 pub use line_norm::{normalized_eq, EqScratch, LineNormalizer, NormalizeOptions};
-pub use source::{MapPolicy, MappedTextFile, MemorySource, TextSource};
+pub use source::{EditableSource, MapPolicy, MappedTextFile, MemorySource, TextSource};

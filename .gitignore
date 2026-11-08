@@ -45,3 +45,5 @@ crates.zip
 cratesx/
 crates-updated/
 tracking.env
+
+.flatpak-builder/

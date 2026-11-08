@@ -242,6 +242,123 @@ impl DiffIndex {
         out
     }
 
+    /// Lines consumed on each side by rows `[0, row)` (the cursors at the start of `row`).
+    #[must_use]
+    pub fn cursors_at_row(&self, row: u64) -> (u64, u64) {
+        match self.segment_index_for_row(row) {
+            None => (self.left_lines, self.right_lines),
+            Some(i) => {
+                let seg = self.segments[i];
+                let k = row - seg.row_start;
+                (
+                    seg.left_start + if seg.kind.has_left() { k } else { 0 },
+                    seg.right_start + if seg.kind.has_right() { k } else { 0 },
+                )
+            }
+        }
+    }
+
+    /// Make `row` the first row of a segment (no-op at the ends or when it already is).
+    fn split_at_row(&mut self, row: u64) {
+        let Some(i) = self.segment_index_for_row(row) else { return };
+        let seg = self.segments[i];
+        if seg.row_start == row {
+            return;
+        }
+        let head = (row - seg.row_start) as u32;
+        self.segments[i].len = head;
+        self.segments.insert(
+            i + 1,
+            Segment {
+                row_start: row,
+                left_start: seg.left_start + if seg.kind.has_left() { u64::from(head) } else { 0 },
+                right_start: seg.right_start + if seg.kind.has_right() { u64::from(head) } else { 0 },
+                len: seg.len - head,
+                kind: seg.kind,
+            },
+        );
+    }
+
+    /// Replace rows `[row_start, row_end)` by `region` (whose cursors start at 0), shifting every
+    /// later row and line number. This is how a locally re-aligned region (after an edit) is merged
+    /// back without recomputing the whole alignment. O(number of segments).
+    pub fn splice_region(&mut self, row_start: u64, row_end: u64, region: &DiffIndex) {
+        let row_end = row_end.min(self.rows);
+        let row_start = row_start.min(row_end);
+        let (left_origin, right_origin) = self.cursors_at_row(row_start);
+        self.split_at_row(row_start);
+        self.split_at_row(row_end);
+        let lo = self.segments.partition_point(|s| s.row_start < row_start);
+        let hi = self.segments.partition_point(|s| s.row_start < row_end);
+        let (mut old_left, mut old_right) = (0u64, 0u64);
+        for seg in &self.segments[lo..hi] {
+            if seg.kind.has_left() {
+                old_left += u64::from(seg.len);
+            }
+            if seg.kind.has_right() {
+                old_right += u64::from(seg.len);
+            }
+        }
+        let inserted: Vec<Segment> = region
+            .segments
+            .iter()
+            .map(|s| Segment {
+                row_start: s.row_start + row_start,
+                left_start: s.left_start + left_origin,
+                right_start: s.right_start + right_origin,
+                ..*s
+            })
+            .collect();
+        let inserted_count = inserted.len();
+        self.segments.splice(lo..hi, inserted);
+
+        let d_rows = region.rows as i128 - i128::from(row_end - row_start);
+        let d_left = region.left_lines as i128 - i128::from(old_left);
+        let d_right = region.right_lines as i128 - i128::from(old_right);
+        let shift = |v: u64, d: i128| (i128::from(v) + d) as u64;
+        for seg in &mut self.segments[lo + inserted_count..] {
+            seg.row_start = shift(seg.row_start, d_rows);
+            seg.left_start = shift(seg.left_start, d_left);
+            seg.right_start = shift(seg.right_start, d_right);
+        }
+        self.rows = shift(self.rows, d_rows);
+        self.left_lines = shift(self.left_lines, d_left);
+        self.right_lines = shift(self.right_lines, d_right);
+        self.degraded |= region.degraded;
+        self.coalesce(lo.saturating_sub(1), lo + inserted_count + 1);
+        self.recompute_blocks();
+    }
+
+    /// Merge adjacent same-kind segments in `[from, to]` so the index stays canonical.
+    fn coalesce(&mut self, from: usize, to: usize) {
+        let mut i = from.min(self.segments.len());
+        let mut end = to.min(self.segments.len());
+        while i + 1 < self.segments.len() && i < end {
+            let (a, b) = (self.segments[i], self.segments[i + 1]);
+            if a.kind == b.kind && u64::from(a.len) + u64::from(b.len) <= u64::from(u32::MAX) {
+                self.segments[i].len += b.len;
+                self.segments.remove(i + 1);
+                end = end.saturating_sub(1);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    fn recompute_blocks(&mut self) {
+        let mut blocks: Vec<ChangeBlock> = Vec::new();
+        for seg in &self.segments {
+            if seg.kind == DiffType::Equal {
+                continue;
+            }
+            match blocks.last_mut() {
+                Some(b) if b.start_row + b.rows == seg.row_start => b.rows += u64::from(seg.len),
+                _ => blocks.push(ChangeBlock { start_row: seg.row_start, rows: u64::from(seg.len) }),
+            }
+        }
+        self.blocks = blocks;
+    }
+
     /// Index into [`blocks`](Self::blocks) of the block containing `row`, if any.
     #[must_use]
     pub fn block_containing(&self, row: u64) -> Option<usize> {
@@ -276,6 +393,12 @@ pub struct DiffIndexBuilder {
 }
 
 impl DiffIndexBuilder {
+    /// Lines consumed so far on each side.
+    #[must_use]
+    pub fn line_counts(&self) -> (u64, u64) {
+        (self.left, self.right)
+    }
+
     /// Mark that a coarse fallback was used.
     pub fn mark_degraded(&mut self) {
         self.degraded = true;
@@ -390,6 +513,76 @@ mod tests {
         assert_eq!(d.prev_difference(2), None);
         assert_eq!(d.block_containing(3), Some(0));
         assert_eq!(d.block_containing(4), None);
+    }
+
+    fn build(rows: &[(DiffType, u32)]) -> DiffIndex {
+        let mut b = DiffIndex::builder();
+        for &(k, n) in rows {
+            b.push(k, u64::from(n));
+        }
+        b.finish()
+    }
+
+    fn expand(rows: &[(DiffType, u32)]) -> Vec<DiffType> {
+        rows.iter().flat_map(|&(k, n)| std::iter::repeat(k).take(n as usize)).collect()
+    }
+
+    #[test]
+    fn cursors_at_row_count_lines_on_each_side() {
+        let d = sample(); // E E R D E I I E
+        assert_eq!(d.cursors_at_row(0), (0, 0));
+        assert_eq!(d.cursors_at_row(3), (3, 3)); // before the Delete row
+        assert_eq!(d.cursors_at_row(4), (4, 3)); // the Delete consumed a left line only
+        assert_eq!(d.cursors_at_row(6), (5, 5));
+        assert_eq!(d.cursors_at_row(8), d.line_counts());
+        assert_eq!(d.cursors_at_row(999), d.line_counts());
+    }
+
+    #[test]
+    fn splice_region_equals_rebuilding_from_scratch() {
+        use DiffType::*;
+        let kinds = [Equal, Insert, Delete, Replace];
+        let mut seed = 0xDEC0DEu64;
+        let mut next = move || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        let rand_rows = |next: &mut dyn FnMut() -> u64, max_segs: u64| -> Vec<(DiffType, u32)> {
+            (0..next() % max_segs).map(|_| (kinds[(next() % 4) as usize], (next() % 5 + 1) as u32)).collect()
+        };
+        for _ in 0..500 {
+            let before = rand_rows(&mut next, 12);
+            let middle_old = rand_rows(&mut next, 4);
+            let after = rand_rows(&mut next, 12);
+            let middle_new = rand_rows(&mut next, 4);
+            // Original index = before ++ old ++ after; splice must equal before ++ new ++ after.
+            let all_old: Vec<_> = before.iter().chain(&middle_old).chain(&after).copied().collect();
+            let all_new: Vec<_> = before.iter().chain(&middle_new).chain(&after).copied().collect();
+            let row_start: u32 = before.iter().map(|r| r.1).sum();
+            let old_rows: u32 = middle_old.iter().map(|r| r.1).sum();
+            let mut idx = build(&all_old);
+            idx.splice_region(u64::from(row_start), u64::from(row_start + old_rows), &build(&middle_new));
+            let expected = build(&all_new);
+            assert_eq!(idx.segments(), expected.segments());
+            assert_eq!(idx.blocks(), expected.blocks());
+            assert_eq!((idx.row_count(), idx.line_counts()), (expected.row_count(), expected.line_counts()));
+            let kinds_new = expand(&all_new);
+            for (row, kind) in kinds_new.iter().enumerate() {
+                assert_eq!(idx.row(row as u64), expected.row(row as u64));
+                assert_eq!(idx.row(row as u64).unwrap().kind, *kind);
+            }
+        }
+    }
+
+    #[test]
+    fn splice_region_can_split_a_segment_and_insert_in_the_middle() {
+        use DiffType::*;
+        let mut d = build(&[(Equal, 10)]);
+        d.splice_region(4, 4, &build(&[(Insert, 2)])); // pure insertion in the middle of an Equal run
+        assert_eq!(d.segments().iter().map(|s| (s.kind, s.len)).collect::<Vec<_>>(), [(Equal, 4), (Insert, 2), (Equal, 6)]);
+        assert_eq!(d.line_counts(), (10, 12));
+        assert_eq!(d.row(6).unwrap().left_line, Some(4));
+        assert_eq!(d.row(6).unwrap().right_line, Some(6));
+        d.splice_region(4, 6, &build(&[(Equal, 2)])); // and a splice that heals it again
+        assert_eq!(d.segments().len(), 1);
+        assert!(d.is_identical());
     }
 
     #[test]

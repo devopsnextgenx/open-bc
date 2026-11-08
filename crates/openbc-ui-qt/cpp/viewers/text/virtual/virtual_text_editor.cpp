@@ -7,6 +7,7 @@
 #include <QContextMenuEvent>
 #include <QFontMetrics>
 #include <QGuiApplication>
+#include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMouseEvent>
@@ -35,6 +36,8 @@ enum CellFlag : quint8 {
 VirtualTextEditor::VirtualTextEditor(QWidget* parent) : QAbstractScrollArea(parent) {
     setFrameShape(QFrame::NoFrame);
     setFocusPolicy(Qt::StrongFocus);
+    setAttribute(Qt::WA_InputMethodEnabled, true);
+    viewport()->setMouseTracking(true);
     viewport()->setAttribute(Qt::WA_OpaquePaintEvent);
     viewport()->setCursor(Qt::IBeamCursor);
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
@@ -553,6 +556,7 @@ void VirtualTextEditor::clampPos(Pos& p) {
 }
 
 void VirtualTextEditor::moveCaret(Pos next, bool extend) {
+    if (model_ && !inEdit_) model_->sealUndo(side_);   // navigating ends a typing run
     clampPos(next);
     const bool rowChanged = next.row != cursor_.row;
     cursor_ = next;
@@ -606,7 +610,16 @@ void VirtualTextEditor::keyPressEvent(QKeyEvent* e) {
     Pos next = cursor_;
     if (e->matches(QKeySequence::Copy)) { copySelection(); return; }
     if (e->matches(QKeySequence::SelectAll)) { selectAllText(); return; }
+    if (e->matches(QKeySequence::Paste)) { pasteClipboard(); e->accept(); return; }
+    if (e->matches(QKeySequence::Cut)) { cutSelection(); e->accept(); return; }
+    if (e->matches(QKeySequence::Undo)) { undo(); e->accept(); return; }
+    if (e->matches(QKeySequence::Redo)) { redo(); e->accept(); return; }
     switch (e->key()) {
+    case Qt::Key_Backspace: deleteBackward(); e->accept(); return;
+    case Qt::Key_Delete: deleteForward(); e->accept(); return;
+    case Qt::Key_Return:
+    case Qt::Key_Enter: insertNewline(); e->accept(); return;
+    case Qt::Key_Tab: insertText(QStringLiteral("\t")); e->accept(); return;
     case Qt::Key_Left:
         if (next.col > 0) --next.col;
         else if (next.row > 0) { --next.row; next.col = lineCharCount(next.row); }
@@ -633,9 +646,19 @@ void VirtualTextEditor::keyPressEvent(QKeyEvent* e) {
         if (ctrl && total) next.row = total - 1;
         next.col = lineCharCount(next.row);
         break;
-    default:
+    default: {
+        // Printable text (AltGr shows up as Ctrl+Alt on some platforms and must still type).
+        const Qt::KeyboardModifiers mods = e->modifiers();
+        const bool command = (mods & Qt::ControlModifier) && !(mods & Qt::AltModifier);
+        const char32_t first = e->text().toUcs4().value(0, 0);   // a code point: emoji are surrogate pairs
+        if (!e->text().isEmpty() && !command && !(mods & Qt::MetaModifier) && QChar::isPrint(first)) {
+            insertText(e->text());
+            e->accept();
+            return;
+        }
         e->ignore();
         return;
+    }
     }
     moveCaret(next, shift);
     e->accept();
@@ -715,6 +738,11 @@ void VirtualTextEditor::mousePressEvent(QMouseEvent* e) {
     setFocus();
     if (onFocused) onFocused();
     if (e->button() != Qt::LeftButton || !model_) return;
+    if (quint64 arrowRow = 0; arrowHit(e->pos(), &arrowRow)) {
+        if (onCopyBlockRequested) onCopyBlockRequested(arrowRow);
+        return;                                   // a click on the arrow never moves the caret
+    }
+    model_->sealUndo(side_);
     dragging_ = true;
     lastMouse_ = e->pos();
     Pos pos = hitTest(e->pos());
@@ -727,6 +755,10 @@ void VirtualTextEditor::mousePressEvent(QMouseEvent* e) {
 }
 
 void VirtualTextEditor::mouseMoveEvent(QMouseEvent* e) {
+    if (!dragging_ && model_) {
+        quint64 row = 0;
+        viewport()->setCursor(arrowHit(e->pos(), &row) ? Qt::PointingHandCursor : Qt::IBeamCursor);
+    }
     if (!dragging_ || !model_) return;
     lastMouse_ = e->pos();
     const bool outside = e->pos().y() < 0 || e->pos().y() > viewport()->height();
@@ -803,8 +835,13 @@ void VirtualTextEditor::changeEvent(QEvent* e) {
 
 void VirtualTextEditor::contextMenuEvent(QContextMenuEvent* e) {
     QMenu menu(this);
-    QAction* copy = menu.addAction(tr("Copy"), this, [this] { copySelection(); });
-    copy->setEnabled(hasSelection());
+    // Edit entries stay enabled while read-only so choosing one flashes the lock (like typing does).
+    menu.addAction(tr("Undo"), this, [this] { undo(); })->setEnabled(readOnly_ || canUndo());
+    menu.addAction(tr("Redo"), this, [this] { redo(); })->setEnabled(readOnly_ || canRedo());
+    menu.addSeparator();
+    menu.addAction(tr("Cut"), this, [this] { cutSelection(); });
+    menu.addAction(tr("Copy"), this, [this] { copySelection(); })->setEnabled(hasSelection());
+    menu.addAction(tr("Paste"), this, [this] { pasteClipboard(); });
     menu.addAction(tr("Select All"), this, [this] { selectAllText(); });
     menu.addSeparator();
     menu.addAction(tr("Next Difference"), this, [this] { goToNextDifference(); });
@@ -877,6 +914,260 @@ bool VirtualTextEditor::findText(const QString& text, bool caseSensitive, bool f
     moveCaret(matchEnd_, true);
     if (onCurrentRowChanged) onCurrentRowChanged(cursor_.row);
     return true;
+}
+
+// ---- editing ---------------------------------------------------------------------------------------
+
+void VirtualTextEditor::setReadOnly(bool readOnly) {
+    readOnly_ = readOnly;
+    if (model_) model_->sealUndo(side_);
+    viewport()->update();
+}
+
+bool VirtualTextEditor::guardEdit() {
+    if (!model_) return false;
+    if (readOnly_) {
+        if (onEditBlocked) onEditBlocked();
+        return false;
+    }
+    return true;
+}
+
+quint64 VirtualTextEditor::sideCursor(quint64 row) const {
+    const auto c = model_->lineCursors(row);
+    return side_ == Side::Left ? c.first : c.second;
+}
+
+// Replaces the text between two positions (row, QString column). Works in LINE coordinates of this
+// side, so selections spanning filler rows, joining and splitting lines all reduce to one
+// "replace N lines starting at L by this text" call on the model.
+bool VirtualTextEditor::applyReplace(Pos from, Pos to, const QString& textIn, bool coalesce) {
+    if (!model_) return false;
+    clampPos(from);
+    clampPos(to);
+    if (to < from) std::swap(from, to);
+    QString text = textIn;
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n")).replace(QLatin1Char('\r'), QLatin1Char('\n'));
+
+    const bool haveRows = model_->rowCount() > 0;
+    const auto lineOf = [this](const ModelRow& m) { return side_ == Side::Left ? m.left : m.right; };
+    const qint64 lf = haveRows ? lineOf(model_->row(from.row)) : -1;
+    const qint64 lt = haveRows ? lineOf(model_->row(to.row)) : -1;
+    for (const qint64 line : {lf, lt}) {
+        if (line >= 0 && model_->lineBytes(side_, static_cast<quint64>(line)) > kMaxRenderChars) {
+            if (onStatusMessage) onStatusMessage(tr("This line is too long to edit in the Virtual editor."));
+            return false;
+        }
+    }
+    const quint64 startLine = lf >= 0 ? static_cast<quint64>(lf) : (haveRows ? sideCursor(from.row) : 0);
+    const quint64 endCursor = haveRows ? sideCursor(to.row + 1) : 0;
+    const quint64 remove = endCursor > startLine ? endCursor - startLine : 0;
+    const QString prefix = lf >= 0 ? fullLineText(from.row).left(from.col) : QString();
+    const QString suffix = lt >= 0 ? fullLineText(to.row).mid(to.col) : QString();
+    if (lf < 0 && lt < 0 && text == QLatin1String("\n")) text.clear();   // Enter on a filler row adds ONE empty line
+    if (remove == 0 && text.isEmpty() && prefix.isEmpty() && suffix.isEmpty() && lf < 0) return false;
+
+    const QString combined = prefix + text + suffix;
+    QString error;
+    const auto edit = model_->replaceLines(side_, startLine, remove, &combined, coalesce, &error);
+    if (!edit) {
+        if (onStatusMessage && !error.isEmpty()) onStatusMessage(error);
+        return false;
+    }
+    if (onEdited) onEdited(*edit);
+    else modelEdited(*edit);
+
+    const int newlines = static_cast<int>(text.count(QLatin1Char('\n')));
+    const quint64 caretLine = startLine + static_cast<quint64>(newlines);
+    const int caretCol = newlines ? static_cast<int>(text.size() - text.lastIndexOf(QLatin1Char('\n')) - 1)
+                                  : static_cast<int>(prefix.size() + text.size());
+    if (const auto row = model_->rowForLine(side_, caretLine)) {
+        inEdit_ = true;                    // placing the caret after typing keeps the undo run open
+        setCaret(*row, caretCol, false, true);
+        inEdit_ = false;
+    }
+    return true;
+}
+
+bool VirtualTextEditor::insertText(const QString& text) {
+    if (!guardEdit() || text.isEmpty()) return false;
+    const Pos a = std::min(anchor_, cursor_), b = std::max(anchor_, cursor_);
+    // Single characters typed without a selection are merged into one undo step.
+    const bool typing = !hasSelection() && text.size() <= 2 && !text.contains(QLatin1Char('\n')) && !text.contains(QLatin1Char('\r'));
+    return applyReplace(a, b, text, typing);
+}
+
+bool VirtualTextEditor::deleteBackward() {
+    if (!guardEdit()) return false;
+    if (hasSelection()) return applyReplace(std::min(anchor_, cursor_), std::max(anchor_, cursor_), QString(), false);
+    const LineData d = lineData(cursor_.row);
+    if (d.filler) return false;
+    if (cursor_.col > 0) {
+        int from = cursor_.col - 1;
+        if (from > 0 && d.text.at(from).isLowSurrogate() && d.text.at(from - 1).isHighSurrogate()) --from;   // whole emoji
+        return applyReplace(Pos{cursor_.row, from}, cursor_, QString(), true);
+    }
+    if (d.line <= 0) return false;
+    const auto prevRow = model_->rowForLine(side_, static_cast<quint64>(d.line - 1));
+    if (!prevRow) return false;
+    return applyReplace(Pos{*prevRow, lineCharCount(*prevRow)}, Pos{cursor_.row, 0}, QString(), false);
+}
+
+bool VirtualTextEditor::deleteForward() {
+    if (!guardEdit()) return false;
+    if (hasSelection()) return applyReplace(std::min(anchor_, cursor_), std::max(anchor_, cursor_), QString(), false);
+    const LineData d = lineData(cursor_.row);
+    if (d.filler) return false;
+    if (cursor_.col < d.text.size()) {
+        int to = cursor_.col + 1;
+        if (to < d.text.size() && d.text.at(to).isLowSurrogate() && d.text.at(to - 1).isHighSurrogate()) ++to;
+        return applyReplace(cursor_, Pos{cursor_.row, to}, QString(), true);
+    }
+    if (static_cast<quint64>(d.line) + 1 >= model_->lineCount(side_)) return false;
+    const auto nextRow = model_->rowForLine(side_, static_cast<quint64>(d.line + 1));
+    if (!nextRow) return false;
+    return applyReplace(Pos{cursor_.row, static_cast<int>(d.text.size())}, Pos{*nextRow, 0}, QString(), false);
+}
+
+bool VirtualTextEditor::insertNewline() {
+    if (!guardEdit()) return false;
+    QString text = QStringLiteral("\n");
+    if (autoIndent_) {
+        const LineData d = lineData(std::min(anchor_, cursor_).row);
+        if (!d.filler) {
+            const QString before = d.text.left(std::min(anchor_, cursor_).col);
+            int n = 0;
+            while (n < before.size() && (before[n] == QLatin1Char(' ') || before[n] == QLatin1Char('\t'))) ++n;
+            text += before.left(n);
+        }
+    }
+    return applyReplace(std::min(anchor_, cursor_), std::max(anchor_, cursor_), text, false);
+}
+
+bool VirtualTextEditor::cutSelection() {
+    if (!guardEdit() || !hasSelection()) return false;
+    copySelection();
+    return applyReplace(std::min(anchor_, cursor_), std::max(anchor_, cursor_), QString(), false);
+}
+
+bool VirtualTextEditor::pasteClipboard() {
+    if (!guardEdit()) return false;
+    const QString text = QGuiApplication::clipboard()->text();
+    if (text.isEmpty()) return false;
+    if (text.size() > 64 * 1024 * 1024) {
+        if (onStatusMessage) onStatusMessage(tr("The clipboard text is too large to paste."));
+        return false;
+    }
+    return insertText(text);
+}
+
+bool VirtualTextEditor::undo() {
+    if (!guardEdit()) return false;
+    QString error;
+    const auto edit = model_->undo(side_, &error);
+    if (!edit) {
+        if (!error.isEmpty() && onStatusMessage) onStatusMessage(error);
+        return false;
+    }
+    if (onEdited) onEdited(*edit);
+    else modelEdited(*edit);
+    setCaret(edit->firstRow, 0, false, true);
+    return true;
+}
+
+bool VirtualTextEditor::redo() {
+    if (!guardEdit()) return false;
+    QString error;
+    const auto edit = model_->redo(side_, &error);
+    if (!edit) {
+        if (!error.isEmpty() && onStatusMessage) onStatusMessage(error);
+        return false;
+    }
+    if (onEdited) onEdited(*edit);
+    else modelEdited(*edit);
+    setCaret(edit->firstRow, 0, false, true);
+    return true;
+}
+
+void VirtualTextEditor::modelEdited(const ModelEdit& e) {
+    lineCache_.clear();                     // keyed by display row: every row after the edit moved
+    haveMatch_ = false;
+    const auto shift = [&e](Pos& p) {
+        if (p.row >= e.firstRow + e.oldRows) {
+            p.row = p.row - e.oldRows + e.newRows;
+        } else if (p.row >= e.firstRow) {   // inside the replaced rows: park at the start of the region
+            p.row = e.firstRow;
+            p.col = 0;
+        }
+    };
+    shift(cursor_);
+    shift(anchor_);
+    if (e.side == side_) {
+        spanCache_.clear();                 // keyed by FILE line: lines at/after the edit changed
+        if (syntax_) syntax_->invalidateFrom(e.firstLine);
+        ++highlightRequestId_;
+    }
+    updateMetrics();                        // line-number gutter width may change
+    if (model_ && model_->rowCount() > 0) {
+        cursor_.row = qMin(cursor_.row, model_->rowCount() - 1);
+        anchor_.row = qMin(anchor_.row, model_->rowCount() - 1);
+    } else {
+        cursor_ = anchor_ = Pos{};
+    }
+    viewport()->update();
+    if (e.side == side_) requestHighlight();
+    if (onCurrentRowChanged) onCurrentRowChanged(cursor_.row);
+}
+
+void VirtualTextEditor::invalidateAll() {
+    lineCache_.clear();
+    haveMatch_ = false;
+    updateMetrics();
+    if (model_ && model_->rowCount() > 0) {
+        cursor_.row = qMin(cursor_.row, model_->rowCount() - 1);
+        anchor_.row = qMin(anchor_.row, model_->rowCount() - 1);
+    } else {
+        cursor_ = anchor_ = Pos{};
+    }
+    viewport()->update();
+}
+
+bool VirtualTextEditor::arrowHit(const QPoint& p, quint64* row) const {
+    if (!model_) return false;
+    const bool right = arrowGutterSide_ == GutterSide::Right;
+    const int arrowX = right ? viewport()->width() - kArrowGutterWidth : 0;
+    if (p.x() < arrowX || p.x() >= arrowX + kArrowGutterWidth) return false;
+    const qint64 r = rowAt(p.y());
+    if (r < 0) return false;
+    const quint64 urow = static_cast<quint64>(r);
+    if (model_->row(urow).kind == RowKind::Equal) return false;
+    if (urow > 0 && model_->row(urow - 1).kind != RowKind::Equal) return false;   // arrow sits on a block's first row
+    *row = urow;
+    return true;
+}
+
+bool VirtualTextEditor::focusNextPrevChild(bool next) {
+    if (next && !readOnly_) return false;
+    return QAbstractScrollArea::focusNextPrevChild(next);
+}
+
+void VirtualTextEditor::inputMethodEvent(QInputMethodEvent* e) {
+    if (!e->commitString().isEmpty()) {
+        insertText(e->commitString());      // read-only: guardEdit flashes the lock
+    }
+    e->accept();
+}
+
+QVariant VirtualTextEditor::inputMethodQuery(Qt::InputMethodQuery query) const {
+    switch (query) {
+    case Qt::ImEnabled: return true;
+    case Qt::ImCursorRectangle: {
+        const int y = static_cast<int>(qBound<qint64>(0, static_cast<qint64>(cursor_.row) - static_cast<qint64>(topRow_), static_cast<qint64>(visibleRows_))) * lineHeight_;
+        return QRect(gutterWidth_ + cursor_.col * charWidth_ - hOffset_, y, 2, lineHeight_);
+    }
+    case Qt::ImFont: return font_;
+    default: return QAbstractScrollArea::inputMethodQuery(query);
+    }
 }
 
 // ---- syntax (worker thread) ----------------------------------------------------------------------------

@@ -48,7 +48,29 @@ Working memory during a diff: ~4 B per differing line (ids) + ~40-60 B per *dist
 
 Both are driven through `ITextCompareEditor` (`viewers/text/text_compare_editor.h`); `PlainTextEditorAdapter` adapts the existing editor. The same interface test runs against both.
 
-Feature matrix (Virtual editor): line numbers, current-line highlight, changed/inserted/deleted rows, inline differences, syntax highlighting (multi-line aware), selection (mouse, keyboard, double-click word), copy (capped at 64 MB), Ctrl+A, find / next / previous (case option, wraps), go to line, next/previous difference, synchronised vertical + horizontal scroll, overview bar, reload on file change, swap sides, theme font/colours (`TextFont`, appearance keys `File Views/...`), context menu.
+Feature matrix (Virtual editor): line numbers, current-line highlight, changed/inserted/deleted rows, inline differences, syntax highlighting (multi-line aware), selection (mouse, keyboard, double-click word), copy (capped at 64 MB), Ctrl+A, find / next / previous (case option, wraps), go to line, next/previous difference, synchronised vertical + horizontal scroll, overview bar, file-change notices + explicit reload, swap sides, theme font/colours (`TextFont`, appearance keys `File Views/...`), context menu, **write mode, block copy, undo/redo, save, Rules** (below).
+
+## Write mode (Virtual editor)
+
+The tab opens **read-only**. A lock icon at the right of the status bar shows the state: **red lock = read-only, green open lock = editing**. Clicking it toggles write mode. Any attempt to edit while locked (typing, Backspace, Delete, Enter, Tab-in-write-mode, paste, cut, IME input, undo/redo, the copy arrow, the Copy button) leaves the text untouched and **flashes the lock red -> blue -> yellow -> red, 100 ms per colour, three rounds = 1.2 s**; every further attempt restarts the flash. (Tab keeps normal focus navigation while read-only.)
+
+**How edits work without a `QTextDocument`.** Each side is an `EditableSource`: the memory-mapped file plus an append-only edit buffer, presented as one address space. Edited text is appended there, so untouched lines never move and the original mapping is never modified. The line index gets an *overlay* (a piece table of line records: `Base(range) | Edit(records)`), so a splice costs O(overlay segments), not O(file). The diff is kept consistent *locally*:
+
+| edit | alignment update |
+|---|---|
+| one line replaced by one line (typing) | only that row is re-classified (Equal <-> Replace) |
+| lines inserted / deleted / joined / split / pasted / block copied / undo / redo | the change block(s) around the edit are re-aligned with the normal diff engine and spliced into the run-length `DiffIndex` (`diff_region`, `splice_region`) |
+| "Recompare" (`rediff`) | full global alignment again (restores the optimum after many local edits) |
+
+Undo/redo are per side and store *records* (24 B per line), not text; consecutive single-character typing on one line is one undo step until the caret moves. Memory for edits is proportional to the edit (typing 500 characters in a 200 000-line file used < 20 KB). "Modified" is tracked per side by undo-stack identity, so undoing back to the saved state clears it. Edits survive Rules changes; undo survives saves.
+
+**Copy a difference.** The gutter arrow (drawn at the first row of every change block, pointing at the other side) and the toolbar *Copy* button make the other side's lines of that block identical (insert, delete or overwrite) as one undo step. Dropped text is byte-exact when both files use the same encoding and transcoded otherwise.
+
+**Save.** Save (Ctrl+S, active side), the per-side Save buttons, and Save As write a temporary file in the target's directory and atomically rename it over the original (symlinks are followed; permissions kept). UTF-8/UTF-16 encoding, BOM, every line's original ending (a replaced line keeps its ending, new lines use the file's dominant ending) and a missing final newline are preserved. A side without a file asks for a name. Our own write is re-baselined with the file-change controller so it does not raise a "changed on disk" notice.
+
+**Unsaved changes.** Closing the tab or window, Swap, Reload, changing a path, dropping new files and "reload latest" after an external change all go through the same `confirmUnsavedChanges` dialog as the Existing editor (Save Left / Save Right / Continue / Cancel).
+
+**Rules.** The toolbar *Rules* button opens a bar with the **same syntax as the Existing editor**: comma-separated samples (digit runs match any digits, other characters are literal, `,,` is a comma) plus `/regex/` entries. Matches are replaced by a token before hashing/comparing, so lines that differ only inside matches (or lines a rule covers entirely) count as matched. Implemented once in the engine (`engine/rules.rs`, reusing the existing sample-to-pattern code), applied to the index, to diff verification, to edited lines and to undo; an invalid regex is rejected without changing anything; rules persist across reloads of the tab. Lines over 1 MiB are matched without rules (the same on both sides).
 
 ## Tools > Options > Text Compare
 `Existing Editor` | `Virtual Editor` | `Hybrid Mode (Recommended)`; threshold value + `KB/MB/GB` (binary units, 1 KB..64 GB, default **3 MB**), stored as `textCompare/editorMode|thresholdValue|thresholdUnit` in `preferences.ini`; invalid values fall back to defaults. Applies to comparisons opened afterwards; open tabs are never switched.
@@ -75,7 +97,10 @@ Logic: `options/text_editor_selection.h` (Qt-free), `viewers/text/text_editor_ch
 | + | `text::large`: `DefaultHasher`, O(n) offset lookup, file reopened/copied per read | XXH3, binary search, no cache copy |
 
 ## Limitations (honest list)
-* Virtual editor is **read-only** (no editing, merge, replace). "Ignore text" regex rules are not applied by the engine (nor in the Existing editor's large mode any more).
+* The Virtual editor has no replace, no word wrap and no "Minor" row filtering. Rules in the Existing editor's *large-file* mode are still not applied (its global alignment comes from the engine with default options).
+* Editing limits: lines over 16 KiB are shown as a window and cannot be edited; line-ending / encoding conversion is not offered; drag-and-drop of selected text is not implemented; the whole undo history lives in memory (100 000 steps per side, records only).
+* **Windows save is untested.** A memory-mapped file cannot be replaced on Windows, so the viewer reopens the files with buffered I/O the first time write mode is unlocked (the engine's buffered path is tested on Linux, including saving through it), after which the atomic rename should succeed. This was not run on Windows.
+* A single *Save* holds the model's write lock while writing; typing waits until it finishes (sequential write, about 1-2 s for 500 MB).
 * Replace-row pairing is positional inside a changed block (the Existing editor's small-file path still uses its fuzzy pairing).
 * Find in the Virtual editor runs on the GUI thread (cancellable in the engine, not yet from the UI); a no-match search over a multi-GB file blocks until done.
 * Syntax: tree-sitter languages (Rust/Python/JS) have no incremental line API, so sessions use the matching syntect grammar -> slightly different colours than the Existing editor for those languages in large-file mode. Far jumps into a file replay at most 50 000 lines and may start from a fresh state (`is_approximate`).
@@ -88,9 +113,9 @@ Logic: `options/text_editor_selection.h` (Qt-free), `viewers/text/text_editor_ch
 ## Tests
 | suite | how to run |
 |---|---|
-| engine unit tests (125) + real-file tests (5) | `cargo test -p openbc-core` |
+| engine unit tests (157) + real-file tests (5) | `cargo test -p openbc-core` |
 | C ABI shim | `cargo test` in a crate that includes `ffi/text_engine.rs` (needs no other workspace crate) |
-| VirtualTextEditor / tab / loader / adapter | `cpp/tools/virtual_editor_test/build_and_run.sh <dir with Rust staticlib>` (Qt 6, offscreen) |
+| VirtualTextEditor / tab / loader / adapter / write mode / lock flash / save / unsaved dialog / rules | `cpp/tools/virtual_editor_test/build_and_run.sh <dir with Rust staticlib>` (Qt 6, offscreen; `backend_stubs.cpp` provides a polling stand-in for the engine's file watcher) |
 | existing SyntaxHighlighter | `cpp/tools/syntax_highlighter_test/build_and_run.sh <dir>` |
 | settings persistence + Hybrid decision with real files | `cpp/tools/text_settings_test/build_and_run.sh` |
 | selection logic (Qt-free) | `g++ -std=c++17 -I cpp cpp/tools/text_editor_select_test/text_editor_select_test.cpp` |

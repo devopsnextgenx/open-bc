@@ -21,6 +21,7 @@ use super::encoding::{self, TextEncoding};
 use super::error::{CancelToken, EngineError, Phase, Progress};
 use super::hasher::{HashStream, LineHasher, Xxh3Hasher};
 use super::line_norm::{normalize_into, LineNormalizer, NormalizeOptions};
+use super::rules::{LineRules, MAX_RULE_LINE_BYTES};
 use super::source::TextSource;
 
 /// Flag bits of [`LineRecord::flags`].
@@ -117,6 +118,8 @@ pub struct IndexConfig {
     pub max_line_bytes: u64,
     /// Number of records kept in RAM before spilling to a memory-mapped temporary file.
     pub ram_record_limit: usize,
+    /// Ignore rules applied before hashing (see [`LineRules`]).
+    pub rules: Option<Arc<LineRules>>,
 }
 
 impl Default for IndexConfig {
@@ -127,6 +130,7 @@ impl Default for IndexConfig {
             block_bytes: 8 << 20,
             max_line_bytes: u64::from(u32::MAX),
             ram_record_limit: 8 << 20,
+            rules: None,
         }
     }
 }
@@ -139,6 +143,58 @@ pub struct LineIndex {
     bom_len: u8,
     looks_binary: bool,
     normalize: NormalizeOptions,
+    hasher: Arc<dyn LineHasher>,
+    rules: Option<Arc<LineRules>>,
+    /// Edit overlay (a piece table over line records); `None` while the index is untouched.
+    overlay: Option<Vec<Seg>>,
+    /// Line ending given to new lines: the most common one among the first lines.
+    dominant_eol: u32,
+}
+
+#[derive(Clone, Debug)]
+enum SegKind {
+    /// Lines of the underlying records starting at this base line.
+    Base(u64),
+    /// Lines created by edits.
+    Edit(Vec<LineRecord>),
+}
+
+/// A run of consecutive logical lines in the overlay.
+#[derive(Clone, Debug)]
+struct Seg {
+    start: u64,
+    len: u64,
+    kind: SegKind,
+}
+
+/// Hash of one line's UTF-8 text after rules and normalisation. Streaming and one-shot hashing of
+/// the same bytes agree, so this is what every other path must reproduce.
+pub(crate) fn canonical_hash(
+    hasher: &dyn LineHasher,
+    opts: NormalizeOptions,
+    rules: Option<&LineRules>,
+    utf8: &[u8],
+    scratch: &mut Vec<u8>,
+) -> u64 {
+    let masked = match rules {
+        Some(r) => r.apply(utf8),
+        None => std::borrow::Cow::Borrowed(utf8),
+    };
+    if opts.is_identity_text() {
+        hasher.hash_bytes(&masked)
+    } else {
+        normalize_into(&masked, opts, scratch);
+        hasher.hash_bytes(scratch)
+    }
+}
+
+/// Mix the line-ending kind into a hash when line endings are significant.
+pub(crate) fn salted_hash(hash: u64, eol: u32, ignore_line_endings: bool) -> u64 {
+    if ignore_line_endings {
+        hash
+    } else {
+        hash ^ (u64::from(eol) + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    }
 }
 
 impl LineIndex {
@@ -156,19 +212,46 @@ impl LineIndex {
         let mut scanner = Scanner::new(config, detected.encoding, total);
         scanner.run(source, u64::from(detected.bom_len), cancel, progress)?;
         let records = scanner.sink.finish()?;
-        Ok(Self {
+        let mut index = Self {
             records,
             source_len: total,
             encoding: detected.encoding,
             bom_len: detected.bom_len,
             looks_binary: detected.looks_binary,
             normalize: config.normalize,
-        })
+            hasher: config.hasher.clone(),
+            rules: config.rules.clone(),
+            overlay: None,
+            dominant_eol: flags::EOL_LF,
+        };
+        index.dominant_eol = index.sample_dominant_eol();
+        Ok(index)
+    }
+
+    fn sample_dominant_eol(&self) -> u32 {
+        let mut counts = [0u32; 4];
+        for line in 0..self.line_count().min(256) {
+            if let Some(r) = self.record(line) {
+                counts[r.eol() as usize] += 1;
+            }
+        }
+        [flags::EOL_LF, flags::EOL_CRLF, flags::EOL_CR]
+            .into_iter()
+            .max_by_key(|&k| (counts[k as usize], u32::from(k == flags::EOL_LF)))
+            .filter(|&k| counts[k as usize] > 0)
+            .unwrap_or(flags::EOL_LF)
     }
 
     /// Number of lines.
     #[must_use]
     pub fn line_count(&self) -> u64 {
+        match &self.overlay {
+            Some(segs) => segs.last().map_or(0, |s| s.start + s.len),
+            None => self.base_count(),
+        }
+    }
+
+    fn base_count(&self) -> u64 {
         match &self.records {
             Records::Ram(v) => v.len() as u64,
             Records::Spilled(s) => s.count,
@@ -178,6 +261,23 @@ impl LineIndex {
     /// Record for a zero-based line.
     #[must_use]
     pub fn record(&self, line: u64) -> Option<LineRecord> {
+        match &self.overlay {
+            None => self.base_record(line),
+            Some(segs) => {
+                let idx = segs.partition_point(|s| s.start + s.len <= line);
+                let seg = segs.get(idx)?;
+                if line < seg.start {
+                    return None;
+                }
+                match &seg.kind {
+                    SegKind::Base(first) => self.base_record(first + (line - seg.start)),
+                    SegKind::Edit(records) => records.get((line - seg.start) as usize).copied(),
+                }
+            }
+        }
+    }
+
+    fn base_record(&self, line: u64) -> Option<LineRecord> {
         match &self.records {
             Records::Ram(v) => v.get(usize::try_from(line).ok()?).copied(),
             Records::Spilled(s) => {
@@ -206,6 +306,9 @@ impl LineIndex {
     /// Zero-based line containing byte `offset` (binary search; O(log n)).
     #[must_use]
     pub fn line_for_offset(&self, offset: u64) -> Option<u64> {
+        if self.overlay.is_some() {
+            return None; // offsets are no longer monotonic once lines were edited
+        }
         let count = self.line_count();
         if count == 0 {
             return None;
@@ -261,16 +364,189 @@ impl LineIndex {
     /// Heap bytes held by the index (0 for spilled records, whose pages the OS manages).
     #[must_use]
     pub fn resident_bytes(&self) -> u64 {
-        match &self.records {
+        let base = match &self.records {
             Records::Ram(v) => (v.capacity() * LineRecord::BYTES) as u64,
             Records::Spilled(_) => 0,
-        }
+        };
+        let overlay: u64 = self.overlay.as_ref().map_or(0, |segs| {
+            segs.iter()
+                .map(|s| match &s.kind {
+                    SegKind::Edit(v) => (v.capacity() * LineRecord::BYTES) as u64,
+                    SegKind::Base(_) => 0,
+                } + std::mem::size_of::<Seg>() as u64)
+                .sum()
+        });
+        base + overlay
     }
 
     /// Logical size of all records in bytes.
     #[must_use]
     pub fn record_bytes(&self) -> u64 {
         self.line_count() * LineRecord::BYTES as u64
+    }
+}
+
+impl LineIndex {
+    /// Ignore rules this index was hashed with.
+    #[must_use]
+    pub fn rules(&self) -> Option<&Arc<LineRules>> {
+        self.rules.as_ref()
+    }
+
+    /// Key of the rules (empty when none); two indexes can only be diffed when keys match.
+    #[must_use]
+    pub fn rules_key(&self) -> &str {
+        self.rules.as_deref().map_or("", LineRules::key)
+    }
+
+    /// Line ending used for newly created lines.
+    #[must_use]
+    pub fn dominant_eol(&self) -> u32 {
+        self.dominant_eol
+    }
+
+    /// True once any line was spliced in or out.
+    #[must_use]
+    pub fn is_edited(&self) -> bool {
+        self.overlay.is_some()
+    }
+
+    /// Record for a line of `utf8` text stored at `address` as `stored_len` bytes (in the file's
+    /// encoding) with line ending `eol`.
+    #[must_use]
+    pub fn make_record(&self, address: u64, stored_len: u32, utf8: &[u8], eol: u32) -> LineRecord {
+        let mut scratch = Vec::new();
+        let hash = canonical_hash(self.hasher.as_ref(), self.normalize, self.rules.as_deref(), utf8, &mut scratch);
+        LineRecord {
+            offset: address,
+            hash: salted_hash(hash, eol, self.normalize.ignore_line_endings),
+            length: stored_len,
+            flags: eol,
+        }
+    }
+
+    /// Replace `remove` lines starting at `first` by `insert`. Returns the removed records (the undo
+    /// payload). O(number of overlay segments), independent of the file size.
+    pub fn splice(&mut self, first: u64, remove: u64, insert: Vec<LineRecord>) -> Vec<LineRecord> {
+        let total = self.line_count();
+        let first = first.min(total);
+        let remove = remove.min(total - first);
+        let removed: Vec<LineRecord> = (first..first + remove).filter_map(|i| self.record(i)).collect();
+        let base_count = self.base_count();
+        let segs = self.overlay.get_or_insert_with(|| {
+            if base_count == 0 {
+                Vec::new()
+            } else {
+                vec![Seg { start: 0, len: base_count, kind: SegKind::Base(0) }]
+            }
+        });
+        split_at(segs, first);
+        split_at(segs, first + remove);
+        let lo = segs.partition_point(|s| s.start < first);
+        let hi = segs.partition_point(|s| s.start < first + remove);
+        segs.drain(lo..hi);
+        if !insert.is_empty() {
+            segs.insert(lo, Seg { start: first, len: insert.len() as u64, kind: SegKind::Edit(insert) });
+        }
+        merge_edit_neighbours(segs, lo.saturating_sub(1));
+        renumber(segs, lo.saturating_sub(1));
+        removed
+    }
+
+    /// Build a new, un-overlaid index with the same line layout but hashes computed under
+    /// `normalize` and `rules` (reads every line once; the records' offsets stay valid).
+    pub fn rehash(
+        &self,
+        source: &dyn TextSource,
+        normalize: NormalizeOptions,
+        rules: Option<Arc<LineRules>>,
+        cancel: &CancelToken,
+        progress: &mut dyn FnMut(Progress),
+        ram_record_limit: usize,
+    ) -> Result<Self, EngineError> {
+        let count = self.line_count();
+        let mut sink = Sink::new(ram_record_limit);
+        let mut scratch = Vec::new();
+        let mut utf8 = Vec::new();
+        for line in 0..count {
+            if line & 0xFFFF == 0 {
+                cancel.check()?;
+                progress(Progress { phase: Phase::Indexing, done: line, total: count });
+            }
+            let mut rec = self.record(line).ok_or(EngineError::SourceChanged)?;
+            let raw = source.read(rec.offset, rec.length as usize)?;
+            let text: &[u8] = if self.encoding == TextEncoding::Utf8 {
+                &raw
+            } else {
+                encoding::decode_line_into(&raw, self.encoding, &mut utf8);
+                &utf8
+            };
+            let hash = canonical_hash(self.hasher.as_ref(), normalize, rules.as_deref(), text, &mut scratch);
+            rec.hash = salted_hash(hash, rec.eol(), normalize.ignore_line_endings);
+            sink.push(rec)?;
+        }
+        let records = sink.finish()?;
+        Ok(Self {
+            records,
+            source_len: self.source_len,
+            encoding: self.encoding,
+            bom_len: self.bom_len,
+            looks_binary: self.looks_binary,
+            normalize,
+            hasher: self.hasher.clone(),
+            rules,
+            overlay: None,
+            dominant_eol: self.dominant_eol,
+        })
+    }
+}
+
+/// Split the segment containing `pos` (strictly inside it) into two.
+fn split_at(segs: &mut Vec<Seg>, pos: u64) {
+    let idx = segs.partition_point(|s| s.start + s.len <= pos);
+    let Some(seg) = segs.get_mut(idx) else { return };
+    if seg.start >= pos {
+        return;
+    }
+    let head_len = pos - seg.start;
+    let tail = match &mut seg.kind {
+        SegKind::Base(first) => Seg { start: pos, len: seg.len - head_len, kind: SegKind::Base(*first + head_len) },
+        SegKind::Edit(v) => {
+            let rest = v.split_off(head_len as usize);
+            Seg { start: pos, len: rest.len() as u64, kind: SegKind::Edit(rest) }
+        }
+    };
+    seg.len = head_len;
+    segs.insert(idx + 1, tail);
+}
+
+/// Merge consecutive edit segments starting from `from` so typing never fragments the overlay.
+fn merge_edit_neighbours(segs: &mut Vec<Seg>, from: usize) {
+    let mut i = from;
+    while i + 1 < segs.len() {
+        let both_edit = matches!(segs[i].kind, SegKind::Edit(_)) && matches!(segs[i + 1].kind, SegKind::Edit(_));
+        let adjacent_base = matches!((&segs[i].kind, &segs[i + 1].kind),
+            (SegKind::Base(a), SegKind::Base(b)) if a + segs[i].len == *b);
+        if both_edit {
+            let next = segs.remove(i + 1);
+            if let (SegKind::Edit(a), SegKind::Edit(b)) = (&mut segs[i].kind, next.kind) {
+                a.extend(b);
+            }
+            segs[i].len = match &segs[i].kind { SegKind::Edit(v) => v.len() as u64, _ => 0 };
+        } else if adjacent_base {
+            let next = segs.remove(i + 1);
+            segs[i].len += next.len;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn renumber(segs: &mut [Seg], from: usize) {
+    let mut start = if from == 0 { 0 } else { segs[from - 1].start + segs[from - 1].len };
+    for seg in &mut segs[from..] {
+        seg.start = start;
+        start += seg.len;
     }
 }
 
@@ -362,6 +638,10 @@ struct Scanner<'c> {
     line_len: u64,
     /// Whether `stream` already holds data for the current line.
     streaming: bool,
+    /// Rules path: the current line is collected whole (bounded) so rules can see all of it.
+    rule_buf: Vec<u8>,
+    rule_mode: bool,
+    scratch: Vec<u8>,
 }
 
 impl<'c> Scanner<'c> {
@@ -377,6 +657,31 @@ impl<'c> Scanner<'c> {
             line_start: 0,
             line_len: 0,
             streaming: false,
+            rule_buf: Vec::new(),
+            rule_mode: config.rules.is_some(),
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Hash of the finished line, from the rule buffer or the stream; resets per-line state.
+    fn finish_line_hash(&mut self) -> u64 {
+        if self.rule_mode && self.config.rules.is_some() {
+            let buf = std::mem::take(&mut self.rule_buf);
+            let hash = canonical_hash(
+                self.config.hasher.as_ref(),
+                self.config.normalize,
+                self.config.rules.as_deref(),
+                &buf,
+                &mut self.scratch,
+            );
+            self.rule_buf = buf;
+            self.rule_buf.clear();
+            self.streaming = false;
+            hash
+        } else {
+            let hash = self.finish_stream();
+            self.rule_mode = self.config.rules.is_some();
+            hash
         }
     }
 
@@ -395,11 +700,7 @@ impl<'c> Scanner<'c> {
     }
 
     fn eol_hash(&self, hash: u64, eol: u32) -> u64 {
-        if self.config.normalize.ignore_line_endings {
-            hash
-        } else {
-            hash ^ (u64::from(eol) + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        }
+        salted_hash(hash, eol, self.config.normalize.ignore_line_endings)
     }
 
     fn emit(&mut self, hash: u64, eol: u32, extra_flags: u32) -> Result<(), EngineError> {
@@ -441,13 +742,23 @@ impl<'c> Scanner<'c> {
         let max = self.config.max_line_bytes.max(1);
         while !bytes.is_empty() {
             if self.line_len == max {
-                let hash = self.finish_stream();
+                let hash = self.finish_line_hash();
                 self.emit(hash, flags::EOL_NONE, flags::CONTINUED)?;
                 self.line_start += self.line_len;
                 self.line_len = 0;
             }
             let take = bytes.len().min((max - self.line_len) as usize);
-            self.feed_stream(&bytes[..take]);
+            if self.rule_mode && self.config.rules.is_some() {
+                self.rule_buf.extend_from_slice(&bytes[..take]);
+                if self.rule_buf.len() > MAX_RULE_LINE_BYTES {
+                    // Too long for rules: continue as a plain streamed line (same on both sides).
+                    self.rule_mode = false;
+                    let spilled = std::mem::take(&mut self.rule_buf);
+                    self.feed_stream(&spilled);
+                }
+            } else {
+                self.feed_stream(&bytes[..take]);
+            }
             self.line_len += take as u64;
             bytes = &bytes[take..];
         }
@@ -456,7 +767,24 @@ impl<'c> Scanner<'c> {
 
     fn end_line(&mut self, tail: &[u8], eol: u32, terminator_len: u64) -> Result<(), EngineError> {
         let max = self.config.max_line_bytes.max(1);
-        let hash = if !self.streaming && self.line_len == 0 && (tail.len() as u64) <= max {
+        let hash = if self.rule_mode
+            && self.config.rules.is_some()
+            && !self.streaming
+            && self.line_len == 0
+            && self.rule_buf.is_empty()
+            && tail.len() <= MAX_RULE_LINE_BYTES
+            && (tail.len() as u64) <= max
+        {
+            // Whole line in the block and short enough for rules: apply them directly.
+            self.line_len = tail.len() as u64;
+            canonical_hash(
+                self.config.hasher.as_ref(),
+                self.config.normalize,
+                self.config.rules.as_deref(),
+                tail,
+                &mut self.scratch,
+            )
+        } else if !self.streaming && self.line_len == 0 && self.rule_buf.is_empty() && (tail.len() as u64) <= max {
             // The whole line is inside the current block: hash it in one shot, no copies.
             self.line_len = tail.len() as u64;
             if self.identity {
@@ -468,7 +796,7 @@ impl<'c> Scanner<'c> {
             }
         } else {
             self.append(tail)?;
-            self.finish_stream()
+            self.finish_line_hash()
         };
         self.emit(hash, eol, 0)?;
         self.line_start += self.line_len + terminator_len;
@@ -525,7 +853,7 @@ impl<'c> Scanner<'c> {
             progress(Progress { phase: Phase::Indexing, done: pos.min(self.total), total: self.total });
         }
         if self.line_len > 0 || self.streaming {
-            let hash = self.finish_stream();
+            let hash = self.finish_line_hash();
             self.emit(hash, flags::EOL_NONE, 0)?;
         }
         Ok(())
@@ -595,13 +923,13 @@ impl<'c> Scanner<'c> {
             return Err(EngineError::LineTooLong(u64::from(u32::MAX)));
         }
         encoding::decode_line_into(raw, self.encoding, utf8);
-        let hash = if self.identity {
-            self.config.hasher.hash_bytes(utf8)
-        } else {
-            let mut normalized = Vec::new();
-            normalize_into(utf8, self.config.normalize, &mut normalized);
-            self.config.hasher.hash_bytes(&normalized)
-        };
+        let hash = canonical_hash(
+            self.config.hasher.as_ref(),
+            self.config.normalize,
+            self.config.rules.as_deref(),
+            utf8,
+            &mut self.scratch,
+        );
         self.line_len = raw.len() as u64;
         self.emit(hash, eol, 0)?;
         self.line_start += self.line_len + terminator_len;
@@ -776,6 +1104,155 @@ mod tests {
         assert_eq!(i.line_for_offset(12), Some(2));
         assert_eq!(i.line_for_offset(999), Some(2));
         assert_eq!(index(b"").0.line_for_offset(0), None);
+    }
+
+    // ---- editing overlay ---------------------------------------------------------------------
+
+    use crate::text::engine::source::EditableSource;
+
+    fn editable(text: &str) -> (LineIndex, Arc<EditableSource>) {
+        let src = Arc::new(EditableSource::new(Arc::new(MemorySource::new(text.as_bytes().to_vec()))));
+        let idx = LineIndex::build(src.as_ref(), &IndexConfig::default(), &CancelToken::new(), &mut |_| {}).unwrap();
+        (idx, src)
+    }
+
+    fn new_line(idx: &LineIndex, src: &EditableSource, text: &str) -> LineRecord {
+        let address = src.append(text.as_bytes());
+        idx.make_record(address, text.len() as u32, text.as_bytes(), idx.dominant_eol())
+    }
+
+    fn text_of(idx: &LineIndex, src: &EditableSource) -> Vec<String> {
+        (0..idx.line_count())
+            .map(|i| String::from_utf8_lossy(&idx.line_bytes(src, i).unwrap()).into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn splice_replaces_inserts_and_deletes_without_moving_other_lines() {
+        let (mut idx, src) = editable("a\nb\nc\nd\n");
+        let before: Vec<u64> = (0..4).map(|i| idx.record(i).unwrap().offset).collect();
+        // replace "b" with two lines
+        let x = new_line(&idx, &src, "X");
+        let y = new_line(&idx, &src, "Y");
+        let removed = idx.splice(1, 1, vec![x, y]);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(text_of(&idx, &src), ["a", "X", "Y", "c", "d"]);
+        // untouched lines keep their ORIGINAL offsets
+        assert_eq!(idx.record(0).unwrap().offset, before[0]);
+        assert_eq!(idx.record(3).unwrap().offset, before[2]);
+        assert_eq!(idx.record(4).unwrap().offset, before[3]);
+        // delete two, insert at the end, insert at the start
+        idx.splice(2, 2, vec![]);
+        assert_eq!(text_of(&idx, &src), ["a", "X", "d"]);
+        let end = new_line(&idx, &src, "END");
+        idx.splice(3, 0, vec![end]);
+        let start = new_line(&idx, &src, "START");
+        idx.splice(0, 0, vec![start]);
+        assert_eq!(text_of(&idx, &src), ["START", "a", "X", "d", "END"]);
+        assert!(idx.is_edited());
+        assert_eq!(idx.line_for_offset(0), None); // offsets are not monotonic any more
+    }
+
+    #[test]
+    fn splice_is_exactly_reversible_through_returned_records() {
+        let (mut idx, src) = editable("l0\nl1\nl2\nl3\nl4\n");
+        let original = text_of(&idx, &src);
+        let n1 = new_line(&idx, &src, "new");
+        let removed1 = idx.splice(1, 3, vec![n1]); // l1..l3 -> new
+        assert_eq!(text_of(&idx, &src), ["l0", "new", "l4"]);
+        let removed2 = idx.splice(0, 3, vec![]); // delete everything
+        assert_eq!(idx.line_count(), 0);
+        idx.splice(0, 0, removed2); // undo 2
+        idx.splice(1, 1, removed1); // undo 1
+        assert_eq!(text_of(&idx, &src), original);
+    }
+
+    #[test]
+    fn many_random_splices_match_a_vec_model() {
+        let (mut idx, src) = editable(&(0..40).map(|i| format!("line{i}\n")).collect::<String>());
+        let mut model: Vec<String> = text_of(&idx, &src);
+        let mut seed = 0xC0FFEEu64;
+        let mut next = move || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        for step in 0..400 {
+            let total = model.len() as u64;
+            let first = if total == 0 { 0 } else { next() % (total + 1) };
+            let remove = if first >= total { 0 } else { next() % (total - first).min(4) + (next() % 2) };
+            let remove = remove.min(total - first);
+            let insert_n = (next() % 4) as usize;
+            let texts: Vec<String> = (0..insert_n).map(|k| format!("s{step}_{k}")).collect();
+            let recs: Vec<LineRecord> = texts.iter().map(|t| new_line(&idx, &src, t)).collect();
+            idx.splice(first, remove, recs);
+            model.splice(first as usize..(first + remove) as usize, texts);
+            assert_eq!(idx.line_count(), model.len() as u64);
+        }
+        assert_eq!(text_of(&idx, &src), model);
+    }
+
+    #[test]
+    fn typing_in_one_place_does_not_fragment_the_overlay() {
+        let (mut idx, src) = editable(&"x\n".repeat(1000));
+        for k in 0..200 {
+            let r = new_line(&idx, &src, &format!("typed {k}"));
+            idx.splice(500, 1, vec![r]);
+        }
+        // base | edit(1) | base  -> at most 3 segments regardless of keystrokes
+        assert!(idx.overlay.as_ref().unwrap().len() <= 3);
+        assert_eq!(text_of(&idx, &src)[500], "typed 199");
+    }
+
+    #[test]
+    fn new_records_hash_like_scanned_lines() {
+        let (idx, src) = editable("hello\n");
+        let fresh = new_line(&idx, &src, "hello");
+        assert_eq!(fresh.hash, idx.record(0).unwrap().hash);
+        assert_eq!(fresh.eol(), flags::EOL_LF);
+    }
+
+    // ---- rules -------------------------------------------------------------------------------
+
+    fn with_rules(text: &str, rules: &str, block: usize) -> LineIndex {
+        let mut cfg = IndexConfig::default();
+        cfg.block_bytes = block;
+        cfg.rules = LineRules::parse(rules).unwrap().map(Arc::new);
+        index_with(text.as_bytes(), cfg).0
+    }
+
+    #[test]
+    fn rules_make_lines_that_differ_only_in_matches_hash_equal() {
+        let i = with_rules("t=2026-01-01 ok\nt=2027-12-31 ok\nt=2027-12-31 bad\n# c1\n# c2\n", "/^#.*$/,2026-01-01", 4096);
+        assert_eq!(i.record(0).unwrap().hash, i.record(1).unwrap().hash);
+        assert_ne!(i.record(1).unwrap().hash, i.record(2).unwrap().hash);
+        assert_eq!(i.record(3).unwrap().hash, i.record(4).unwrap().hash); // fully-covered lines match
+        assert_eq!(i.rules_key(), "/^#.*$/,2026-01-01");
+        assert_eq!(i.record(0).unwrap().length, 15); // original bytes are untouched
+    }
+
+    #[test]
+    fn rules_work_when_a_line_and_its_match_span_io_blocks() {
+        let line = |date: &str| format!("{}{}{}\n", "x".repeat(5000), date, "y".repeat(5000));
+        let text = format!("{}{}", line("2026-01-01"), line("2031-07-09"));
+        let i = with_rules(&text, "2026-01-01", 4096);
+        assert_eq!(i.line_count(), 2);
+        assert_eq!(i.record(0).unwrap().hash, i.record(1).unwrap().hash);
+        // And identical to scanning with big blocks (one-shot path).
+        let j = with_rules(&text, "2026-01-01", 8 << 20);
+        assert_eq!(i.record(0).unwrap().hash, j.record(0).unwrap().hash);
+    }
+
+    #[test]
+    fn rehash_applies_new_rules_to_edited_content_and_keeps_offsets() {
+        let (mut idx, src) = editable("v=1\nv=2\n");
+        let r = new_line(&idx, &src, "v=3");
+        idx.splice(1, 1, vec![r]);
+        assert_ne!(idx.record(0).unwrap().hash, idx.record(1).unwrap().hash);
+        let rules = LineRules::parse("1,2,3").unwrap().map(Arc::new);
+        let re = idx
+            .rehash(src.as_ref(), NormalizeOptions::default(), rules, &CancelToken::new(), &mut |_| {}, 1 << 20)
+            .unwrap();
+        assert_eq!(re.record(0).unwrap().hash, re.record(1).unwrap().hash);
+        assert_eq!(re.record(1).unwrap().offset, idx.record(1).unwrap().offset);
+        assert!(!re.is_edited()); // flattened
+        assert_eq!(text_of(&re, &src), ["v=1", "v=3"]);
     }
 
     #[test]

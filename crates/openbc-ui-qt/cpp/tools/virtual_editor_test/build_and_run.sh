@@ -11,6 +11,6 @@ OUT=${OUT:-/tmp/vet_build}
 mkdir -p "$OUT"
 QT="$(pkg-config --cflags --libs Qt6Widgets Qt6Gui Qt6Core)"
 g++ -std=c++17 -fPIC -O1 -g -Wall -Wextra -I"$CPP" -I"$OUT" \
-  "$HERE/virtual_editor_test.cpp" "$CPP/viewers/text/virtual/virtual_text_editor.cpp" "$CPP/viewers/text/virtual/virtual_text_compare_viewer.cpp" \
+  "$HERE/virtual_editor_test.cpp" "$HERE/backend_stubs.cpp" "$CPP/viewers/text/virtual/virtual_text_editor.cpp" "$CPP/viewers/text/virtual/virtual_text_compare_viewer.cpp" \
   "$LIBDIR"/libffi_harness.a $QT -lpthread -ldl -lm -o "$OUT/virtual_editor_test" "$@"
 QT_QPA_PLATFORM=offscreen "$OUT/virtual_editor_test"

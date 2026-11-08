@@ -54,7 +54,12 @@ struct OpenBcTmMatch {
 };
 
 struct OpenBcTmMemory {
-    std::uint64_t indexBytes, indexResidentBytes, diffBytes, inlineCacheEntries;
+    std::uint64_t indexBytes, indexResidentBytes, diffBytes, inlineCacheEntries, editBytes;
+};
+
+struct OpenBcTmEdit {
+    std::uint64_t firstRow, oldRows, newRows, firstLine, insertedLines;
+    std::uint8_t side;
 };
 
 struct OpenBcTmSpan {
@@ -104,6 +109,33 @@ std::int32_t openbc_tm_find(const OpenBcTmModel*, std::uint8_t side, const std::
                             std::size_t needleLen, std::uint8_t caseSensitive, std::int64_t startLine,
                             std::uint64_t startCol, std::uint8_t forward, const OpenBcTmCancel* cancel,
                             OpenBcTmMatch* out);
+
+// ---- editing -----------------------------------------------------------------------------------
+// Return 1 = done, 0 = nothing to do, -1 = error (openbc_tm_last_error).
+std::int32_t openbc_tm_replace_lines(const OpenBcTmModel*, std::uint8_t side, std::uint64_t firstLine,
+                                     std::uint64_t remove, const std::uint8_t* text, std::size_t len,
+                                     std::uint8_t coalesce, OpenBcTmEdit* out);
+std::int32_t openbc_tm_undo(const OpenBcTmModel*, std::uint8_t side, OpenBcTmEdit* out);
+std::int32_t openbc_tm_redo(const OpenBcTmModel*, std::uint8_t side, OpenBcTmEdit* out);
+std::uint8_t openbc_tm_can_undo(const OpenBcTmModel*, std::uint8_t side);
+std::uint8_t openbc_tm_can_redo(const OpenBcTmModel*, std::uint8_t side);
+void openbc_tm_seal_undo(const OpenBcTmModel*, std::uint8_t side);
+std::uint64_t openbc_tm_edit_count(const OpenBcTmModel*, std::uint8_t side);
+std::uint8_t openbc_tm_is_dirty(const OpenBcTmModel*, std::uint8_t side);
+std::int32_t openbc_tm_copy_block(const OpenBcTmModel*, std::uint8_t fromSide, std::uint64_t row, OpenBcTmEdit* out);
+std::uint8_t openbc_tm_block_at(const OpenBcTmModel*, std::uint64_t row, std::uint64_t* start, std::uint64_t* len);
+std::size_t openbc_tm_path(const OpenBcTmModel*, std::uint8_t side, std::uint8_t* buf, std::size_t cap);
+std::size_t openbc_tm_rules_text(const OpenBcTmModel*, std::uint8_t* buf, std::size_t cap);
+std::uint8_t openbc_tm_line_cursors(const OpenBcTmModel*, std::uint64_t row, std::uint64_t* left, std::uint64_t* right);
+
+constexpr std::uint8_t kOpenBcTmTaskSetRules = 0;
+constexpr std::uint8_t kOpenBcTmTaskRediff = 1;
+constexpr std::uint8_t kOpenBcTmTaskSave = 2;
+constexpr std::uint8_t kOpenBcTmTaskSaveAs = 3;
+// Long operations on a worker thread; events like openbc_tm_open_async (EV_RESULT carries the
+// written path for saves). The model is kept alive by the task.
+void openbc_tm_task_async(const OpenBcTmModel*, std::uint8_t task, std::uint8_t side, const std::uint8_t* text,
+                          std::size_t len, const OpenBcTmCancel* cancel, OpenBcTmCallback cb, void* user);
 
 OpenBcTmSyntax* openbc_syn_new(const std::uint8_t* language, std::size_t len, std::uint8_t dark,
                                std::uint32_t spanCacheLines);

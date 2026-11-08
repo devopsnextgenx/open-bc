@@ -64,7 +64,7 @@ impl<'a> PreparedNormalizer<'a> {
 
 /// Turns a sample value into a regex matching the same *shape*: digit runs become `\d+`,
 /// every other character matches literally.
-fn sample_pattern(sample: &str) -> Option<Regex> {
+pub(crate) fn sample_pattern(sample: &str) -> Option<Regex> {
     if sample.is_empty() {
         return None;
     }
