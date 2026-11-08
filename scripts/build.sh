@@ -202,6 +202,16 @@ Maintainer: OpenBC Team <devopsnexegenx@gmail.com>
 Description: OpenBC File and Directory Comparison Tool
  OpenBC is an open-source comparison tool integrated with Rust backends and Qt6 GUI.
 CTRL
+
+  # Normalize directory modes. If the checkout/build dir is setgid (shared or CI filesystems), every
+  # directory created under it inherits g+s, and dpkg-deb rejects DEBIAN with mode 2775
+  # ("control directory has bad permissions"). Strip setgid everywhere and force sane modes.
+  # The symbolic form is used because a numeric chmod (e.g. 0755) does not clear setgid on directories
+  # with GNU chmod.
+  run find "$stage" -type d -exec chmod g-s,u=rwx,go=rx {} +
+  run chmod 0755 "$stage/DEBIAN/postinst" "$stage/DEBIAN/postrm"
+  run chmod 0644 "$stage/DEBIAN/control"
+
   run dpkg-deb --root-owner-group --build "$stage" "$out"
 }
 

@@ -35,6 +35,7 @@
 #include <functional>
 
 #include "common/diff_algorithms.h"
+#include "options/appearance_state.h"
 
 namespace openbc::app {
 
@@ -410,6 +411,7 @@ private:
 
     void paintLineNumbers(QPaintEvent* event) {
         QPainter painter(lineNumberArea_);
+        painter.setFont(font());  // same family and size as the text, not the application default
         painter.fillRect(event->rect(), QGuiApplication::palette().color(QPalette::Base));
         const int textMargin = numberSide_ == GutterSide::Left ? 8 : 6;
         forEachVisibleBlock(event, [&](int blockNumber, int top, int bottom) {

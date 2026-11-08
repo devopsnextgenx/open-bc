@@ -557,3 +557,4 @@ private:
 };
 
 }  // namespace openbc::app
+

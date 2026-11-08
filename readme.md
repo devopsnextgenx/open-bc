@@ -2,7 +2,16 @@
 
 ## Dev Start
 ```bash
-sudo apt install build-essential qt6-base-dev qt6-multimedia-dev liblzma-dev libssl-dev
+sudo apt install build-essential cmake qt6-base-dev qt6-declarative-dev qt6-multimedia-dev liblzma-dev libssl-dev
+sudo flatpak install flathub org.freedesktop.Sdk.Extension.rust-stable
+
+sudo mkdir -p /home/shared/rustup /home/shared/cargo
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sudo env RUSTUP_HOME=/home/shared/rustup CARGO_HOME=/home/shared/cargo sh -s -- --default-toolchain stable --profile default --no-modify-path -y
+sudo vi /etc/profile.d/rust.sh
+# export RUSTUP_HOME=/home/shared/rustup
+# export PATH="${PATH}:/home/shared/cargo/bin"
+sudo chmod 755 /etc/profile.d/rust.sh
+
 ```
 
 ## Support the Project

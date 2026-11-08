@@ -39,6 +39,8 @@
 #include <functional>
 #include <memory>
 
+#include "common/diff_line_preview.h"
+#include "common/diff_navigator.h"
 #include "common/minimap.h"
 #include "common/path_selector.h"
 #include "common/unsaved_changes_dialog.h"
@@ -126,6 +128,7 @@ private:
     void onModelReady(std::shared_ptr<TextModel> model);
     void applyFont();
     void updateStatus();
+    void updatePreview(quint64 row);
     void updateOverview();
     void refreshSideHeader(bool left);
     void commitPath(bool left, const QString& path);
@@ -159,6 +162,9 @@ private:
     QToolButton* leftSaveButton_ = nullptr;
     QToolButton* rightSaveButton_ = nullptr;
     QLabel* status_ = nullptr;
+    QLabel* editBadge_ = nullptr;             // EDITABLE / READ ONLY, as in the Existing editor's status bar
+    DiffLinePreview* preview_ = nullptr;      // bottom line-by-line compare strip (shared with TextCompareViewer)
+    DiffNavigator* diffNavigator_ = nullptr;  // up/down arrows in the right editor's bottom-right corner
     QProgressBar* progress_ = nullptr;
     QWidget* findBar_ = nullptr;
     QLineEdit* findEdit_ = nullptr;

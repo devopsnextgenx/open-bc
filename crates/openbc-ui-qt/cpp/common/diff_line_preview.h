@@ -1,160 +1,305 @@
 // diff_line_preview.h
 // ---------------------------------------------------------------------------
-// Bottom "console" strip of TextCompareViewer: shows the current row's left
-// and right line, editable in place via double-click. Extracted unchanged
-// from the original monolithic qt_app.cpp.
+// Bottom line-by-line compare strip shared by TextCompareViewer and VirtualTextCompareViewer: shows the
+// current row's left and right line one above the other, in the SAME font and size as the editors,
+// with the editors' copy arrows, line numbers, character-level differences (mismatched characters
+// highlighted, mismatched whitespace shown as visible dots/arrows) like Beyond Compare's
+// "line compare" pane. A line can be edited in place by double-clicking its text when editing is enabled.
 // ---------------------------------------------------------------------------
 #pragma once
 
 #include <QEvent>
+#include <QFontMetrics>
 #include <QFrame>
+#include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPalette>
 #include <QVBoxLayout>
 #include <functional>
 
 #include "common/diff_algorithms.h"
+#include "common/diff_arrow.h"
+#include "options/appearance_state.h"
 
 namespace openbc::app {
 
-// Bottom "console" strip, editable in place: double-clicking the top row's
-// text (the left file's current line) lets you type a replacement that is
-// written straight back into the left editor's current line; double-clicking
-// the bottom row's text edits the right editor's current line the same way.
-// Single click / normal display stays plain read-only, same coloring as
-// before, so this only changes behaviour once the user explicitly asks to
-// edit by double-clicking.
-//
-// The line number is its own fixed-width, always-read-only label to the left
-// of each row's text field - it is metadata about the line, not part of the
-// line's content, so it is never selected, edited, or sent back in
-// onLeftEdited/onRightEdited. Only the QLineEdit holding the actual text
-// becomes editable.
+// Copy-arrow gutter of one strip row; same width and arrow shape as the editors' gutters.
+class PreviewArrow : public QWidget {
+public:
+    static constexpr int kWidth = 20;
+    explicit PreviewArrow(bool pointsRight, QWidget* parent = nullptr)
+        : QWidget(parent), pointsRight_(pointsRight) {
+        setFixedWidth(kWidth);
+    }
+    void setShown(bool shown) { if (shown_ != shown) { shown_ = shown; update(); } }
+    std::function<void()> onClicked;
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.fillRect(rect(), palette().color(QPalette::Window));
+        if (shown_) paintCopyArrow(p, 0, kWidth, height() / 2.0, pointsRight_);
+    }
+    void mousePressEvent(QMouseEvent* e) override {
+        if (shown_ && onClicked && e->button() == Qt::LeftButton) onClicked();
+    }
+
+private:
+    bool pointsRight_ = true;
+    bool shown_ = false;
+};
+
+// One line of text drawn with highlighted character differences; becomes a QLineEdit on double-click.
+class PreviewText : public QWidget {
+public:
+    explicit PreviewText(QWidget* parent = nullptr) : QWidget(parent) {
+        setObjectName(QStringLiteral("previewText"));
+        edit_ = new QLineEdit(this);
+        edit_->setFrame(false);
+        // QLineEdit already insets its text by 2px; the app-wide style sheet also gives line edits
+        // padding, borders and a min-height, which pushed the text right and down. Pin all of it so the
+        // editing text sits exactly where the painted text was.
+        edit_->setTextMargins(kMargin - 2, 0, kMargin, 0);
+        edit_->setContentsMargins(0, 0, 0, 0);
+        edit_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        applyEditStyle();
+        edit_->hide();
+        edit_->installEventFilter(this);
+        connect(edit_, &QLineEdit::returnPressed, this, [this]() { finishEdit(true); });
+    }
+
+    void setContent(const QString& text, const QVector<CharSegment>& segments, const QColor& background,
+                    bool showWhitespace) {
+        text_ = text;
+        segments_ = segments;
+        background_ = background;
+        showWhitespace_ = showWhitespace;
+        applyEditStyle();
+        if (edit_->isVisible()) finishEdit(false);
+        update();
+    }
+    void setEditingEnabled(bool enabled) {
+        editingEnabled_ = enabled;
+        if (!enabled && edit_->isVisible()) finishEdit(false);
+    }
+    void setTextFont(const QFont& f) {
+        setFont(f);
+        edit_->setFont(f);
+        setFixedHeight(QFontMetrics(f).lineSpacing() + 4);
+        update();
+    }
+    std::function<void(const QString&)> onCommit;
+
+protected:
+    void resizeEvent(QResizeEvent*) override { edit_->setGeometry(rect()); }
+
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.fillRect(rect(), background_.alpha() ? background_ : palette().color(QPalette::Base));
+        if (text_.isEmpty()) return;
+        p.setFont(font());
+        const QFontMetrics fm(font());
+        const int baseline = (height() - fm.height()) / 2 + fm.ascent();
+        const QColor normal = palette().color(QPalette::Text);
+
+        QString shown = text_;
+        if (showWhitespace_) {
+            shown.replace(QLatin1Char(' '), QChar(0x00b7));
+            shown.replace(QLatin1Char('\t'), QChar(0x2192));
+        }
+        // Per-character kind from the segments; everything else is equal text.
+        QVector<CharSegmentKind> kinds(shown.size(), CharSegmentKind::Equal);
+        for (const CharSegment& s : segments_) {
+            if (s.kind == CharSegmentKind::Equal) continue;
+            for (int i = s.start; i < s.start + s.length && i < kinds.size(); ++i)
+                if (i >= 0) kinds[i] = s.kind;
+        }
+        int x = kMargin;
+        int i = 0;
+        while (i < shown.size() && x < width()) {
+            int j = i + 1;
+            while (j < shown.size() && kinds[j] == kinds[i]) ++j;
+            const QString run = shown.mid(i, j - i);
+            const int w = fm.horizontalAdvance(run);
+            switch (kinds[i]) {
+            case CharSegmentKind::Mismatch:
+                p.fillRect(QRect(x, 1, w, height() - 2), QColor(0xe5, 0x39, 0x35, 170));
+                p.setPen(QColor(0xff, 0xff, 0xff));
+                break;
+            case CharSegmentKind::WhitespaceMismatch:
+                p.fillRect(QRect(x, 1, w, height() - 2), QColor(0x4f, 0x8f, 0xd8, 170));
+                p.setPen(QColor(0xff, 0xff, 0xff));
+                break;
+            default:
+                p.setPen(normal);
+                break;
+            }
+            p.drawText(x, baseline, run);
+            x += w;
+            i = j;
+        }
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent* e) override {
+        if (!editingEnabled_ || text_.isEmpty() || e->button() != Qt::LeftButton) return;
+        edit_->setGeometry(0, 0, width(), height());
+        edit_->setText(text_);
+        edit_->setCursorPosition(edit_->text().size());
+        edit_->show();
+        edit_->setFocus();
+        edit_->selectAll();
+    }
+
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == edit_) {
+            if (event->type() == QEvent::FocusOut && edit_->isVisible()) finishEdit(true);
+            if (event->type() == QEvent::KeyPress &&
+                static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+                finishEdit(false);
+                return true;  // Esc cancels this edit, it does not close the tab
+            }
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
+private:
+    static constexpr int kMargin = 8;
+
+    void applyEditStyle() {
+        const QColor bg = background_.alpha() ? background_ : palette().color(QPalette::Base);
+        edit_->setStyleSheet(
+            QStringLiteral("QLineEdit { background: %1; color: %2; border: 0px; margin: 0px; padding: 0px;"
+                           " min-height: 0px; selection-background-color: #44475a; }")
+                .arg(bg.name(), palette().color(QPalette::Text).name()));
+    }
+
+    void finishEdit(bool commit) {
+        if (!edit_->isVisible()) return;
+        const QString value = edit_->text();
+        edit_->hide();
+        if (commit && value != text_ && onCommit) onCommit(value);
+    }
+
+    QLineEdit* edit_ = nullptr;
+    QString text_;
+    QVector<CharSegment> segments_;
+    QColor background_ = Qt::transparent;
+    bool showWhitespace_ = false;
+    bool editingEnabled_ = true;
+};
+
 class DiffLinePreview : public QFrame {
 public:
     explicit DiffLinePreview(QWidget* parent = nullptr) : QFrame(parent) {
-        setObjectName("diffLinePreview");
+        setObjectName(QStringLiteral("diffLinePreview"));
         auto* layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(1);
 
-        auto makeRow = [this, layout](QLabel*& numberLabel, QLineEdit*& textEdit) {
+        const auto makeRow = [this, layout](bool leftSide, PreviewArrow*& arrow, QLabel*& number,
+                                            PreviewText*& text) {
             auto* row = new QWidget(this);
             auto* rowLayout = new QHBoxLayout(row);
             rowLayout->setContentsMargins(0, 0, 0, 0);
             rowLayout->setSpacing(0);
-
-            numberLabel = new QLabel(row);
-            numberLabel->setObjectName("previewLineNo");
-            numberLabel->setFixedHeight(20);
-            numberLabel->setMinimumWidth(56);
-            numberLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-            textEdit = new QLineEdit(row);
-            textEdit->setObjectName("previewText");
-            textEdit->setFrame(false);
-            textEdit->setReadOnly(true);
-            textEdit->setFixedHeight(20);
-            textEdit->setTextMargins(8, 0, 8, 0);
-            textEdit->installEventFilter(this);
-            connect(textEdit, &QLineEdit::returnPressed, this,
-                    [this, textEdit]() { commitEdit(textEdit); });
-
-            rowLayout->addWidget(numberLabel);
-            rowLayout->addWidget(textEdit, 1);
+            arrow = new PreviewArrow(leftSide, row);
+            number = new QLabel(row);
+            number->setObjectName(QStringLiteral("previewLineNo"));
+            number->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            text = new PreviewText(row);
+            rowLayout->addWidget(arrow);
+            rowLayout->addWidget(number);
+            rowLayout->addWidget(text, 1);
             layout->addWidget(row);
         };
-        makeRow(topNumber_, topEdit_);
-        makeRow(bottomNumber_, bottomEdit_);
-        applyStyle(topEdit_, topNumber_);
-        applyStyle(bottomEdit_, bottomNumber_);
+        makeRow(true, topArrow_, topNumber_, topText_);
+        makeRow(false, bottomArrow_, bottomNumber_, bottomText_);
+        topText_->onCommit = [this](const QString& t) { if (onLeftEdited) onLeftEdited(t); };
+        bottomText_->onCommit = [this](const QString& t) { if (onRightEdited) onRightEdited(t); };
+        // The arrows copy this row's line to the other side.
+        topArrow_->onClicked = [this]() { if (onCopyLeftToRight && row_.leftNumber) onCopyLeftToRight(); };
+        bottomArrow_->onClicked = [this]() { if (onCopyRightToLeft && row_.rightNumber) onCopyRightToLeft(); };
+        setPreviewFont(QFont(QStringLiteral("monospace")));
+        clear();
     }
 
-    void setRow(const TextDiffLine& row) {
+    // Same font as the editors (TextFont); keeps the strip's row height and number column in step.
+    void setPreviewFont(const QFont& font) {
+        const QFontMetrics fm(font);
+        for (QLabel* n : {topNumber_, bottomNumber_}) {
+            n->setFont(font);
+            n->setFixedWidth(fm.horizontalAdvance(QString(6, QLatin1Char('0'))) + 16);
+            n->setFixedHeight(fm.lineSpacing() + 4);
+        }
+        topText_->setTextFont(font);
+        bottomText_->setTextFont(font);
+        topArrow_->setFixedHeight(fm.lineSpacing() + 4);
+        bottomArrow_->setFixedHeight(fm.lineSpacing() + 4);
+    }
+
+    // `leftSegments` / `rightSegments` are the character-level differences of the two lines; when both
+    // are empty for a changed row they are computed here.
+    void setRow(const TextDiffLine& row, const QVector<CharSegment>& leftSegments = {},
+                const QVector<CharSegment>& rightSegments = {}) {
+        QVector<CharSegment> l = leftSegments, r = rightSegments;
+        if (row.changed && l.isEmpty() && r.isEmpty() && row.leftNumber && row.rightNumber) {
+            const InlineDiff d = computeInlineDiff(row.left, row.right, sessionId_);
+            l = d.left;
+            r = d.right;
+        }
         row_ = row;
-        background_ = !row.changed          ? "transparent"
-                      : row.whitespaceOnly   ? "#2d5a87"
-                                             : "#7a2d2d";
-        topNumber_->setText(row.leftNumber ? QString::number(row.leftNumber) : QString());
-        bottomNumber_->setText(row.rightNumber ? QString::number(row.rightNumber) : QString());
-        topEdit_->setText(row.leftNumber ? row.left : QString());
-        bottomEdit_->setText(row.rightNumber ? row.right : QString());
-        applyStyle(topEdit_, topNumber_);
-        applyStyle(bottomEdit_, bottomNumber_);
+        const QColor background = !row.changed         ? QColor(Qt::transparent)
+                                  : row.whitespaceOnly ? QColor(0x2d, 0x5a, 0x87)
+                                                       : QColor(0x7a, 0x2d, 0x2d);
+        const QColor numberText =
+            openbc::ui::appearance::text("File Views/Line numbers", QGuiApplication::palette().color(QPalette::Text));
+        const auto show = [&](PreviewArrow* arrow, QLabel* number, PreviewText* text, int lineNumber,
+                              const QString& content, const QVector<CharSegment>& segments) {
+            number->setText(lineNumber ? QString::number(lineNumber) : QString());
+            number->setStyleSheet(QStringLiteral("color:%1; padding-right:8px; background:%2;")
+                                      .arg(numberText.name(),
+                                           row.changed ? background.name() : QStringLiteral("transparent")));
+            text->setContent(lineNumber ? content : QString(), segments, background, row.changed);
+            arrow->setShown(row.changed && lineNumber != 0);
+        };
+        show(topArrow_, topNumber_, topText_, row.leftNumber, row.left, l);
+        show(bottomArrow_, bottomNumber_, bottomText_, row.rightNumber, row.right, r);
     }
 
     void clear() {
-        row_ = TextDiffLine();
-        background_ = "transparent";
-        topNumber_->clear();
-        bottomNumber_->clear();
-        topEdit_->clear();
-        bottomEdit_->clear();
-        applyStyle(topEdit_, topNumber_);
-        applyStyle(bottomEdit_, bottomNumber_);
+        setRow(TextDiffLine());
     }
 
     void setEditingEnabled(bool enabled) {
         editingEnabled_ = enabled;
-        if (!enabled) {
-            topEdit_->setReadOnly(true);
-            bottomEdit_->setReadOnly(true);
-        }
+        topText_->setEditingEnabled(enabled);
+        bottomText_->setEditingEnabled(enabled);
     }
+    bool editingEnabled() const { return editingEnabled_; }
+    void setSessionId(const QString& id) { sessionId_ = id; }
 
-    // Fired once the user finishes editing (Enter, or clicking away). The
-    // text passed back is exactly the line's content - no line-number prefix
-    // is ever mixed into it, since the number was never part of the edited
-    // widget to begin with.
+    // Fired once the user finishes editing (Enter, or clicking away). The text is exactly the line's
+    // content; the line number is never part of it.
     std::function<void(QString)> onLeftEdited;
     std::function<void(QString)> onRightEdited;
-
-protected:
-    bool eventFilter(QObject* watched, QEvent* event) override {
-        auto* edit = qobject_cast<QLineEdit*>(watched);
-        if (!edit) return QFrame::eventFilter(watched, event);
-        if (editingEnabled_ && event->type() == QEvent::MouseButtonDblClick && edit->isReadOnly() &&
-            !edit->text().isEmpty()) {
-            edit->setReadOnly(false);
-            edit->setStyleSheet(edit->styleSheet() + "border:1px solid #6f9fdb;");
-            edit->setFocus();
-            edit->selectAll();
-            return true;
-        }
-        if (event->type() == QEvent::FocusOut && !edit->isReadOnly()) {
-            commitEdit(edit);
-        }
-        return QFrame::eventFilter(watched, event);
-    }
+    // Fired by clicking the arrow of a changed row.
+    std::function<void()> onCopyLeftToRight;
+    std::function<void()> onCopyRightToLeft;
 
 private:
-    void applyStyle(QLineEdit* edit, QLabel* numberLabel) {
-        edit->setStyleSheet(
-            QString("background:%1; color:#f8f8f2; border:1px solid transparent;").arg(background_));
-        numberLabel->setStyleSheet(
-            QString("background:%1; border:1px solid transparent; border-right:1px solid #3a3a3a;")
-                .arg(background_ == "transparent" ? "#1b1b1b" : background_));
-    }
-
-    void commitEdit(QLineEdit* edit) {
-        if (!editingEnabled_ || edit->isReadOnly()) return;
-        edit->setReadOnly(true);
-        applyStyle(topEdit_ == edit ? topEdit_ : bottomEdit_, topEdit_ == edit ? topNumber_ : bottomNumber_);
-        if (edit == topEdit_ && onLeftEdited) {
-            onLeftEdited(edit->text());
-        } else if (edit == bottomEdit_ && onRightEdited) {
-            onRightEdited(edit->text());
-        }
-    }
-
+    PreviewArrow* topArrow_ = nullptr;
+    PreviewArrow* bottomArrow_ = nullptr;
     QLabel* topNumber_ = nullptr;
     QLabel* bottomNumber_ = nullptr;
-    QLineEdit* topEdit_ = nullptr;
-    QLineEdit* bottomEdit_ = nullptr;
+    PreviewText* topText_ = nullptr;
+    PreviewText* bottomText_ = nullptr;
     TextDiffLine row_;
-    QString background_ = "transparent";
+    QString sessionId_;
     bool editingEnabled_ = true;
 };
 

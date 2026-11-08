@@ -107,6 +107,8 @@ public:
     int cachedLines() const { return lineCache_.count(); }
     int cachedSpanLines() const { return spanCache_.count(); }
     int gutterWidth() const { return gutterWidth_; }
+    // Pixels at the right edge of the viewport taken by gutters (line numbers / copy arrows).
+    int rightInset() const { return rightGutterWidth(); }
     GutterSide numberGutterSide() const { return numberGutterSide_; }
     GutterSide arrowGutterSide() const { return arrowGutterSide_; }
     Side side() const { return side_; }

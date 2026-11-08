@@ -55,7 +55,9 @@
 #include <functional>
 
 #include "common/diff_algorithms.h"
+#include "common/compare_status.h"
 #include "common/diff_line_preview.h"
+#include "common/diff_navigator.h"
 #include "common/find_replace_bar.h"
 #include "common/line_number_editor.h"
 #include "common/minimap.h"
@@ -594,12 +596,7 @@ private:
 
     void applyEditabilityIndicatorStyle() {
         if (!statusIndicator_) return;
-        const QColor color = editable_ ? QColor(0x3d, 0x8b, 0xe8) : QColor(0xc8, 0x4c, 0x4c);
-        const QString background = editabilityFlashOn_ ? color.name() : QStringLiteral("transparent");
-        statusIndicator_->setStyleSheet(
-            QString("QLabel { color: #ffffff; background: %1; border: 1px solid %2; "
-                    "border-radius: 3px; padding: 1px 5px; font-weight: bold; }")
-                .arg(background, color.name()));
+        statusIndicator_->setStyleSheet(compare_status::badgeStyle(editable_, editabilityFlashOn_));
     }
 
     void setEditabilityIndicator(bool editable, bool flash) {
@@ -611,7 +608,7 @@ private:
         const int generation = ++editabilityTransitionGeneration_;
         if (editabilityFlashTimer_) editabilityFlashTimer_->stop();
         editabilityFlashOn_ = flash && changed;
-        statusIndicator_->setText(editable ? "EDITABLE" : "READ ONLY");
+        statusIndicator_->setText(compare_status::badgeText(editable));
         applyEditabilityIndicatorStyle();
         if (!editabilityFlashOn_ || !editabilityFlashTimer_) return;
         editabilityFlashTimer_->start(250);
@@ -810,8 +807,8 @@ private:
         updateMinimapViewport();
         refreshSideHeader(true);
         refreshSideHeader(false);
-        status_->setText(QString("%1 difference section(s)   |   %2 line(s)   |   %3 changed row(s)")
-                             .arg(sectionCount).arg(rows_.size()).arg(differenceCount));
+        status_->setText(compare_status::summaryText(sectionCount, rows_.size(), differenceCount));
+        if (diffNavigator_) diffNavigator_->setEnabled(sectionCount > 0);
     }
 
     QWidget* buildSideHeader(bool left) {
@@ -1071,6 +1068,7 @@ private:
             const QFont editorFont = TextFont::instance().font();
             leftEditor_->applyEditorFont(editorFont);
             rightEditor_->applyEditorFont(editorFont);
+            if (preview_) preview_->setPreviewFont(editorFont);
             synchronizeJavaDiffRowHeights();
             if (!rows_.isEmpty()) {
                 computeDiffSelections(rows_);
@@ -1118,7 +1116,16 @@ private:
         root->addWidget(findBar_);
 
         preview_ = new DiffLinePreview(this);
+        preview_->setSessionId(instrumentationSessionId_);
+        preview_->setPreviewFont(TextFont::instance().font());  // same font and size as the editors
         root->addWidget(preview_);
+
+        // Sidebar on the right edge of the right editor with the previous / next section buttons.
+        diffNavigator_ = new DiffNavigator(rightPane);
+        rightLayout->addWidget(diffNavigator_);
+        diffNavigator_->onPrevious = [this]() { jumpToSection(-1); };
+        diffNavigator_->onNext = [this]() { jumpToSection(1); };
+        diffNavigator_->setEnabled(false);
 
         ruleBar_ = new QFrame(this);
         ruleBar_->setObjectName("compareRuleBar");
@@ -1210,7 +1217,11 @@ private:
             currentRow_ = cursor.blockNumber();
             miniMap_->setCurrentRow(currentRow_);
             if (currentRow_ >= 0 && currentRow_ < rows_.size()) {
-                preview_->setRow(rows_[currentRow_]);
+                preview_->setRow(rows_[currentRow_],
+                                 currentRow_ < leftInline_.size() ? leftInline_[currentRow_]
+                                                                  : QVector<CharSegment>(),
+                                 currentRow_ < rightInline_.size() ? rightInline_[currentRow_]
+                                                                   : QVector<CharSegment>());
             }
             updateExtraSelections();
         };
@@ -1409,6 +1420,16 @@ private:
                 [this](const QPoint& pos) { showEditorContextMenu(rightEditor_, pos, false); });
         connect(saveAction_, &QAction::triggered, this, [this]() { saveFocusedSide(); });
 
+        preview_->onCopyLeftToRight = [this]() {
+            if (currentRow_ < 0 || currentRow_ >= rows_.size()) return;
+            const QString text = rows_[currentRow_].left;  // copy: the edit rebuilds rows_
+            applyPreviewEdit(false, text);
+        };
+        preview_->onCopyRightToLeft = [this]() {
+            if (currentRow_ < 0 || currentRow_ >= rows_.size()) return;
+            const QString text = rows_[currentRow_].right;
+            applyPreviewEdit(true, text);
+        };
         preview_->onLeftEdited = [this](const QString& text) { applyPreviewEdit(true, text); };
         preview_->onRightEdited = [this](const QString& text) { applyPreviewEdit(false, text); };
     }
@@ -2088,10 +2109,8 @@ private:
         updateMinimapViewport();
         refreshSideHeader(true);
         refreshSideHeader(false);
-        status_->setText(QString("%1 difference section(s)   |   %2 line(s)   |   %3 changed row(s)")
-                             .arg(sectionCount)
-                             .arg(rows_.size())
-                             .arg(differenceCount));
+        status_->setText(compare_status::summaryText(sectionCount, rows_.size(), differenceCount));
+        if (diffNavigator_) diffNavigator_->setEnabled(sectionCount > 0);
     }
 
     void appendDiffSelections(const QVector<TextDiffLine>& rows, int rowOffset) {
@@ -2534,6 +2553,7 @@ private:
     LineNumberEditor* rightEditor_ = nullptr;
     DifferenceOverview* miniMap_ = nullptr;
     DiffLinePreview* preview_ = nullptr;
+    DiffNavigator* diffNavigator_ = nullptr;
     QLabel* status_ = nullptr;
     QLabel* statusIndicator_ = nullptr;
     QTimer* editabilityFlashTimer_ = nullptr;

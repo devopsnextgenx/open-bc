@@ -16,6 +16,7 @@
 #include <QToolBar>
 #include <QVBoxLayout>
 
+#include "common/compare_status.h"
 #include "options/appearance_state.h"
 #include "options/text_font.h"
 #include "style/qt_style.h"
@@ -181,8 +182,20 @@ void VirtualTextCompareViewer::buildUi() {
     leftLayout->addWidget(overview_);
     leftLayout->addWidget(left_, 1);
     editors->addWidget(leftPane);
-    editors->addWidget(right_);
+    auto* rightPane = new QWidget(editors);
+    auto* rightLayout = new QHBoxLayout(rightPane);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
+    rightLayout->setSpacing(0);
+    rightLayout->addWidget(right_, 1);
+    editors->addWidget(rightPane);
     root->addWidget(editors, 1);
+
+    // Sidebar on the right edge of the right editor with the previous / next section buttons.
+    diffNavigator_ = new DiffNavigator(rightPane);
+    rightLayout->addWidget(diffNavigator_);
+    diffNavigator_->onPrevious = [this] { if (auto* e = activeEditor()) e->goToPreviousDifference(); };
+    diffNavigator_->onNext = [this] { if (auto* e = activeEditor()) e->goToNextDifference(); };
+    diffNavigator_->setEnabled(false);
 
     findBar_ = new QWidget;
     auto* fl = new QHBoxLayout(findBar_);
@@ -204,6 +217,13 @@ void VirtualTextCompareViewer::buildUi() {
     QObject::connect(close, &QPushButton::clicked, this, [this] { showFindBar(false); });
     findBar_->hide();
     root->addWidget(findBar_);
+
+    // Line-by-line compare strip: same widget, font and arrows as the Existing editor's.
+    preview_ = new DiffLinePreview(this);
+    preview_->setEditingEnabled(false);  // display only here; edits go through the editors
+    preview_->onCopyLeftToRight = [this] { copyBlockAt(left_->currentRow(), Side::Left); };
+    preview_->onCopyRightToLeft = [this] { copyBlockAt(left_->currentRow(), Side::Right); };
+    root->addWidget(preview_);
 
     rulesBar_ = new QWidget;
     rulesBar_->setObjectName(QStringLiteral("rulesBar"));
@@ -240,10 +260,15 @@ void VirtualTextCompareViewer::buildUi() {
     lockButton_->setIconSize(QSize(18, 18));
     lockButton_->setFocusPolicy(Qt::NoFocus);
     QObject::connect(lockButton_, &QToolButton::clicked, this, [this] { setWriteMode(!writeEnabled_); });
+    editBadge_ = new QLabel;
+    editBadge_->setObjectName(QStringLiteral("textEditabilityStatus"));
+    editBadge_->setText(compare_status::badgeText(false));
+    editBadge_->setStyleSheet(compare_status::badgeStyle(false, false));
     auto* statusRow = new QHBoxLayout;
     statusRow->setContentsMargins(0, 0, 4, 0);
-    statusRow->setSpacing(2);
+    statusRow->setSpacing(8);
     statusRow->addWidget(status_, 1);
+    statusRow->addWidget(editBadge_, 0);
     statusRow->addWidget(lockButton_, 0);
     root->addLayout(statusRow);
 
@@ -377,6 +402,7 @@ void VirtualTextCompareViewer::wireEditors() {
         self->onCurrentRowChanged = [this, peer](quint64 row) {
             peer->setCurrentRowQuietly(row);
             overview_->setVirtualCurrentRow(row);
+            updatePreview(row);
         };
         self->onFocused = [this, self]() {
             lastFocused_ = self;
@@ -406,6 +432,7 @@ void VirtualTextCompareViewer::applyFont() {
     const QFont f = TextFont::instance().font();
     left_->setEditorFont(f);
     right_->setEditorFont(f);
+    if (preview_) preview_->setPreviewFont(f);  // the strip uses exactly the editors' font and size
 }
 
 void VirtualTextCompareViewer::updateOverview() {
@@ -551,21 +578,67 @@ void VirtualTextCompareViewer::onModelReady(std::shared_ptr<TextModel> model) {
 }
 
 void VirtualTextCompareViewer::updateStatus() {
-    if (!model_) return;
+    if (editBadge_) {
+        editBadge_->setText(compare_status::badgeText(writeEnabled_));
+        editBadge_->setStyleSheet(compare_status::badgeStyle(writeEnabled_, false));
+    }
+    if (!model_) {
+        if (preview_) preview_->clear();
+        return;
+    }
     const OpenBcTmStats s = model_->stats();
     static const char* const kEnc[] = {"UTF-8", "UTF-16 LE", "UTF-16 BE", "?"};
     auto enc = [this](Side side) {
         const int code = model_->encodingCode(side);
         return QString::fromLatin1(kEnc[qMin(code & 0x7f, 3)]) + ((code & 0x80) ? tr(" (binary?)") : QString());
     };
-    QString text = tr("%1 rows · %2 difference blocks · %3 / %4 · Virtual editor (%5)")
-                       .arg(s.rows).arg(s.blocks).arg(enc(Side::Left), enc(Side::Right),
-                                                      writeEnabled_ ? tr("editing") : tr("read-only"));
-    if (anyDirty()) text += tr(" · unsaved changes");
-    if (!rulesText_.isEmpty()) text += tr(" · rules active");
-    if (s.blocks == 0 && s.rows > 0) text = tr("Files are identical · ") + text;
-    if (s.degraded) text += tr(" · coarse alignment used for a very large unmatched region");
+    // Same wording as the Existing editor: "N difference section(s) | M line(s) | K changed row(s)".
+    const quint64 changedRows = s.insertedRows + s.deletedRows + s.replacedRows;
+    QString text = compare_status::summaryText(s.blocks, s.rows, changedRows);
+    if (anyDirty()) text += tr("   |   unsaved changes");
+    if (!rulesText_.isEmpty()) text += tr("   |   rules active");
+    if (s.blocks == 0 && s.rows > 0) text = tr("Files are identical   |   ") + text;
+    if (s.degraded) text += tr("   |   coarse alignment used for a very large unmatched region");
     status_->setText(text);
+    status_->setToolTip(tr("%1 / %2 · Virtual editor (%3)")
+                            .arg(enc(Side::Left), enc(Side::Right), writeEnabled_ ? tr("editing") : tr("read-only")));
+    if (diffNavigator_) diffNavigator_->setEnabled(s.blocks > 0);
+    updatePreview(left_->currentRow());
+}
+
+// Fills the line-by-line strip from the model's row (the lines are read straight from the engine).
+void VirtualTextCompareViewer::updatePreview(quint64 row) {
+    if (!preview_) return;
+    if (!model_ || row >= model_->rowCount()) {
+        preview_->clear();
+        return;
+    }
+    const ModelRow m = model_->row(row);
+    const auto toSegments = [](const QVector<InlineRange>& ranges) {
+        QVector<CharSegment> out;
+        for (const InlineRange& r : ranges)
+            out.push_back({r.start, r.length, r.whitespaceOnly ? CharSegmentKind::WhitespaceMismatch
+                                                               : CharSegmentKind::Mismatch});
+        return out;
+    };
+    TextDiffLine line;
+    line.changed = m.changed();
+    QVector<InlineRange> leftRanges, rightRanges;
+    if (m.left >= 0) {
+        line.leftNumber = static_cast<int>(m.left + 1);
+        line.left = model_->window(Side::Left, static_cast<quint64>(m.left), 0, VirtualTextEditor::kMaxRenderChars).text;
+        if (m.kind == RowKind::Replace) leftRanges = model_->inlineRanges(row, Side::Left, line.left);
+    }
+    if (m.right >= 0) {
+        line.rightNumber = static_cast<int>(m.right + 1);
+        line.right = model_->window(Side::Right, static_cast<quint64>(m.right), 0, VirtualTextEditor::kMaxRenderChars).text;
+        if (m.kind == RowKind::Replace) rightRanges = model_->inlineRanges(row, Side::Right, line.right);
+    }
+    bool onlyWhitespace = m.kind == RowKind::Replace && !(leftRanges.isEmpty() && rightRanges.isEmpty());
+    for (const auto* ranges : {&leftRanges, &rightRanges})
+        for (const InlineRange& r : *ranges) onlyWhitespace = onlyWhitespace && r.whitespaceOnly;
+    line.whitespaceOnly = onlyWhitespace;
+    preview_->setRow(line, toSegments(leftRanges), toSegments(rightRanges));
 }
 
 // ---- write mode and the lock icon -----------------------------------------------------------------
