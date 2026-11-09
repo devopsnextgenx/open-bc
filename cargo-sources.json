@@ -2901,6 +2901,19 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/memmap2/memmap2-0.9.12.crate",
+        "sha256": "6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157",
+        "dest": "cargo/vendor/memmap2-0.9.12"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157\", \"files\": {}}",
+        "dest": "cargo/vendor/memmap2-0.9.12",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/metal/metal-0.29.0.crate",
         "sha256": "7ecfd3296f8c56b7c1f6fbac3c71cefa9d78ce009850c45000015f206dc7fa21",
         "dest": "cargo/vendor/metal-0.29.0"
@@ -6497,6 +6510,19 @@
         "type": "inline",
         "contents": "{\"package\": \"e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7\", \"files\": {}}",
         "dest": "cargo/vendor/xml-rs-0.8.29",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/xxhash-rust/xxhash-rust-0.8.19.crate",
+        "sha256": "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7",
+        "dest": "cargo/vendor/xxhash-rust-0.8.19"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7\", \"files\": {}}",
+        "dest": "cargo/vendor/xxhash-rust-0.8.19",
         "dest-filename": ".cargo-checksum.json"
     },
     {
