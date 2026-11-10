@@ -33,6 +33,7 @@
 #include <QList>
 #include <QProgressBar>
 #include <QTimer>
+#include <QUuid>
 #include <QToolBar>
 #include <QToolButton>
 #include <QWidget>
@@ -58,6 +59,8 @@ public:
     QString title() const;
     QString leftText() const { return leftPath_; }
     QString rightText() const { return rightPath_; }
+    // Id of this tab's instrumentation report (Instrumentation button in the status bar).
+    QString instrumentationSessionId() const { return instrumentationSessionId_; }
     // Drop target entry point: an empty argument leaves that side untouched.
     void applyDroppedPaths(const QString& left, const QString& right);
 
@@ -125,6 +128,7 @@ private:
     void buildActions();
     void wireEditors();
     void startLoad(bool keepScroll);
+    void autoShowRulesForLogs();
     void onModelReady(std::shared_ptr<TextModel> model);
     void applyFont();
     void updateStatus();
@@ -144,6 +148,7 @@ private:
     void findNext(bool forward);
     VirtualTextEditor* activeEditor() const;
 
+    QString instrumentationSessionId_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QString leftPath_, rightPath_;
     std::shared_ptr<TextModel> model_;
     std::unique_ptr<TextModelLoader> loader_;
@@ -187,6 +192,7 @@ private:
     QLineEdit* rulesEdit_ = nullptr;
     QLabel* rulesStatus_ = nullptr;
     QString rulesText_;
+    QString rulesAutoKey_;   // file pair the Rules bar was last opened automatically for (log files)
 
     QAction *homeAction_ = nullptr, *sessionsAction_ = nullptr, *minimapAction_ = nullptr,
             *copyDiffAction_ = nullptr, *reloadAction_ = nullptr, *swapAction_ = nullptr,

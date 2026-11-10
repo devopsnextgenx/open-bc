@@ -130,6 +130,15 @@ pub(super) fn route(token: &str) -> Route {
     lookup(&user, token).map_or(Route::Plain, |i| LANGUAGES[i].grammar.into())
 }
 
+/// Display name of the language `token` (file name, extension or language name) resolves to, user
+/// mappings included; "Plain Text" when nothing matches. The UI uses it to ask "is this a log file?"
+/// without keeping its own extension lists.
+#[must_use]
+pub fn language_name(token: &str) -> &'static str {
+    let user = user_map();
+    lookup(&user, token).map_or(PLAIN_TEXT, |i| LANGUAGES[i].name)
+}
+
 /// The built-in language a name or alias refers to.
 fn language_by_name(name: &str) -> Option<usize> {
     index().by_name.get(name.trim().to_ascii_lowercase().as_str()).copied()
@@ -283,6 +292,19 @@ mod tests {
         assert_eq!(resolve(&[], "notes.txt"), Route::Plain);
         assert_eq!(resolve(&[], "unknown"), Route::Plain);
         assert_eq!(resolve(&[], ""), Route::Plain);
+    }
+
+    #[test]
+    fn log_extensions_resolve_to_the_log_language() {
+        for name in [
+            "app.log", "a.lg", "kern.syslog", "build.out", "build.err", "t.etl", "t.trc", "db.ldf", "db.ldg", "syslog",
+        ] {
+            assert_eq!(resolve(&[], name), Route::Syntect("Log"), "{name}");
+            assert_eq!(language_name(name), "Log", "{name}");
+        }
+        assert_eq!(language_name("notes.txt"), PLAIN_TEXT);
+        assert_eq!(language_name("main.rs"), "Rust");
+        assert_eq!(language_name(""), PLAIN_TEXT);
     }
 
     #[test]

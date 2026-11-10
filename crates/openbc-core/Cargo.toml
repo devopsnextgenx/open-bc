@@ -14,7 +14,7 @@ similar = "2.4"
 strsim = "0.11"
 tree-painter = "0.0.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-syntect = "5.3"
+syntect = { version = "5.3", features = ["yaml-load"] }
 thiserror.workspace = true
 
 [features]

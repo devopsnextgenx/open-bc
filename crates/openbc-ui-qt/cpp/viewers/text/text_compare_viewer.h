@@ -104,6 +104,7 @@ public:
         changes_->track(0, leftPath_);
         changes_->track(1, rightPath_);
         connectSignals();
+        autoShowRulesForLogs();
         if (largeFileMode_) {
             updateClassFileUi(/*resetDecompileMode=*/false);
             leftEditor_->setLargeContentMode(true);
@@ -559,6 +560,24 @@ private:
         };
         leftHighlighter_->setLanguage(languageName(leftPath_));
         rightHighlighter_->setLanguage(languageName(rightPath_));
+        autoShowRulesForLogs();
+    }
+
+    // Log files: open the Rules bar (once per file pair) so the user can type samples to ignore
+    // (timestamps, correlation ids, ...). The box shows suggestions as a placeholder until typing starts.
+    // No rebuild: there is no rule text yet. Closing the bar is respected until the files change.
+    void autoShowRulesForLogs() {
+        if (!rulesAction_ || !ruleBar_ || !ruleEdit_) return;   // UI not built yet
+        if (!isLogFile(leftPath_) && !isLogFile(rightPath_)) return;
+        const QString key = qMin(leftPath_, rightPath_) + QLatin1Char('\n') + qMax(leftPath_, rightPath_);
+        if (key == rulesAutoKey_) return;
+        rulesAutoKey_ = key;
+        ruleEdit_->setPlaceholderText(logRulesPlaceholder());
+        if (!rulesAction_->isChecked()) {
+            const QSignalBlocker blocker(rulesAction_);
+            rulesAction_->setChecked(true);
+            ruleBar_->setVisible(true);
+        }
     }
 
     void updateClassFileUi(bool resetDecompileMode) {
@@ -785,8 +804,7 @@ private:
         rightEditor_->document()->setModified(false);
         currentRow_ = -1;
         preview_->clear();
-        restoreCursor(leftEditor_, leftSnap);
-        restoreCursor(rightEditor_, rightSnap);
+        restoreCursors(leftSnap, rightSnap);
         leftEditor_->setLineNumbers(leftNumbers);
         rightEditor_->setLineNumbers(rightNumbers);
         registerFillerRows();
@@ -1221,7 +1239,8 @@ private:
                                  currentRow_ < leftInline_.size() ? leftInline_[currentRow_]
                                                                   : QVector<CharSegment>(),
                                  currentRow_ < rightInline_.size() ? rightInline_[currentRow_]
-                                                                   : QVector<CharSegment>());
+                                                                   : QVector<CharSegment>(),
+                                 currentRow_);
             }
             updateExtraSelections();
         };
@@ -1420,18 +1439,22 @@ private:
                 [this](const QPoint& pos) { showEditorContextMenu(rightEditor_, pos, false); });
         connect(saveAction_, &QAction::triggered, this, [this]() { saveFocusedSide(); });
 
+        // Everything the strip does targets the row it SHOWS (contextRow), not whichever row the
+        // editors' carets happen to be on by the time the edit commits.
         preview_->onCopyLeftToRight = [this]() {
-            if (currentRow_ < 0 || currentRow_ >= rows_.size()) return;
-            const QString text = rows_[currentRow_].left;  // copy: the edit rebuilds rows_
-            applyPreviewEdit(false, text);
+            const int row = preview_->contextRow();
+            if (row < 0 || row >= rows_.size()) return;
+            const QString text = rows_[row].left;  // copy: the edit rebuilds rows_
+            applyPreviewEdit(false, text, row);
         };
         preview_->onCopyRightToLeft = [this]() {
-            if (currentRow_ < 0 || currentRow_ >= rows_.size()) return;
-            const QString text = rows_[currentRow_].right;
-            applyPreviewEdit(true, text);
+            const int row = preview_->contextRow();
+            if (row < 0 || row >= rows_.size()) return;
+            const QString text = rows_[row].right;
+            applyPreviewEdit(true, text, row);
         };
-        preview_->onLeftEdited = [this](const QString& text) { applyPreviewEdit(true, text); };
-        preview_->onRightEdited = [this](const QString& text) { applyPreviewEdit(false, text); };
+        preview_->onLeftEdited = [this](const QString& text) { applyPreviewEdit(true, text, preview_->contextRow()); };
+        preview_->onRightEdited = [this](const QString& text) { applyPreviewEdit(false, text, preview_->contextRow()); };
     }
 
     static QTextCursor cursorAtRow(QPlainTextEdit* editor, int row) {
@@ -2088,8 +2111,7 @@ private:
         rightEditor_->document()->setModified(false);
         currentRow_ = -1;
         preview_->clear();
-        restoreCursor(leftEditor_, leftSnap);
-        restoreCursor(rightEditor_, rightSnap);
+        restoreCursors(leftSnap, rightSnap);
 
         leftEditor_->setLineNumbers(leftNumbers);
         rightEditor_->setLineNumbers(rightNumbers);
@@ -2496,15 +2518,17 @@ private:
         if (done) done(true, QString());
     }
 
-    void applyPreviewEdit(bool left, const QString& text) {
+    // `row` is the row the preview was showing (see DiffLinePreview::contextRow); -1 = the current row.
+    void applyPreviewEdit(bool left, const QString& text, int row = -1) {
         if (classFileCompare_ || largeFileMode_) return;
-        if (currentRow_ < 0 || currentRow_ >= rows_.size()) return;
+        if (row < 0) row = currentRow_;
+        if (row < 0 || row >= rows_.size()) return;
         LineNumberEditor* editor = left ? leftEditor_ : rightEditor_;
-        const int number = left ? rows_[currentRow_].leftNumber : rows_[currentRow_].rightNumber;
+        const int number = left ? rows_[row].leftNumber : rows_[row].rightNumber;
         if (number == 0) return;
         // Flush any debounced typing so the pre-edit state is its own entry.
         flushPendingEdits();
-        QTextCursor cursor = cursorAtRow(editor, currentRow_);
+        QTextCursor cursor = cursorAtRow(editor, row);
         cursor.select(QTextCursor::LineUnderCursor);
         cursor.insertText(text);
         editor->setFocus();
@@ -2512,6 +2536,27 @@ private:
         if (left) leftUnsaved_ = true; else rightUnsaved_ = true;
         pushSideHistory(left);
         refreshSideHeader(left);
+        // Put BOTH carets on the edited row. The deferred rebuild restores each editor's caret, and the
+        // later of the two decides which row the strip shows; with the carets on different rows the strip
+        // used to jump to the other panel's line.
+        const bool wasApplying = applyingProgrammaticUpdate_;
+        applyingProgrammaticUpdate_ = true;   // caret moves are not edits
+        leftEditor_->setTextCursor(cursorAtRow(leftEditor_, row));
+        rightEditor_->setTextCursor(cursorAtRow(rightEditor_, row));
+        applyingProgrammaticUpdate_ = wasApplying;
+        lastFocusedEditor_ = editor;
+    }
+
+    // Restores both carets after the documents were replaced. Each restore fires cursorPositionChanged,
+    // which re-points the line preview, so the editor the user was working in goes LAST and its row wins.
+    void restoreCursors(const CursorSnapshot& leftSnap, const CursorSnapshot& rightSnap) {
+        if (focusedEditor() == rightEditor_) {
+            restoreCursor(leftEditor_, leftSnap);
+            restoreCursor(rightEditor_, rightSnap);
+        } else {
+            restoreCursor(rightEditor_, rightSnap);
+            restoreCursor(leftEditor_, leftSnap);
+        }
     }
 
     QString instrumentationSessionId_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -2646,6 +2691,7 @@ private:
     FindReplaceBar* findBar_ = nullptr;
     QFrame* ruleBar_ = nullptr;
     QLineEdit* ruleEdit_ = nullptr;
+    QString rulesAutoKey_;   // file pair the Rules bar was last opened automatically for (log files)
     QToolButton* ruleClose_ = nullptr;
     QTimer* ruleEditTimer_ = nullptr;
 

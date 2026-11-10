@@ -4,7 +4,10 @@
 // current row's left and right line one above the other, in the SAME font and size as the editors,
 // with the editors' copy arrows, line numbers, character-level differences (mismatched characters
 // highlighted, mismatched whitespace shown as visible dots/arrows) like Beyond Compare's
-// "line compare" pane. A line can be edited in place by double-clicking its text when editing is enabled.
+// "line compare" pane. A line can be edited in place by double-clicking its text when editing is enabled;
+// editable lines carry a slightly lowered (sunken) bevel so they read as editable. While a line is being
+// edited the strip never switches to another row: the line shown when the edit began stays put until the
+// edit is committed or cancelled.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -64,7 +67,7 @@ public:
         // QLineEdit already insets its text by 2px; the app-wide style sheet also gives line edits
         // padding, borders and a min-height, which pushed the text right and down. Pin all of it so the
         // editing text sits exactly where the painted text was.
-        edit_->setTextMargins(kMargin - 2, 0, kMargin, 0);
+        edit_->setTextMargins(kMargin - 2 - kBevel, 0, kMargin, 0);   // the edit is inset by the bevel
         edit_->setContentsMargins(0, 0, 0, 0);
         edit_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         applyEditStyle();
@@ -73,20 +76,26 @@ public:
         connect(edit_, &QLineEdit::returnPressed, this, [this]() { finishEdit(true); });
     }
 
+    // `hasLine`: this side has a real line (it may be empty); a filler side is neither editable nor bevelled.
     void setContent(const QString& text, const QVector<CharSegment>& segments, const QColor& background,
-                    bool showWhitespace) {
+                    bool showWhitespace, bool hasLine = true) {
+        hasLine_ = hasLine;
         text_ = text;
         segments_ = segments;
         background_ = background;
         showWhitespace_ = showWhitespace;
         applyEditStyle();
         if (edit_->isVisible()) finishEdit(false);
+        updateAffordance();
         update();
     }
     void setEditingEnabled(bool enabled) {
         editingEnabled_ = enabled;
         if (!enabled && edit_->isVisible()) finishEdit(false);
+        updateAffordance();
+        update();
     }
+    bool isEditing() const { return edit_->isVisible(); }
     void setTextFont(const QFont& f) {
         setFont(f);
         edit_->setFont(f);
@@ -94,14 +103,18 @@ public:
         update();
     }
     std::function<void(const QString&)> onCommit;
+    std::function<void()> onEditFinished;   // after every edit ends (committed or cancelled)
 
 protected:
-    void resizeEvent(QResizeEvent*) override { edit_->setGeometry(rect()); }
+    void resizeEvent(QResizeEvent*) override { edit_->setGeometry(editRect()); }
 
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
         p.fillRect(rect(), background_.alpha() ? background_ : palette().color(QPalette::Base));
-        if (text_.isEmpty()) return;
+        if (text_.isEmpty()) {
+            paintBevel(p);
+            return;
+        }
         p.setFont(font());
         const QFontMetrics fm(font());
         const int baseline = (height() - fm.height()) / 2 + fm.ascent();
@@ -143,11 +156,12 @@ protected:
             x += w;
             i = j;
         }
+        paintBevel(p);
     }
 
     void mouseDoubleClickEvent(QMouseEvent* e) override {
-        if (!editingEnabled_ || text_.isEmpty() || e->button() != Qt::LeftButton) return;
-        edit_->setGeometry(0, 0, width(), height());
+        if (!editable() || e->button() != Qt::LeftButton) return;
+        edit_->setGeometry(editRect());
         edit_->setText(text_);
         edit_->setCursorPosition(edit_->text().size());
         edit_->show();
@@ -169,6 +183,34 @@ protected:
 
 private:
     static constexpr int kMargin = 8;
+    static constexpr int kBevel = 2;   // width of the lowered bevel; the edit control sits inside it
+
+    bool editable() const { return editingEnabled_ && hasLine_; }
+    QRect editRect() const { return rect().adjusted(kBevel, kBevel, -kBevel, -kBevel); }
+
+    void updateAffordance() {
+        setCursor(editable() ? Qt::IBeamCursor : Qt::ArrowCursor);
+        setToolTip(editable() ? QStringLiteral("Double-click to edit this line") : QString());
+    }
+
+    // Slightly lowered (sunken) frame: dark on the top/left edges, light on the bottom/right ones.
+    void paintBevel(QPainter& p) const {
+        if (!editable()) return;
+        const QColor shadow = palette().color(QPalette::Dark);
+        QColor softShadow = shadow;
+        softShadow.setAlpha(90);
+        const QColor light = palette().color(QPalette::Light);
+        const int w = width(), h = height();
+        p.setPen(shadow);
+        p.drawLine(0, 0, w - 1, 0);
+        p.drawLine(0, 0, 0, h - 1);
+        p.setPen(softShadow);
+        p.drawLine(1, 1, w - 2, 1);
+        p.drawLine(1, 1, 1, h - 2);
+        p.setPen(light);
+        p.drawLine(0, h - 1, w - 1, h - 1);
+        p.drawLine(w - 1, 0, w - 1, h - 1);
+    }
 
     void applyEditStyle() {
         const QColor bg = background_.alpha() ? background_ : palette().color(QPalette::Base);
@@ -179,10 +221,13 @@ private:
     }
 
     void finishEdit(bool commit) {
-        if (!edit_->isVisible()) return;
+        if (!edit_->isVisible() || finishing_) return;
+        finishing_ = true;   // hiding the edit sends FocusOut, which must not finish it a second time
         const QString value = edit_->text();
         edit_->hide();
         if (commit && value != text_ && onCommit) onCommit(value);
+        finishing_ = false;
+        if (onEditFinished) onEditFinished();
     }
 
     QLineEdit* edit_ = nullptr;
@@ -191,6 +236,8 @@ private:
     QColor background_ = Qt::transparent;
     bool showWhitespace_ = false;
     bool editingEnabled_ = true;
+    bool hasLine_ = true;
+    bool finishing_ = false;
 };
 
 class DiffLinePreview : public QFrame {
@@ -221,6 +268,8 @@ public:
         makeRow(false, bottomArrow_, bottomNumber_, bottomText_);
         topText_->onCommit = [this](const QString& t) { if (onLeftEdited) onLeftEdited(t); };
         bottomText_->onCommit = [this](const QString& t) { if (onRightEdited) onRightEdited(t); };
+        topText_->onEditFinished = [this]() { editFinished(); };
+        bottomText_->onEditFinished = [this]() { editFinished(); };
         // The arrows copy this row's line to the other side.
         topArrow_->onClicked = [this]() { if (onCopyLeftToRight && row_.leftNumber) onCopyLeftToRight(); };
         bottomArrow_->onClicked = [this]() { if (onCopyRightToLeft && row_.rightNumber) onCopyRightToLeft(); };
@@ -243,9 +292,21 @@ public:
     }
 
     // `leftSegments` / `rightSegments` are the character-level differences of the two lines; when both
-    // are empty for a changed row they are computed here.
+    // are empty for a changed row they are computed here. `contextRow` identifies the row in the caller's
+    // list (-1 = unknown); it is what contextRow() reports and what an edit applies to.
+    // While a line is being edited the request is parked, never shown: the edit keeps its row.
     void setRow(const TextDiffLine& row, const QVector<CharSegment>& leftSegments = {},
-                const QVector<CharSegment>& rightSegments = {}) {
+                const QVector<CharSegment>& rightSegments = {}, int contextRow = -1) {
+        if (isEditing()) {
+            pendingRow_ = row;
+            pendingLeft_ = leftSegments;
+            pendingRight_ = rightSegments;
+            pendingContext_ = contextRow;
+            hasPending_ = true;
+            return;
+        }
+        hasPending_ = false;
+        contextRow_ = contextRow;
         QVector<CharSegment> l = leftSegments, r = rightSegments;
         if (row.changed && l.isEmpty() && r.isEmpty() && row.leftNumber && row.rightNumber) {
             const InlineDiff d = computeInlineDiff(row.left, row.right, sessionId_);
@@ -264,7 +325,7 @@ public:
             number->setStyleSheet(QStringLiteral("color:%1; padding-right:8px; background:%2;")
                                       .arg(numberText.name(),
                                            row.changed ? background.name() : QStringLiteral("transparent")));
-            text->setContent(lineNumber ? content : QString(), segments, background, row.changed);
+            text->setContent(lineNumber ? content : QString(), segments, background, row.changed, lineNumber != 0);
             arrow->setShown(row.changed && lineNumber != 0);
         };
         show(topArrow_, topNumber_, topText_, row.leftNumber, row.left, l);
@@ -281,6 +342,11 @@ public:
         bottomText_->setEditingEnabled(enabled);
     }
     bool editingEnabled() const { return editingEnabled_; }
+    // True while either line is being edited in place.
+    bool isEditing() const { return topText_->isEditing() || bottomText_->isEditing(); }
+    // The caller's row index of the line pair currently shown (as passed to setRow), -1 if unknown.
+    // Stays fixed while a line is being edited, so commits and copies target the row on screen.
+    int contextRow() const { return contextRow_; }
     void setSessionId(const QString& id) { sessionId_ = id; }
 
     // Fired once the user finishes editing (Enter, or clicking away). The text is exactly the line's
@@ -292,6 +358,15 @@ public:
     std::function<void()> onCopyRightToLeft;
 
 private:
+    // An edit ended. A refresh of the SAME row that arrived meanwhile is shown now; a request for any
+    // other row is dropped, so the strip does not jump to a different line.
+    void editFinished() {
+        if (isEditing() || !hasPending_) return;
+        hasPending_ = false;
+        if (pendingContext_ >= 0 && pendingContext_ == contextRow_)
+            setRow(pendingRow_, pendingLeft_, pendingRight_, pendingContext_);
+    }
+
     PreviewArrow* topArrow_ = nullptr;
     PreviewArrow* bottomArrow_ = nullptr;
     QLabel* topNumber_ = nullptr;
@@ -299,6 +374,11 @@ private:
     PreviewText* topText_ = nullptr;
     PreviewText* bottomText_ = nullptr;
     TextDiffLine row_;
+    int contextRow_ = -1;
+    TextDiffLine pendingRow_;
+    QVector<CharSegment> pendingLeft_, pendingRight_;
+    int pendingContext_ = -1;
+    bool hasPending_ = false;
     QString sessionId_;
     bool editingEnabled_ = true;
 };

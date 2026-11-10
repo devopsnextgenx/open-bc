@@ -22,6 +22,7 @@ struct OpenBcTmOptions {
     std::uint64_t ramRecordLimit;        // 0 = default
     std::uint32_t inlineCacheEntries;    // 0 = default
     std::uint32_t inlineMaxLineBytes;    // 0 = default
+    const char* sessionId;               // UTF-8, NUL-terminated id of the owning tab (instrumentation); may be null
 };
 
 struct OpenBcTmRow {
@@ -139,6 +140,7 @@ void openbc_tm_task_async(const OpenBcTmModel*, std::uint8_t task, std::uint8_t 
 
 OpenBcTmSyntax* openbc_syn_new(const std::uint8_t* language, std::size_t len, std::uint8_t dark,
                                std::uint32_t spanCacheLines);
+std::size_t openbc_syn_language_name(const std::uint8_t* name, std::size_t len, std::uint8_t* buf, std::size_t cap);
 void openbc_syn_destroy(OpenBcTmSyntax*);
 void openbc_syn_invalidate(const OpenBcTmSyntax*, std::uint64_t line);
 std::int64_t openbc_syn_range(const OpenBcTmSyntax*, const OpenBcTmModel*, std::uint8_t side,

@@ -15,6 +15,7 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <QMetaObject>
 #include <QObject>
 #include <QPointer>
@@ -76,6 +77,7 @@ struct ModelOptions {
     bool ignoreCase = false;
     bool ignoreLineEndings = true;
     bool bufferedIo = false;
+    QString sessionId;   // the tab's instrumentation session id; attributes load timings to that tab's report
 };
 
 // What an edit changed in the displayed rows: rows [firstRow, firstRow+oldRows) were replaced by
@@ -95,7 +97,9 @@ public:
     static std::shared_ptr<TextModel> openSync(const QString& left, const QString& right,
                                                const ModelOptions& options = {}, QString* error = nullptr) {
         const QByteArray l = left.toUtf8(), r = right.toUtf8();
-        const OpenBcTmOptions o = toC(options);
+        const QByteArray sid = options.sessionId.toUtf8();   // must outlive the call below
+        OpenBcTmOptions o = toC(options);
+        o.sessionId = sid.isEmpty() ? nullptr : sid.constData();
         OpenBcTmModel* h = openbc_tm_open_sync(l.isEmpty() ? nullptr : l.constData(),
                                                r.isEmpty() ? nullptr : r.constData(), &o);
         if (!h) {
@@ -350,7 +354,9 @@ public:
         ++state_->generation;
         auto* ctx = new Context{state_, cancellation_, state_->generation};
         const QByteArray l = left.toUtf8(), r = right.toUtf8();
-        const OpenBcTmOptions o = TextModel::optionsToC(options);
+        const QByteArray sid = options.sessionId.toUtf8();   // the engine copies it before this call returns
+        OpenBcTmOptions o = TextModel::optionsToC(options);
+        o.sessionId = sid.isEmpty() ? nullptr : sid.constData();
         openbc_tm_open_async(l.isEmpty() ? nullptr : l.constData(), r.isEmpty() ? nullptr : r.constData(), &o,
                              cancellation_->get(), &TextModelLoader::onEvent, ctx);
     }
@@ -555,6 +561,27 @@ private:
 
     OpenBcTmSyntax* h_ = nullptr;
 };
+
+// The highlighting language a file name resolves to (the user's mappings included), e.g. "Log" or
+// "Plain Text". The Rust registry owns every extension list; never duplicate them here.
+inline QString syntaxLanguageName(const QString& fileName) {
+    const QByteArray name = fileName.toUtf8();
+    std::uint8_t buf[64];
+    const std::size_t len = openbc_syn_language_name(reinterpret_cast<const std::uint8_t*>(name.constData()),
+                                                     static_cast<std::size_t>(name.size()), buf, sizeof buf);
+    return QString::fromUtf8(reinterpret_cast<const char*>(buf), static_cast<int>(qMin(len, sizeof buf)));
+}
+
+// True for log files (.log, .syslog, .out, .err, .etl, ... as defined by the "Log" language in registry.rs).
+inline bool isLogFile(const QString& path) {
+    return !path.isEmpty() && syntaxLanguageName(QFileInfo(path).fileName()) == QLatin1String("Log");
+}
+
+// Placeholder of the Rules box for log files: suggestions only, QLineEdit hides it as soon as text is typed.
+inline QString logRulesPlaceholder() {
+    return QCoreApplication::translate(
+        "Rules", "Log file - ignore changing parts, e.g. timestamp, correlation id, container id, pod name, /regex/ (comma separated)");
+}
 
 }  // namespace openbc::app
 

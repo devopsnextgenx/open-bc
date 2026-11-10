@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Style, Theme, ThemeSet};
 use syntect::html::highlighted_html_for_string;
-use syntect::parsing::{SyntaxReference, SyntaxSet};
+use syntect::parsing::{SyntaxDefinition, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
 use super::html::plain_html;
@@ -14,9 +14,26 @@ use super::spans::{merge_adjacent_spans, HighlightSpan};
 pub(super) const DARK_THEME: &str = "base16-ocean.dark";
 pub(super) const LIGHT_THEME: &str = "InspiredGitHub";
 
+/// Grammar for log files; the Sublime default pack has none.
+const LOG_SYNTAX: &str = include_str!("syntaxes/log.sublime-syntax");
+
+/// The Sublime default pack plus OpenBC's own grammars (currently "Log"). Shared by the one-shot
+/// highlighter here and the stateful session in `stateful`.
 pub(super) fn syntax_set() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(SyntaxSet::load_defaults_newlines)
+    SET.get_or_init(|| {
+        let mut builder = SyntaxSet::load_defaults_newlines().into_builder();
+        match SyntaxDefinition::load_from_str(LOG_SYNTAX, true, Some("Log")) {
+            Ok(definition) => builder.add(definition),
+            Err(error) => openbc_observability::log(
+                "openbc-core",
+                "syntax_set",
+                "ERROR",
+                &format!("the Log grammar failed to load: {error}"),
+            ),
+        }
+        builder.build()
+    })
 }
 
 pub(super) fn theme_set() -> &'static ThemeSet {

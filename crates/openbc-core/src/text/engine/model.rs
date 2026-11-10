@@ -8,6 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::Instant;
 
 use super::cache::BoundedCache;
 use super::diff::{DiffConfig, DiffEngine, Side};
@@ -18,6 +19,7 @@ use super::line_index::{IndexConfig, LineIndex};
 use super::line_index::{flags, LineRecord};
 use super::rules::LineRules;
 use super::source::{EditableSource, MapPolicy, MappedTextFile, TextSource};
+use crate::telemetry::{self, Sample};
 use crate::text::diff::compute_inline_diff;
 use crate::text::models::InlineDiff;
 
@@ -220,15 +222,48 @@ impl TextCompareModel {
         cancel: &CancelToken,
         progress: &mut dyn FnMut(Progress),
     ) -> Result<Self, EngineError> {
+        let byte_sizes = (left.len() as usize, right.len() as usize);
         let sources = [Arc::new(EditableSource::new(left)), Arc::new(EditableSource::new(right))];
+        let index_started = Instant::now();
         let left_index = LineIndex::build(sources[0].as_ref(), &config.index, cancel, progress)?;
         let right_index = LineIndex::build(sources[1].as_ref(), &config.index, cancel, progress)?;
+        let line_sizes = (left_index.line_count() as usize, right_index.line_count() as usize);
+        telemetry::record(
+            "text_engine_index",
+            index_started,
+            Sample {
+                sizes: Some(byte_sizes),
+                lines: Some(line_sizes),
+                detail: Some("line index and hashes built".to_owned()),
+                ..Sample::default()
+            },
+        );
+        let diff_started = Instant::now();
         let diff = DiffEngine::with_config(config.diff.clone()).diff(
             Side { source: sources[0].as_ref(), index: &left_index },
             Side { source: sources[1].as_ref(), index: &right_index },
             cancel,
             progress,
         )?;
+        let diff_stats = diff.stats();
+        telemetry::record(
+            "text_engine_diff",
+            diff_started,
+            Sample {
+                sizes: Some(byte_sizes),
+                lines: Some(line_sizes),
+                detail: Some(format!(
+                    "rows={} blocks={} inserted_rows={} deleted_rows={} replaced_rows={} degraded={}",
+                    diff.row_count(),
+                    diff_stats.blocks,
+                    diff_stats.inserted_rows,
+                    diff_stats.deleted_rows,
+                    diff_stats.replaced_rows,
+                    diff.is_degraded()
+                )),
+                ..Sample::default()
+            },
+        );
         let cache = BoundedCache::new(config.inline_cache_entries.max(2));
         Ok(Self {
             state: RwLock::new(State {

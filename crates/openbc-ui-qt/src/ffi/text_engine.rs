@@ -20,9 +20,11 @@ use std::cell::RefCell;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use openbc_core::text::engine::{
-    CancelToken, CompareConfig, EditOutcome, EngineError, FindOptions, MapPolicy, Phase, SideId, TextCompareModel,
+    enter_session, record_failed_operation, record_model_operation, CancelToken, CompareConfig, EditOutcome,
+    EngineError, FindOptions, MapPolicy, Phase, SideId, TextCompareModel,
 };
 use openbc_core::text::{HighlightSession, SessionLimits};
 
@@ -54,6 +56,9 @@ pub struct TmOptions {
     pub inline_cache_entries: u32,
     /// 0 = default.
     pub inline_max_line_bytes: u32,
+    /// NUL-terminated UTF-8 id of the UI tab that owns the model (instrumentation attribution), or
+    /// null. Copied during the call; the pointer need not outlive it.
+    pub session_id: *const c_char,
 }
 
 #[repr(C)]
@@ -144,7 +149,9 @@ pub struct TmSpan {
     pub flags: u8,
 }
 
-pub struct TmModel(Arc<TextCompareModel>);
+/// The engine model and the id of the UI tab it belongs to (empty = none; used to attribute the
+/// instrumentation of later worker-thread operations such as rules, re-diff and save).
+pub struct TmModel(Arc<TextCompareModel>, String);
 pub struct TmCancel(CancelToken);
 pub struct TmSyntax(Mutex<HighlightSession>);
 
@@ -166,6 +173,16 @@ unsafe fn path_opt(p: *const c_char) -> Option<PathBuf> {
     }
     let s = CStr::from_ptr(p).to_string_lossy().into_owned();
     (!s.is_empty()).then(|| PathBuf::from(s))
+}
+
+/// The tab id passed in `opts` (empty when absent).
+fn session_from(opts: *const TmOptions) -> String {
+    match unsafe { opts.as_ref() } {
+        Some(o) if !o.session_id.is_null() => {
+            unsafe { CStr::from_ptr(o.session_id) }.to_string_lossy().into_owned()
+        }
+        _ => String::new(),
+    }
 }
 
 fn config_from(opts: *const TmOptions) -> CompareConfig {
@@ -242,11 +259,14 @@ pub unsafe extern "C" fn openbc_tm_open_async(
 ) {
     let (l, r) = (path_opt(left), path_opt(right));
     let cfg = config_from(opts);
+    let session = session_from(opts);
     let token = cancel.as_ref().map_or_else(CancelToken::new, |c| c.0.clone());
     let user = user as usize;
     std::thread::Builder::new()
         .name("openbc-text-model".into())
         .spawn(move || {
+            let _session_guard = enter_session(&session);
+            let started = Instant::now();
             let say = |kind: i32, text: &str| {
                 let c = CString::new(text.replace('\0', " ")).unwrap_or_default();
                 callback(user as *mut c_void, kind, c.as_ptr(), std::ptr::null_mut());
@@ -262,14 +282,19 @@ pub unsafe extern "C" fn openbc_tm_open_async(
             };
             match TextCompareModel::open(l.as_deref(), r.as_deref(), cfg, &token, &mut report) {
                 Ok(model) => {
-                    let handle = Box::into_raw(Box::new(TmModel(Arc::new(model))));
+                    record_model_operation("text_engine_open", started, &model, "");
+                    let handle = Box::into_raw(Box::new(TmModel(Arc::new(model), session)));
                     callback(user as *mut c_void, EV_RESULT, std::ptr::null(), handle.cast());
                 }
-                Err(e) => say(EV_ERROR, &if matches!(e, openbc_core::text::engine::EngineError::Cancelled) {
-                    "cancelled".to_owned()
-                } else {
-                    e.to_string()
-                }),
+                Err(e) => {
+                    let text = if matches!(e, openbc_core::text::engine::EngineError::Cancelled) {
+                        "cancelled".to_owned()
+                    } else {
+                        e.to_string()
+                    };
+                    record_failed_operation("text_engine_open", started, &text);
+                    say(EV_ERROR, &text)
+                }
             }
         })
         .ok();
@@ -287,6 +312,9 @@ pub unsafe extern "C" fn openbc_tm_open_sync(
     opts: *const TmOptions,
 ) -> *mut TmModel {
     let cfg = config_from(opts);
+    let session = session_from(opts);
+    let _session_guard = enter_session(&session);
+    let started = Instant::now();
     match TextCompareModel::open(
         path_opt(left).as_deref(),
         path_opt(right).as_deref(),
@@ -294,8 +322,12 @@ pub unsafe extern "C" fn openbc_tm_open_sync(
         &CancelToken::new(),
         &mut |_| {},
     ) {
-        Ok(m) => Box::into_raw(Box::new(TmModel(Arc::new(m)))),
+        Ok(m) => {
+            record_model_operation("text_engine_open", started, &m, "");
+            Box::into_raw(Box::new(TmModel(Arc::new(m), session)))
+        }
         Err(e) => {
+            record_failed_operation("text_engine_open", started, &e.to_string());
             set_error(e);
             std::ptr::null_mut()
         }
@@ -789,13 +821,15 @@ pub unsafe extern "C" fn openbc_tm_task_async(
     callback: TmCallback,
     user: *mut c_void,
 ) {
-    let Some(model) = m.as_ref().map(|m| m.0.clone()) else { return };
+    let Some((model, session)) = m.as_ref().map(|m| (m.0.clone(), m.1.clone())) else { return };
     let text = if text.is_null() { String::new() } else { String::from_utf8_lossy(std::slice::from_raw_parts(text, len)).into_owned() };
     let token = cancel.as_ref().map_or_else(CancelToken::new, |c| c.0.clone());
     let user = user as usize;
     std::thread::Builder::new()
         .name("openbc-text-task".into())
         .spawn(move || {
+            let _session_guard = enter_session(&session);
+            let started = Instant::now();
             let say = |kind: i32, text: &str| {
                 let c = CString::new(text.replace('\0', " ")).unwrap_or_default();
                 callback(user as *mut c_void, kind, c.as_ptr(), std::ptr::null_mut());
@@ -818,6 +852,20 @@ pub unsafe extern "C" fn openbc_tm_task_async(
                     .map(|r| r.path.to_string_lossy().into_owned()),
                 _ => Ok(String::new()),
             };
+            let operation = match task {
+                TASK_SET_RULES => Some("text_engine_set_rules"),
+                TASK_REDIFF => Some("text_engine_rediff"),
+                TASK_SAVE => Some("text_engine_save"),
+                TASK_SAVE_AS => Some("text_engine_save_as"),
+                _ => None,
+            };
+            if let Some(operation) = operation {
+                match &result {
+                    Ok(_) => record_model_operation(operation, started, &model, ""),
+                    Err(EngineError::Cancelled) => record_failed_operation(operation, started, "cancelled"),
+                    Err(e) => record_failed_operation(operation, started, &e.to_string()),
+                }
+            }
             match result {
                 Ok(message) => say(EV_RESULT, &message),
                 Err(EngineError::Cancelled) => say(EV_ERROR, "cancelled"),
@@ -841,6 +889,22 @@ pub unsafe extern "C" fn openbc_syn_new(language: *const u8, len: usize, dark: u
         limits.span_cache_lines = span_cache_lines as usize;
     }
     Box::into_raw(Box::new(TmSyntax(Mutex::new(HighlightSession::new(&lang, dark != 0, limits)))))
+}
+
+/// Display name of the highlighting language a file name, extension or language name resolves to,
+/// honouring the user's mappings ("Plain Text" when unknown). Copies up to `cap` bytes into `buf`
+/// (not NUL-terminated) and returns the full length, so a short buffer is detectable.
+///
+/// # Safety
+/// `name` valid for `len`; `buf` null or valid for `cap`.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_syn_language_name(name: *const u8, len: usize, buf: *mut u8, cap: usize) -> usize {
+    let token = if name.is_null() { String::new() } else { String::from_utf8_lossy(std::slice::from_raw_parts(name, len)).into_owned() };
+    let language = openbc_core::text::language_name(&token);
+    if !buf.is_null() {
+        std::ptr::copy_nonoverlapping(language.as_ptr(), buf, language.len().min(cap));
+    }
+    language.len()
 }
 
 /// # Safety

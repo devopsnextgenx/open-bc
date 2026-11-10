@@ -83,18 +83,32 @@ const fn lang(
 /// Name of the language that disables highlighting.
 pub(super) const PLAIN_TEXT: &str = "Plain Text";
 
+/// Name of the log-file language. The Qt UI compares against it (`openbc_syn_language_name`) to decide
+/// whether to open the Rules bar, so keep it in sync with `LOG_LANGUAGE` in `text_model.h`.
+pub(super) const LOG: &str = "Log";
+
 pub(super) static LANGUAGES: &[Language] = &[
     // ---- Plain text and data without a grammar ------------------------------------------------
     lang(
         PLAIN_TEXT,
         &["text", "plain", "plaintext", "none"],
-        &["txt", "text", "log", "nfo", "csv", "tsv", "psv", "srt", "lst"],
+        &["txt", "text", "nfo", "csv", "tsv", "psv", "srt", "lst"],
         &[
             "license", "licence", "copying", "readme", "authors", "changelog", "notice", "todo",
             "contributors", "codeowners", "version", "gitignore", "gitattributes", "dockerignore",
             "npmignore", "eslintignore", "prettierignore", "hgignore", "gitkeep",
         ],
         PLAIN,
+    ),
+    // ---- Logs: custom grammar (syntaxes/log.sublime-syntax), registered in syntect_backend ------
+    // The UI treats this language as "a log file" (Rules bar opens automatically), so every
+    // extension that means "a log" belongs here. `.etl` / `.ldf` are usually binary logs.
+    lang(
+        LOG,
+        &["logs", "logfile"],
+        &["log", "lg", "syslog", "out", "err", "etl", "trc", "ldg", "ldf"],
+        &["messages"],
+        st(LOG),
     ),
     // ---- C family -----------------------------------------------------------------------------
     lang("C", &[], &["c"], &[], st("C")),

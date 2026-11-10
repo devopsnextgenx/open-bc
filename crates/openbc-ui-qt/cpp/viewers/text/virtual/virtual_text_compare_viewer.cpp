@@ -12,6 +12,7 @@
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QToolBar>
 #include <QVBoxLayout>
@@ -517,7 +518,24 @@ void VirtualTextCompareViewer::reload(bool keepScroll) {
     startLoad(keepScroll);
 }
 
+// Log files: open the Rules bar (once per file pair) so the user can type samples to ignore. The box
+// shows suggestions as a placeholder until typing starts. Nothing is applied yet, so no re-diff runs;
+// closing the bar is respected until the files change.
+void VirtualTextCompareViewer::autoShowRulesForLogs() {
+    if (!isLogFile(leftPath_) && !isLogFile(rightPath_)) return;
+    const QString key = qMin(leftPath_, rightPath_) + QLatin1Char('\n') + qMax(leftPath_, rightPath_);
+    if (key == rulesAutoKey_) return;
+    rulesAutoKey_ = key;
+    rulesEdit_->setPlaceholderText(logRulesPlaceholder());
+    if (!rulesAction_->isChecked()) {
+        const QSignalBlocker blocker(rulesAction_);
+        rulesAction_->setChecked(true);
+        rulesBar_->setVisible(true);
+    }
+}
+
 void VirtualTextCompareViewer::startLoad(bool keepScroll) {
+    autoShowRulesForLogs();
     refreshSideHeader(true);
     refreshSideHeader(false);
     if (leftPath_.isEmpty() && rightPath_.isEmpty()) {
@@ -543,6 +561,7 @@ void VirtualTextCompareViewer::startLoad(bool keepScroll) {
     };
     ModelOptions options;
     options.bufferedIo = bufferedIo_;
+    options.sessionId = instrumentationSessionId_;   // index / diff / open timings go to this tab's report
     loader_->start(leftPath_, rightPath_, options);
 }
 

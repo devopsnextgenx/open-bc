@@ -10,8 +10,8 @@ pub mod normalize;
 pub use diff::{compute_inline_diff, TextCompareEngine};
 pub use highlight::{
     HighlightSession, SessionLimits, StyleInfo, StyleSpan, SyntaxEngine,
-    highlight_to_html, highlight_to_spans, language_catalog, language_catalog_text, normalize_user_key,
-    plain_text_language, set_user_mappings, set_user_mappings_text, HighlightSpan, LanguageInfo,
+    highlight_to_html, highlight_to_spans, language_catalog, language_catalog_text, language_name,
+    normalize_user_key, plain_text_language, set_user_mappings, set_user_mappings_text, HighlightSpan, LanguageInfo,
 };
 pub use large::{hash_line, normalize_line_bytes, LargeTextSource, LineIndex, SourceChanged};
 pub use models::{ChangeKind, CharChangeKind, CharDiff, CompareOptions, InlineDiff, LineDiff};

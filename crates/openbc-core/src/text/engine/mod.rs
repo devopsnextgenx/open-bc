@@ -15,6 +15,7 @@ pub mod diff_index;
 pub mod encoding;
 pub mod error;
 pub mod hasher;
+pub mod instrument;
 pub mod line_index;
 pub mod line_norm;
 pub mod model;
@@ -27,6 +28,7 @@ pub use diff_index::{ChangeBlock, DiffIndex, DiffRow, DiffStats, DiffType, Segme
 pub use encoding::TextEncoding;
 pub use error::{CancelToken, EngineError, Phase, Progress};
 pub use hasher::{HashStream, LineHasher, Xxh3Hasher};
+pub use instrument::{enter_session, record_failed_operation, record_model_operation, SessionGuard};
 pub use line_index::{flags, IndexConfig, LineIndex, LineRecord, MAX_LINES};
 pub use rules::{LineRules, MAX_RULE_LINE_BYTES};
 pub use model::{CompareConfig, EditOutcome, FindOptions, LineWindow, Match, MemoryReport, SaveReport, SideId, TextCompareModel};

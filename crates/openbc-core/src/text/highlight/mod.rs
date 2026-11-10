@@ -9,7 +9,7 @@
 //! |-----------------------|----------------------------------------------------------|
 //! | `registry`            | the language / extension / grammar table                 |
 //! | `language`            | routing, user overrides, catalog export                  |
-//! | `syntect_backend`     | syntect HTML and spans                                   |
+//! | `syntect_backend`     | syntect HTML and spans (default pack + the Log grammar)  |
 //! | `tree_painter_backend`| tree-painter HTML, and spans recovered from its HTML     |
 //! | `spans`               | [`HighlightSpan`] and span merging                       |
 //! | `html`                | escaped plain-text fallback                              |
@@ -23,8 +23,8 @@ mod syntect_backend;
 mod tree_painter_backend;
 
 pub use language::{
-    language_catalog, language_catalog_text, normalize_user_key, plain_text_language, set_user_mappings,
-    set_user_mappings_text, LanguageInfo,
+    language_catalog, language_catalog_text, language_name, normalize_user_key, plain_text_language,
+    set_user_mappings, set_user_mappings_text, LanguageInfo,
 };
 pub use spans::HighlightSpan;
 pub use stateful::{HighlightSession, LexerState, LineProvider, SessionLimits, StyleInfo, StyleSpan, SyntaxEngine};
@@ -184,6 +184,7 @@ mod tests {
             "SQL" | "SQL (Rails)" => "-- c\nSELECT a, 1 FROM t WHERE b = 'x';\n",
             "Pascal" => "{ c }\nprogram P;\nbegin writeln('s'); end.\n",
             "Java Properties" => "# c\nkey=value\nother = 42\n",
+            "Log" => "2024-05-01 12:00:01,123 ERROR [pod-1] failed id=42 took 35ms\n",
             other => panic!("add a sample for grammar {other:?}"),
         }
     }
@@ -238,7 +239,7 @@ mod tests {
         let known = |ext: &str| {
             super::language::is_known(ext) || super::language::is_known(&format!("x.{ext}"))
         };
-        let set = syntect::parsing::SyntaxSet::load_defaults_newlines();
+        let set = super::syntect_backend::syntax_set();
         let mut missing = Vec::new();
         for syntax in set.syntaxes() {
             for ext in &syntax.file_extensions {
@@ -259,6 +260,15 @@ mod tests {
         // tree-painter grammars the registry points at must exist.
         for language in LANGUAGES.iter().filter(|l| l.grammar.backend == super::registry::Backend::TreePainter) {
             assert!(tree_painter::Lang::from(format!("source.{}", language.grammar.key)).is_some(), "{}", language.name);
+        }
+    }
+
+    #[test]
+    fn log_files_are_highlighted_not_plain() {
+        let source = "2024-05-01 12:00:01 ERROR request 3f2b8c1e-9a4d-4e0b-8c1d-0123456789ab failed\n";
+        for name in ["app.log", "a.syslog", "x.out", "x.err", "x.lg", "t.etl", "t.trc", "l.ldf", "l.ldg"] {
+            assert!(highlight_to_spans(source, name, true).len() > 1, "{name}");
+            assert!(highlight_to_html(source, name, false).contains("<span"), "{name}");
         }
     }
 

@@ -222,14 +222,14 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     // };
     // QObject::connect(downloadLog, &QAction::triggered, [&]() {
     //     const QString username = qEnvironmentVariable("USER", qEnvironmentVariable("USERNAME", "unknown"))   /* USERNAME on Windows */;
-    //     QString logPath = "/var/log/open-bc-" + username + ".log";
+    //     QString logPath = "/var/log/openbc/open-bc-" + username + ".log";
     //     if (!QFile::exists(logPath)) {
-    //         logPath = QDir::homePath() + "/.config/open-bc/open-bc-" + username + ".log";
+    //         logPath = QDir::tempPath() + "/openbc/open-bc-" + username + ".log";   // backend fallback, never ~/.config
     //     }
     //     copyReport(logPath, "Download OpenBC log", "Log files (*.log)");
     // });
     // QObject::connect(downloadInstrumentation, &QAction::triggered, [&]() {
-    //     const QString directory = QDir::homePath() + "/.config/open-bc/instrumentation";
+    //     const QString directory = "/var/log/openbc/instrumentation";
     //     const QStringList reports = QDir(directory).entryList({"*.yml"}, QDir::Files, QDir::Time);
     //     if (!reports.isEmpty()) {
     //         copyReport(directory + "/" + reports.constFirst(), "Download instrumentation report", "YAML files (*.yml)");
@@ -489,12 +489,14 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
                 virtualView, openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Compare), virtualView->title());
             tabs->setTabToolTip(virtualIndex, leftPath + " <-> " + rightPath);
             attachCloseButton(virtualIndex, virtualView);
+            registerInstrumentationSession(virtualView->instrumentationSessionId(), virtualView->title());
             virtualView->onHomeRequested = [&, origin]() {
                 const int index = origin ? tabs->indexOf(origin) : homeIndex;
                 if (index >= 0) tabs->setCurrentIndex(index);
             };
             virtualView->onSessionsRequested = virtualView->onHomeRequested;
             virtualView->onTitleChanged = [&, virtualView]() {
+                registerInstrumentationSession(virtualView->instrumentationSessionId(), virtualView->title());
                 const int i = tabs->indexOf(virtualView);
                 if (i < 0) return;
                 tabs->setTabText(i, virtualView->title());
@@ -885,7 +887,41 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
             addModel3dView(paths.value(0), paths.value(1), paths.size() >= 2);
         }
     };
-    home->onOpenHistory = [&](const SessionHistoryEntry& entry) {
+    // Opening a session that is already open selects its tab instead of loading it into a second one.
+    auto selectOpenSession = [&](const SessionHistoryEntry& entry) -> bool {
+        if (entry.left.isEmpty() && entry.right.isEmpty()) return false;
+        const auto samePath = [](const QString& a, const QString& b) {
+#ifdef Q_OS_WIN
+            const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+#else
+            const Qt::CaseSensitivity cs = Qt::CaseSensitive;
+#endif
+            return QDir::cleanPath(a).compare(QDir::cleanPath(b), cs) == 0;
+        };
+        const auto matches = [&](const auto* viewer) {
+            return viewer && samePath(viewer->leftText(), entry.left) && samePath(viewer->rightText(), entry.right);
+        };
+        const QString kind = canonicalSessionKind(entry.kind);
+        for (int i = 0; i < tabs->count(); ++i) {
+            QWidget* w = tabs->widget(i);
+            bool hit = false;
+            if (kind == "table-compare") hit = matches(dynamic_cast<TableCompareViewer*>(w));
+            else if (kind == "registry-compare") hit = matches(dynamic_cast<RegistryCompareViewer*>(w));
+            else if (kind == "hex-compare") hit = matches(dynamic_cast<HexCompareViewer*>(w));
+            else if (kind == "media-compare") hit = matches(dynamic_cast<MediaCompareViewer*>(w));
+            else if (kind == "picture-compare") hit = matches(dynamic_cast<PictureCompareViewer*>(w));
+            else if (kind == "folder-compare") hit = matches(dynamic_cast<FolderCompareViewer*>(w));
+            else if (kind == "model3d-compare") hit = matches(dynamic_cast<Model3dCompareViewer*>(w));
+            else hit = matches(dynamic_cast<TextCompareViewer*>(w)) || matches(dynamic_cast<VirtualTextCompareViewer*>(w));
+            if (hit) {
+                tabs->setCurrentIndex(i);
+                return true;
+            }
+        }
+        return false;
+    };
+    home->onOpenHistory = [&, selectOpenSession](const SessionHistoryEntry& entry) {
+        if (selectOpenSession(entry)) return;
         if (entry.kind == "table" || entry.kind == "table-compare") {
             addTableView(entry.left, entry.right);
         } else if (entry.kind == "registry" || entry.kind == "registry-compare") {
@@ -920,6 +956,9 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         if (auto* session = currentSession()) return session->instrumentationSessionId();
         if (auto* textView = dynamic_cast<TextCompareViewer*>(tabs->currentWidget())) {
             return textView->instrumentationSessionId();
+        }
+        if (auto* virtualView = dynamic_cast<VirtualTextCompareViewer*>(tabs->currentWidget())) {
+            return virtualView->instrumentationSessionId();
         }
         return QString();
     };

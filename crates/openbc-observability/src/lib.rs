@@ -15,6 +15,9 @@ static SESSION: OnceLock<InstrumentationSession> = OnceLock::new();
 static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 static ACTIVE_LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 
+/// Instrumentation reports that were last written longer ago than this are deleted at startup.
+const INSTRUMENTATION_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
 thread_local! {
     static SESSION_CONTEXT: RefCell<Option<String>> = RefCell::new(None);
 }
@@ -102,18 +105,15 @@ fn open_log_file(path: &Path) -> std::io::Result<File> {
 
 /// Initialize the process-wide log sink and one YAML instrumentation session.
 ///
-/// Log location is tried in order: the platform's preferred path, the per-user
-/// application directory, then the system temp directory. Failing to find a
-/// writable location is the only way this returns an error.
+/// Log location is tried in order: the platform's log directory (`/var/log/openbc` on Unix), then
+/// the system temp directory. The user's profile / config folder is deliberately never used for
+/// logs or instrumentation. Failing to find a writable location is the only way this returns an
+/// error.
 pub fn init() -> Result<(), String> {
     let username = username();
     let file_name = format!("open-bc-{username}.log");
 
-    let candidates = [
-        preferred_log_path(),
-        app_data_dir().join(&file_name),
-        env::temp_dir().join("open-bc").join(&file_name),
-    ];
+    let candidates = [preferred_log_path(), fallback_log_dir().join(&file_name)];
     let mut last_error = String::new();
     let mut opened: Option<(File, PathBuf)> = None;
     for candidate in candidates {
@@ -148,6 +148,10 @@ pub fn init() -> Result<(), String> {
     let _ = ACTIVE_LOG_PATH.set(active_log_path.clone());
 
     let instrumentation_dir = create_instrumentation_dir()?;
+    let pruned = prune_old_reports(&instrumentation_dir, INSTRUMENTATION_RETENTION);
+    if pruned > 0 {
+        tracing::info!(target: "openbc", file = file!(), function = "init", level = "INFO", message = "deleted old instrumentation reports", count = pruned);
+    }
     SESSION
         .set(InstrumentationSession {
             directory: instrumentation_dir,
@@ -161,11 +165,11 @@ pub fn init() -> Result<(), String> {
     Ok(())
 }
 
-/// Create the instrumentation directory, falling back to the temp dir.
+/// Create the instrumentation directory next to the log file, falling back to the temp dir.
 fn create_instrumentation_dir() -> Result<PathBuf, String> {
     let candidates = [
-        app_data_dir().join("instrumentation"),
-        env::temp_dir().join("open-bc").join("instrumentation"),
+        log_dir().join("instrumentation"),
+        fallback_log_dir().join("instrumentation"),
     ];
     let mut last_error = String::new();
     for candidate in candidates {
@@ -177,6 +181,40 @@ fn create_instrumentation_dir() -> Result<PathBuf, String> {
         }
     }
     Err(last_error)
+}
+
+/// Delete `session-*.yml` reports in `directory` that were last written more than `max_age` ago.
+/// Returns how many were removed.
+fn prune_old_reports(directory: &Path, max_age: Duration) -> usize {
+    prune_old_reports_at(directory, max_age, SystemTime::now())
+}
+
+/// [`prune_old_reports`] with an explicit clock. Best effort: entries that cannot be inspected or
+/// removed are skipped, and a modification time in the future counts as brand new.
+fn prune_old_reports_at(directory: &Path, max_age: Duration, now: SystemTime) -> usize {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_report = path.extension().map_or(false, |extension| extension == "yml")
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map_or(false, |name| name.starts_with("session-"));
+        if !is_report {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else {
+            continue;
+        };
+        let age = now.duration_since(modified).unwrap_or_default();
+        if age > max_age && fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// Return the current user's OpenBC log path.
@@ -405,9 +443,10 @@ fn username() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-/// Home directory: `HOME` (Unix, Git Bash), else `USERPROFILE` (Windows).
-/// Never falls back to the current directory, which may be read-only
-/// (e.g. `C:\Program Files\OpenBC` when launched from a shortcut).
+/// Home directory: `USERPROFILE` / `HOME`. Never falls back to the current directory, which may be
+/// read-only (e.g. `C:\Program Files\OpenBC` when launched from a shortcut). Windows only: on Unix
+/// nothing is written below the user's profile.
+#[cfg(windows)]
 fn home_dir() -> PathBuf {
     env::var_os("HOME")
         .filter(|value| !value.is_empty())
@@ -416,33 +455,38 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(env::temp_dir)
 }
 
-/// Per-user writable application directory.
-/// Windows: `%LOCALAPPDATA%\OpenBC`. Unix: `~/.config/open-bc`.
+/// Per-user writable application directory (Windows only): `%LOCALAPPDATA%\OpenBC`.
+#[cfg(windows)]
 fn app_data_dir() -> PathBuf {
+    env::var_os("LOCALAPPDATA")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join("AppData").join("Local"))
+        .join("OpenBC")
+}
+
+/// Directory that holds the log file and the `instrumentation` folder.
+/// Unix: `/var/log/openbc` (never the profile's config folder, so the directory must exist and be
+/// writable for the user; the installer creates it). Windows: the per-user app dir.
+fn log_dir() -> PathBuf {
     #[cfg(windows)]
     {
-        env::var_os("LOCALAPPDATA")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home_dir().join("AppData").join("Local"))
-            .join("OpenBC")
+        app_data_dir()
     }
     #[cfg(not(windows))]
     {
-        home_dir().join(".config/open-bc")
+        PathBuf::from("/var/log/openbc")
     }
 }
 
-/// Preferred log file: `/var/log` on Unix, the per-user app dir on Windows.
+/// Last resort when [`log_dir`] is not writable: a folder in the system temp directory.
+fn fallback_log_dir() -> PathBuf {
+    env::temp_dir().join("openbc")
+}
+
+/// Preferred log file: `open-bc-<user>.log` in [`log_dir`].
 fn preferred_log_path() -> PathBuf {
-    #[cfg(windows)]
-    {
-        app_data_dir().join(format!("open-bc-{}.log", username()))
-    }
-    #[cfg(not(windows))]
-    {
-        PathBuf::from(format!("/var/log/open-bc-{}.log", username()))
-    }
+    log_dir().join(format!("open-bc-{}.log", username()))
 }
 
 fn timestamp() -> String {
@@ -456,10 +500,66 @@ fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_event, create_tab_file, session_scope, InstrumentationEvent, SESSION_CONTEXT,
+        append_event, create_tab_file, prune_old_reports_at, session_scope, InstrumentationEvent,
+        INSTRUMENTATION_RETENTION, SESSION_CONTEXT,
     };
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn pruning_removes_only_stale_session_reports() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "openbc-observability-prune-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("session-6162.yml"), "sessions: {}").unwrap();
+        fs::write(directory.join("notes.txt"), "keep me").unwrap();
+        fs::write(directory.join("other.yml"), "keep me").unwrap();
+
+        // A report written just now is well inside the retention window.
+        let now = SystemTime::now();
+        assert_eq!(
+            prune_old_reports_at(&directory, INSTRUMENTATION_RETENTION, now),
+            0
+        );
+        assert!(directory.join("session-6162.yml").exists());
+
+        // Eight days later it is stale; unrelated files are never touched.
+        let later = now + Duration::from_secs(8 * 24 * 60 * 60);
+        assert_eq!(
+            prune_old_reports_at(&directory, INSTRUMENTATION_RETENTION, later),
+            1
+        );
+        assert!(!directory.join("session-6162.yml").exists());
+        assert!(directory.join("notes.txt").exists());
+        assert!(directory.join("other.yml").exists());
+
+        // A clock that runs behind the file's timestamp never deletes anything.
+        fs::write(directory.join("session-6364.yml"), "sessions: {}").unwrap();
+        let earlier = now - Duration::from_secs(30 * 24 * 60 * 60);
+        assert_eq!(
+            prune_old_reports_at(&directory, INSTRUMENTATION_RETENTION, earlier),
+            0
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_logs_live_under_var_log_openbc_never_the_profile() {
+        assert!(super::preferred_log_path().starts_with("/var/log/openbc"));
+        assert!(super::log_dir()
+            .join("instrumentation")
+            .starts_with("/var/log/openbc"));
+        assert!(!super::fallback_log_dir()
+            .to_string_lossy()
+            .contains(".config"));
+    }
 
     #[test]
     fn append_only_reports_keep_each_tabs_events_grouped() {

@@ -988,6 +988,24 @@ static void testUnsavedChangesProtocol() {
     CHECK_EQ(readAll(l), QStringLiteral("oneL\ntwo\n"));   // the discarded edit never reached the disk
 }
 
+// Log files open with the Rules bar visible (suggestions as placeholder); other files do not.
+static void testLogFilesOpenWithRules() {
+    const QString l = writeFile("w7a_l.log", "2024-05-01 12:00:01 pod-a id=1\nkeep\n");
+    const QString r = writeFile("w7a_r.log", "2024-05-01 12:00:02 pod-b id=2\nkeep\n");
+    auto tab = makeTab(l, r);
+    CHECK(tab->rulesBarVisible());
+    CHECK(tab->rulesAction()->isChecked());
+    CHECK(tab->rulesEdit()->text().isEmpty());
+    CHECK(tab->rulesEdit()->placeholderText().contains(QStringLiteral("correlation id")));
+    CHECK(tab->rulesText().isEmpty());                     // opening the bar applies nothing
+    CHECK_EQ(tab->model()->stats().blocks, 1ULL);
+
+    const QString t1 = writeFile("w7b_l.txt", "a\n");
+    const QString t2 = writeFile("w7b_r.txt", "b\n");
+    auto plain = makeTab(t1, t2);
+    CHECK(!plain->rulesBarVisible());
+}
+
 static void testRules() {
     const QString l = writeFile("w7_l.txt", "id=1 ok\n# c1\nkeep\n");
     const QString r = writeFile("w7_r.txt", "id=2 ok\n# c2\nkeep\n");
@@ -1070,6 +1088,7 @@ int main(int argc, char** argv) {
     std::printf("[ testUnsavedChangesProtocol ]\n");
     testUnsavedChangesProtocol();
     std::printf("[ testRules ]\n");
+    testLogFilesOpenWithRules();
     testRules();
     std::printf(failures ? "%d FAILURE(S)\n" : "virtual_editor_test: all passed\n", failures);
     return failures ? 1 : 0;
