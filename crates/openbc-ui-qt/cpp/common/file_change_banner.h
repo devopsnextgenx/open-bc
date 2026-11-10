@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -85,14 +86,14 @@ public:
         dismiss_ = new QToolButton(this);
         dismiss_->setText(QString::fromUtf8("\xC3\x97"));  // multiplication sign
         dismiss_->setAutoRaise(true);
-        dismiss_->setToolTip("Dismiss (does not reload; the file stays marked as outdated)");
+        dismiss_->setToolTip(::openbc::i18n::t("common.dismiss_does_not_reload_the_file"));
         top->addWidget(icon_, 0, Qt::AlignTop);
         top->addWidget(text_, 1);
         top->addWidget(dismiss_, 0, Qt::AlignTop);
         auto* buttons = new QHBoxLayout();
         buttons->setSpacing(scaled(8));
-        keep_ = new QPushButton("Keep Current", this);
-        reload_ = new QPushButton("Reload Latest", this);
+        keep_ = new QPushButton(::openbc::i18n::t("common.keep_current"), this);
+        reload_ = new QPushButton(::openbc::i18n::t("common.reload_latest"), this);
         reload_->setDefault(true);
         for (auto* b : {keep_, reload_}) b->setFocusPolicy(Qt::NoFocus);  // never steals typing focus
         buttons->addStretch(1);
@@ -226,20 +227,20 @@ private:
         }
         const bool canReload = !reloadableSides().isEmpty();
         if (compact_) {
-            text_->setText(stale.size() == 2 ? "Both displayed files are outdated."
-                                             : sideName(stale[0]) + " file is outdated.");
+            text_->setText(stale.size() == 2 ? ::openbc::i18n::t("common.both_displayed_files_are_outdated")
+                                             : ::openbc::i18n::t("common.file_is_outdated", sideName(stale[0])));
             keep_->hide();
             dismiss_->hide();
         } else {
             QStringList parts;
             for (std::uint8_t s : stale) parts << QString("%1 file '%2' %3").arg(sideName(s), name_[s], changeWords(change_[s]));
-            text_->setText(parts.join(" and ") + " externally. The version currently displayed may be outdated.");
+            text_->setText(::openbc::i18n::t("common.externally_the_version_currently_displayed_may", parts.join(" and ")));
             keep_->show();
             dismiss_->show();
         }
         reload_->show();
         reload_->setEnabled(canReload);
-        reload_->setToolTip(canReload ? QString() : "The file no longer exists, so there is nothing to reload.");
+        reload_->setToolTip(canReload ? QString() : ::openbc::i18n::t("common.the_file_no_longer_exists_so"));
         show();
         reposition();
     }

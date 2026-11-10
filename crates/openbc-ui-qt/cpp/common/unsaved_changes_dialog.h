@@ -32,6 +32,7 @@
 #include <functional>
 
 #include "style/qt_style.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -51,7 +52,7 @@ public:
     UnsavedChangesDialog(QWidget* parent, const UnsavedSide& left, const UnsavedSide& right, SaveSideFn save)
         : QDialog(parent), save_(std::move(save)) {
         setObjectName("unsavedChangesDialog");
-        setWindowTitle("Unsaved changes");
+        setWindowTitle(::openbc::i18n::t("common.unsaved_changes"));
         setModal(true);
         side_[0] = left;
         side_[1] = right;
@@ -60,7 +61,7 @@ public:
         root->setContentsMargins(16, 14, 16, 12);
         root->setSpacing(10);
 
-        auto* heading = new QLabel("Save your changes before continuing?", this);
+        auto* heading = new QLabel(::openbc::i18n::t("common.save_your_changes_before_continuing"), this);
         QFont headingFont = heading->font();
         headingFont.setBold(true);
         heading->setFont(headingFont);
@@ -83,7 +84,7 @@ public:
             text->addWidget(info_[s]);
             line->addLayout(text, 1);
 
-            save_btn_[s] = new QPushButton(s == 0 ? "Save Left" : "Save Right", row);
+            save_btn_[s] = new QPushButton(s == 0 ? ::openbc::i18n::t("common.save_left") : ::openbc::i18n::t("common.save_right"), row);
             save_btn_[s]->setMinimumWidth(104);
             line->addWidget(save_btn_[s]);
             root->addWidget(row);
@@ -105,9 +106,9 @@ public:
         auto* buttons = new QHBoxLayout;
         buttons->setSpacing(8);
         buttons->addStretch(1);
-        cancel_ = new QPushButton("Cancel", this);
+        cancel_ = new QPushButton(::openbc::i18n::t("common.cancel"), this);
         cancel_->setAutoDefault(false);
-        continue_ = new QPushButton("Close Tabs", this); // "Continue" -> "Close Tabs"
+        continue_ = new QPushButton(::openbc::i18n::t("common.close_tabs"), this); // "Continue" -> "Close Tabs"
         continue_->setAutoDefault(false);
         continue_->setMinimumWidth(96);
         buttons->addWidget(cancel_);
@@ -123,7 +124,7 @@ public:
         QObject::connect(watchdog_, &QTimer::timeout, this, [this]() {
             ++token_;  // a late answer from the backend is now ignored
             busy_ = false;
-            error_->setText("Timed out waiting for the save to finish.");
+            error_->setText(::openbc::i18n::t("common.timed_out_waiting_for_the_save"));
             error_->show();
             refresh();
         });
@@ -162,7 +163,7 @@ private:
         busy_ = false;
         savingSide_ = -1;
         if (!ok) {
-            error_->setText(error.isEmpty() ? QString("Could not save %1.").arg(s == 0 ? "the left file" : "the right file") : error);
+            error_->setText(error.isEmpty() ? ::openbc::i18n::t("common.could_not_save", s == 0 ? "the left file" : "the right file") : error);
             error_->show();
             refresh();
             return;
@@ -184,11 +185,11 @@ private:
             const QString file = side_[s].path.isEmpty() ? QString("(no file)") : QFileInfo(side_[s].path).fileName();
             name_[s]->setText((s == 0 ? "Left: " : "Right: ") + file);
             name_[s]->setToolTip(side_[s].path);
-            info_[s]->setText(dirty ? QString("%1 unsaved %2").arg(side_[s].changes).arg(side_[s].changes == 1 ? "change" : "changes")
-                                    : QString("No unsaved changes"));
+            info_[s]->setText(dirty ? ::openbc::i18n::t("common.unsaved", side_[s].changes, side_[s].changes == 1 ? "change" : "changes")
+                                    : ::openbc::i18n::t("common.no_unsaved_changes"));
             save_btn_[s]->setEnabled(dirty && !busy_);
             save_btn_[s]->setIcon(icons::saveIcon(dirty && !busy_ ? kBlue : kInk));
-            save_btn_[s]->setText(busy_ && savingSide_ == s ? "Saving..." : (s == 0 ? "Save Left" : "Save Right"));
+            save_btn_[s]->setText(busy_ && savingSide_ == s ? ::openbc::i18n::t("common.saving") : (s == 0 ? ::openbc::i18n::t("common.save_left") : ::openbc::i18n::t("common.save_right")));
             if (dirty) leftOver << (s == 0 ? "left" : "right");
         }
         // Enter saves the first side that still needs it; Continue is never the default while it would discard work.
@@ -200,8 +201,8 @@ private:
         cancel_->setEnabled(!busy_);
         continue_->setEnabled(!busy_);
         caption_->setText(leftOver.isEmpty()
-                              ? QString("Everything is saved.")
-                              : QString("Continue discards the unsaved changes on the %1 side.").arg(leftOver.join(" and ")));
+                              ? ::openbc::i18n::t("common.everything_is_saved")
+                              : ::openbc::i18n::t("common.continue_discards_the_unsaved_changes_on", leftOver.join(" and ")));
     }
 
     SaveSideFn save_;

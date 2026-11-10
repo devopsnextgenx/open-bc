@@ -16,6 +16,7 @@
 #include <QToolTip>
 #include <QWidget>
 #include <functional>
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -83,7 +84,7 @@ protected:
             const auto* he = static_cast<QHelpEvent*>(e);
             const int h = buttonAt(he->pos());
             if (h) QToolTip::showText(he->globalPos(),
-                                      h == 1 ? tr("Previous Difference Section") : tr("Next Difference Section"), this);
+                                      h == 1 ? ::openbc::i18n::t("common.previous_difference_section") : ::openbc::i18n::t("common.next_difference_section"), this);
             else QToolTip::hideText();
             return true;
         }

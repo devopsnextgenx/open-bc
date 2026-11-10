@@ -74,6 +74,7 @@
 #include "options/options_icons.h"
 #include "options/text_font.h"
 #include "common/java_decompiler_adapter.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -131,7 +132,7 @@ class OptionsDialog : public QDialog {
 public:
     explicit OptionsDialog(OptionsStore& store, QWidget* parent = nullptr)
         : QDialog(parent), store_(store), draft_(store.options()) {
-        setWindowTitle("Options");
+        setWindowTitle(::openbc::i18n::t("common.options"));
         setObjectName("optionsDialog");
         setStyleSheet("QDialog#optionsDialog { background: transparent; }");   // the card paints the frame
         resize(820, 680);
@@ -164,7 +165,7 @@ public:
 
         auto* nav = new QVBoxLayout;
         search_ = new QLineEdit(this);
-        search_->setPlaceholderText("Search options");
+        search_->setPlaceholderText(::openbc::i18n::t("common.search_options"));
         search_->setClearButtonEnabled(true);
         nav->addWidget(search_);
         pages_ = new QListWidget(this);
@@ -254,7 +255,7 @@ public:
 private:
     // ---- plumbing ---------------------------------------------------------
     void markDirty() {
-        apply_->setText(tr("Apply"));
+        apply_->setText(::openbc::i18n::t("common.apply"));
         apply_->setEnabled(true);
     }
 
@@ -269,7 +270,7 @@ private:
     void commit() {
         store_.commit(draft_);
         apply_->setEnabled(false);
-        apply_->setText(tr("Applied \u2713"));  // greyed out + label = visible confirmation
+        apply_->setText(::openbc::i18n::t("options.applied"));  // greyed out + label = visible confirmation
     }
 
     // Separator row that starts a status group. Not selectable, so keyboard and mouse skip it.
@@ -297,7 +298,7 @@ private:
         const bool finished = status && status->status == options_status::Status::Implemented;
         if (!finished) {
             // Say so on the page itself, not only in the list.
-            auto* banner = new QLabel(status ? QString::fromUtf8(status->note) : QStringLiteral("Pending: not designed yet."));
+            auto* banner = new QLabel(status ? QString::fromUtf8(status->note) : ::openbc::i18n::t("common.pending_not_designed_yet"));
             banner->setWordWrap(true);
             banner->setStyleSheet(
                 "QLabel { background: palette(alternate-base); border: 1px solid palette(mid);"
@@ -438,7 +439,7 @@ private:
 
     // "Font..." button that stores QFont::toString() in `field`.
     QPushButton* fontButton(QString* field) {
-        auto* button = new QPushButton("Font...");
+        auto* button = new QPushButton(::openbc::i18n::t("common.font"));
         connect(button, &QPushButton::clicked, this, [this, field]() {
             QFont current;
             if (!field->isEmpty()) current.fromString(*field);
@@ -455,28 +456,28 @@ private:
     QWidget* buildStartup() {
         QVBoxLayout* v;
         auto* page = pageShell(&v);
-        v->addWidget(heading("Startup"));
+        v->addWidget(heading(::openbc::i18n::t("common.startup")));
 
         auto* row = new QHBoxLayout;
         auto* loadCol = new QVBoxLayout;
-        loadCol->addWidget(new QLabel("Load &workspace:"));
+        loadCol->addWidget(new QLabel(::openbc::i18n::t("common.load_workspace")));
         loadCol->addWidget(stringCombo(&draft_.loadWorkspace, false));
         auto* saveCol = new QVBoxLayout;
-        saveCol->addWidget(new QLabel("On exit, sa&ve workspace as:"));
+        saveCol->addWidget(new QLabel(::openbc::i18n::t("common.on_exit_save_workspace_as")));
         saveCol->addWidget(stringCombo(&draft_.saveWorkspaceOnExit, true));
         row->addLayout(loadCol, 1);
         row->addLayout(saveCol, 1);
         v->addLayout(row);
 
-        auto* quick = check("When starting with file comparison, show quick compare dialog",
+        auto* quick = check(::openbc::i18n::t("common.when_starting_with_file_comparison_show"),
                             &draft_.showQuickCompareDialog);
         v->addWidget(quick);
         auto* group = new QButtonGroup(this);
-        auto* binary = radio("&Binary quick compare", &draft_.quickCompareMode,
+        auto* binary = radio(::openbc::i18n::t("common.binary_quick_compare"), &draft_.quickCompareMode,
                              QuickCompareMode::Binary, group);
-        auto* rules = radio("&Rules-based quick compare", &draft_.quickCompareMode,
+        auto* rules = radio(::openbc::i18n::t("common.rules_based_quick_compare"), &draft_.quickCompareMode,
                             QuickCompareMode::RulesBased, group);
-        auto* openView = check("&Open view automatically if files are different",
+        auto* openView = check(::openbc::i18n::t("common.open_view_automatically_if_files_are"),
                                &draft_.openViewIfFilesDiffer);
         for (QWidget* w : {static_cast<QWidget*>(binary), static_cast<QWidget*>(rules),
                            static_cast<QWidget*>(openView)}) {
@@ -486,13 +487,13 @@ private:
         }
 
         v->addWidget(rule());
-        v->addWidget(heading("Clipboard Compare"));
-        v->addWidget(check("Run &Clipboard Compare on Windows startup",
+        v->addWidget(heading(::openbc::i18n::t("common.clipboard_compare")));
+        v->addWidget(check(::openbc::i18n::t("common.run_clipboard_compare_on_windows_startup"),
                            &draft_.runClipboardCompareOnStartup));
 
         v->addWidget(rule());
-        v->addWidget(heading("Explorer Integration"));
-        auto* integrate = check("Include OpenBC in &Explorer context menu", &draft_.explorerIntegration);
+        v->addWidget(heading(::openbc::i18n::t("common.explorer_integration")));
+        auto* integrate = check(::openbc::i18n::t("common.include_openbc_in_explorer_context_menu"), &draft_.explorerIntegration);
         v->addWidget(integrate);
 
         auto* table = new QTableWidget(draft_.explorerCommands.size(), 2);
@@ -516,7 +517,7 @@ private:
         }
         table->setColumnWidth(0, 220);
         v->addWidget(table);
-        auto* hideLeft = check("Hide \"Select Left\" if there is already a saved selection",
+        auto* hideLeft = check(::openbc::i18n::t("common.hide_select_left_if_there_is"),
                                &draft_.hideSelectLeftIfSaved);
         v->addWidget(hideLeft);
         for (QWidget* w : {static_cast<QWidget*>(table), static_cast<QWidget*>(hideLeft)}) {
@@ -531,28 +532,27 @@ private:
     QWidget* buildTabs() {
         QVBoxLayout* v;
         auto* page = pageShell(&v);
-        v->addWidget(heading("Tabs"));
+        v->addWidget(heading(::openbc::i18n::t("common.tabs")));
 
         auto openIn = [&](const QString& title, OpenSessionsIn* field) {
             v->addWidget(new QLabel(title));
             auto* group = new QButtonGroup(this);
-            v->addWidget(radio("A new &window", field, OpenSessionsIn::NewWindow, group));
-            v->addWidget(radio("A new &tab", field, OpenSessionsIn::NewTab, group));
+            v->addWidget(radio(::openbc::i18n::t("common.a_new_window"), field, OpenSessionsIn::NewWindow, group));
+            v->addWidget(radio(::openbc::i18n::t("common.a_new_tab"), field, OpenSessionsIn::NewTab, group));
         };
-        openIn("Open sessions in:", &draft_.openSessionsIn);
-        openIn("Open child sessions in:", &draft_.openChildSessionsIn);
+        openIn(::openbc::i18n::t("common.open_sessions_in"), &draft_.openSessionsIn);
+        openIn(::openbc::i18n::t("common.open_child_sessions_in"), &draft_.openChildSessionsIn);
 
-        v->addWidget(check("Open &new tab next to active tab", &draft_.openNewTabNextToActive));
-        v->addWidget(check("Closing &last remaining tab closes the window",
+        v->addWidget(check(::openbc::i18n::t("common.open_new_tab_next_to_active"), &draft_.openNewTabNextToActive));
+        v->addWidget(check(::openbc::i18n::t("common.closing_last_remaining_tab_closes_the"),
                            &draft_.closingLastTabClosesWindow));
-        v->addWidget(check("&Warn when closing multiple tabs", &draft_.warnClosingMultipleTabs));
-        v->addWidget(check("Warn when closing multiple windo&ws", &draft_.warnClosingMultipleWindows));
-        v->addWidget(check("&Hide tab bar if single tab", &draft_.hideTabBarIfSingleTab));
-        v->addWidget(check("Show pre&views for individual tabs in the taskbar",
+        v->addWidget(check(::openbc::i18n::t("common.warn_when_closing_multiple_tabs"), &draft_.warnClosingMultipleTabs));
+        v->addWidget(check(::openbc::i18n::t("common.warn_when_closing_multiple_windows"), &draft_.warnClosingMultipleWindows));
+        v->addWidget(check(::openbc::i18n::t("common.hide_tab_bar_if_single_tab"), &draft_.hideTabBarIfSingleTab));
+        v->addWidget(check(::openbc::i18n::t("common.show_previews_for_individual_tabs_in"),
                            &draft_.showTabPreviewsInTaskbar));
         v->addSpacing(8);
-        v->addWidget(note("For settings that control tab stops in text files, see "
-                          "<b>Tools &gt; File Formats</b>"));
+        v->addWidget(note(::openbc::i18n::t("common.for_settings_that_control_tab_stops")));
         v->addStretch(1);
         return page;
     }
@@ -563,7 +563,7 @@ private:
     QWidget* buildAppearance() {
         QVBoxLayout* v;
         auto* page = pageShell(&v);
-        v->addWidget(heading("Theme, Colors, Fonts"));
+        v->addWidget(heading(::openbc::i18n::t("common.theme_colors_fonts")));
 
         auto* theme = new QComboBox;
         theme->addItems({"Follow operating system", "Light", "Dark"});
@@ -574,7 +574,7 @@ private:
             previewDraftTheme();
         });
         v->addWidget(theme, 0, Qt::AlignLeft);
-        auto* preview = check("&Preview", &draft_.previewTheme);
+        auto* preview = check(::openbc::i18n::t("common.preview"), &draft_.previewTheme);
         connect(preview, &QCheckBox::toggled, this, [this](bool) { previewDraftTheme(); });
         v->addWidget(preview);
 
@@ -585,34 +585,32 @@ private:
                                     {"Compare colors", {"Unknown", "Same", "Orphan", "Older", "Newer", "Different"}},
                                     {"Merge colors", {"Left only", "Right only", "Conflict"}}},
                                    true),
-                     "Folder Views");
+                     ::openbc::i18n::t("common.folder_views"));
         tabs->addTab(buildColorTab("File Views",
                                    {{"Default text", {}}, {"Line numbers", {}}, {"Selection", {}},
                                     {"Compare colors", {"Same", "Different", "Left only", "Right only", "Unimportant"}}},
                                    false),
-                     "File Views");
+                     ::openbc::i18n::t("common.file_views"));
         tabs->addTab(buildColorTab("Picture Compare",
                                    {{"Background", {}}, {"Compare colors", {"Same pixels", "Different pixels", "Left only", "Right only"}}},
                                    false),
-                     "Picture Compare");
+                     ::openbc::i18n::t("common.picture_compare"));
         v->addWidget(tabs, 1);
-        v->addWidget(note("Colors that no view uses yet are kept but have no effect: Folder Views \"Filtered out\" and "
-                          "\"Merge colors\", File Views \"Same\", and everything under Picture Compare. Folder "
-                          "colors apply to rows after the next refresh."));
+        v->addWidget(note(::openbc::i18n::t("common.colors_that_no_view_uses_yet")));
 
         addTextFontControls(v);
-        v->addWidget(check("Color &folders to reflect content", &draft_.colorFoldersToReflectContent));
-        v->addWidget(check("Use &gradient for center background", &draft_.useGradientForCenterBackground));
-        v->addWidget(note("Additional color schemes will be available from the OpenBC website."));
+        v->addWidget(check(::openbc::i18n::t("common.color_folders_to_reflect_content"), &draft_.colorFoldersToReflectContent));
+        v->addWidget(check(::openbc::i18n::t("common.use_gradient_for_center_background"), &draft_.useGradientForCenterBackground));
+        v->addWidget(note(::openbc::i18n::t("common.additional_color_schemes_will_be_available")));
         return page;
     }
 
     // Font of the Text Compare editors: Beyond Compare's default (else the system fixed-width font),
     // or any font installed on this machine.
     void addTextFontControls(QVBoxLayout* v) {
-        v->addWidget(heading("Text Compare Font"));
+        v->addWidget(heading(::openbc::i18n::t("common.text_compare_font")));
         auto* useDefault = check(
-            QString("Use &default font (%1, otherwise the system fixed-width font)").arg(TextFont::kDefaultFamily),
+            ::openbc::i18n::t("common.use_default_font_otherwise_the_system", TextFont::kDefaultFamily),
             &draft_.useSystemFont);
         v->addWidget(useDefault);
 
@@ -625,13 +623,13 @@ private:
         auto* size = new QSpinBox;
         size->setRange(6, 72);
         size->setSuffix(" pt");
-        auto* monospacedOnly = new QCheckBox("Show &monospaced fonts only");
+        auto* monospacedOnly = new QCheckBox(::openbc::i18n::t("common.show_monospaced_fonts_only"));
         auto* sample = new QLabel("AaBbYyZz 0123456789 {}[]()<>;:/\\ iIl1 oO0");
         sample->setFrameShape(QFrame::StyledPanel);
         sample->setContentsMargins(6, 4, 6, 4);
-        grid->addWidget(new QLabel("Font:"), 0, 0);
+        grid->addWidget(new QLabel(::openbc::i18n::t("common.font_2")), 0, 0);
         grid->addWidget(family, 0, 1);
-        grid->addWidget(new QLabel("Size:"), 0, 2);
+        grid->addWidget(new QLabel(::openbc::i18n::t("common.size")), 0, 2);
         grid->addWidget(size, 0, 3);
         grid->addWidget(monospacedOnly, 1, 1, 1, 3);
         grid->addWidget(sample, 2, 0, 1, 4);
@@ -696,14 +694,14 @@ private:
         auto* textColor = new OptionsColorButton;
         auto* background = new OptionsColorButton;
         auto* folderInfo = new OptionsColorButton;
-        side->addWidget(new QLabel("Text color:"));
+        side->addWidget(new QLabel(::openbc::i18n::t("common.text_color")));
         side->addWidget(textColor);
-        side->addWidget(new QLabel("Background:"));
+        side->addWidget(new QLabel(::openbc::i18n::t("common.background")));
         side->addWidget(background);
         if (folderExtras) {
-            side->addWidget(new QLabel("Folder info:"));
+            side->addWidget(new QLabel(::openbc::i18n::t("common.folder_info")));
             side->addWidget(folderInfo);
-            side->addWidget(check("Use stripes", &draft_.useStripes));
+            side->addWidget(check(::openbc::i18n::t("common.use_stripes"), &draft_.useStripes));
         } else {
             folderInfo->hide();
         }
@@ -744,15 +742,15 @@ private:
     QWidget* buildTextEditing() {
         QVBoxLayout* v;
         auto* page = pageShell(&v);
-        v->addWidget(heading("Text Editing"));
-        v->addWidget(check("Auto in&dent", &draft_.autoIndent));
-        v->addWidget(check("Bac&kspace unindents", &draft_.backspaceUnindents));
-        v->addWidget(check("Initialize \"Text to find\" to be current &word", &draft_.initFindWithCurrentWord));
-        v->addWidget(check("Show filtered line counts", &draft_.showFilteredLineCounts));
-        v->addWidget(new QLabel("Number of conte&xt lines:"));
+        v->addWidget(heading(::openbc::i18n::t("common.text_editing")));
+        v->addWidget(check(::openbc::i18n::t("common.auto_indent"), &draft_.autoIndent));
+        v->addWidget(check(::openbc::i18n::t("common.backspace_unindents"), &draft_.backspaceUnindents));
+        v->addWidget(check(::openbc::i18n::t("common.initialize_text_to_find_to_be"), &draft_.initFindWithCurrentWord));
+        v->addWidget(check(::openbc::i18n::t("common.show_filtered_line_counts"), &draft_.showFilteredLineCounts));
+        v->addWidget(new QLabel(::openbc::i18n::t("common.number_of_context_lines")));
         v->addWidget(spin(&draft_.contextLines, 0, 99), 0, Qt::AlignLeft);
         v->addSpacing(8);
-        v->addWidget(note("To set tab stops, use <b>Tools &gt; File Formats</b>"));
+        v->addWidget(note(::openbc::i18n::t("common.to_set_tab_stops_use_b")));
         v->addStretch(1);
         return page;
     }
@@ -765,8 +763,8 @@ private:
         namespace te = openbc::app::text_editor;
         QVBoxLayout* v;
         auto* page = pageShell(&v);
-        v->addWidget(heading("Text Compare"));
-        v->addWidget(new QLabel("Editor used for text comparisons:"));
+        v->addWidget(heading(::openbc::i18n::t("options.text_compare")));
+        v->addWidget(new QLabel(::openbc::i18n::t("options.editor_used_for_text_comparisons")));
         auto* mode = new QComboBox;
         mode->addItem("Existing Editor");
         mode->addItem("Virtual Editor");
@@ -780,7 +778,7 @@ private:
         auto* thresholdBox = new QWidget;
         auto* tv = new QVBoxLayout(thresholdBox);
         tv->setContentsMargins(0, 0, 0, 0);
-        tv->addWidget(new QLabel("Large-file threshold (used by Hybrid Mode):"));
+        tv->addWidget(new QLabel(::openbc::i18n::t("options.large_file_threshold_used_by_hybrid")));
         auto* row = new QHBoxLayout;
         auto* value = new QSpinBox;
         auto* unit = new QComboBox;
@@ -800,13 +798,9 @@ private:
         auto* validation = note("");
         tv->addWidget(validation);
         v->addWidget(thresholdBox);
-        v->addWidget(note("In Hybrid Mode a comparison uses the <b>Virtual Editor</b> when <b>either</b> file is "
-                          "at least this large (or its size cannot be determined), and the <b>Existing Editor</b> "
-                          "otherwise. The default is <b>3 MB</b>. Units are binary: 1 KB = 1024 bytes."));
+        v->addWidget(note(::openbc::i18n::t("options.in_hybrid_mode_a_comparison_uses")));
         v->addSpacing(6);
-        v->addWidget(note("Changes apply to comparisons opened afterwards; open tabs keep their editor. The Virtual "
-                          "Editor is read-only and needs local files; the Existing Editor is always available as an "
-                          "explicit choice."));
+        v->addWidget(note(::openbc::i18n::t("options.changes_apply_to_comparisons_opened_afterwards")));
         v->addStretch(1);
 
         auto refresh = [this, mode, modeNote, thresholdBox, value, unit, validation]() {
@@ -853,18 +847,15 @@ private:
     QWidget* buildSyntaxHighlighting() {
         QVBoxLayout* v;
         auto* page = pageShell(&v);
-        v->addWidget(heading("Syntax Highlighting"));
+        v->addWidget(heading(::openbc::i18n::t("common.syntax_highlighting")));
         const SyntaxCatalog& catalog = SyntaxCatalog::get();
-        v->addWidget(note("Choose the highlighting language for a file extension (for example h or cpp) or an "
-                          "exact file name (for example Makefile). Your mappings override the built-in ones, are "
-                          "saved in your profile, and also apply to comparisons that are already open once you "
-                          "press OK or Apply."));
+        v->addWidget(note(::openbc::i18n::t("common.choose_the_highlighting_language_for_a")));
 
         auto* filterRow = new QHBoxLayout;
         auto* filter = new QLineEdit;
-        filter->setPlaceholderText("Filter by extension, file name or language");
+        filter->setPlaceholderText(::openbc::i18n::t("common.filter_by_extension_file_name_or"));
         filter->setClearButtonEnabled(true);
-        auto* mineOnly = new QCheckBox("Show only my mappings");
+        auto* mineOnly = new QCheckBox(::openbc::i18n::t("common.show_only_my_mappings"));
         filterRow->addWidget(filter, 1);
         filterRow->addWidget(mineOnly);
         v->addLayout(filterRow);
@@ -883,16 +874,14 @@ private:
         table->setMinimumHeight(260);
         v->addWidget(table, 1);
 
-        auto* summary = new QLabel(QString("%1 built-in languages, %2 built-in extensions and file names.")
-                                       .arg(catalog.languages().size())
-                                       .arg(catalog.entries().size()));
+        auto* summary = new QLabel(::openbc::i18n::t("common.built_in_languages_built_in_extensions", catalog.languages().size(), catalog.entries().size()));
         v->addWidget(summary);
 
         v->addWidget(rule());
         auto* form = new QGridLayout;
         auto* key = new QLineEdit;
         key->setObjectName("syntaxMappingKey");
-        key->setPlaceholderText("cpp, h, Makefile");
+        key->setPlaceholderText(::openbc::i18n::t("common.cpp_h_makefile"));
         auto* language = new QComboBox;
         language->setObjectName("syntaxMappingLanguage");
         language->setEditable(true);
@@ -908,15 +897,15 @@ private:
             completer->setCaseSensitivity(Qt::CaseInsensitive);
         }
         language->setCurrentIndex(-1);
-        language->lineEdit()->setPlaceholderText("Language (type to search)");
-        auto* addButton = new QPushButton("&Add / Update");
+        language->lineEdit()->setPlaceholderText(::openbc::i18n::t("common.language_type_to_search"));
+        auto* addButton = new QPushButton(::openbc::i18n::t("common.add_update"));
         addButton->setObjectName("syntaxMappingAdd");
-        auto* removeButton = new QPushButton("&Remove");
+        auto* removeButton = new QPushButton(::openbc::i18n::t("common.remove"));
         removeButton->setObjectName("syntaxMappingRemove");
         removeButton->setEnabled(false);
-        removeButton->setToolTip("Removes your mapping for the selected extension; the built-in rule applies again.");
-        form->addWidget(new QLabel("Extension or file name:"), 0, 0);
-        form->addWidget(new QLabel("Language:"), 0, 1);
+        removeButton->setToolTip(::openbc::i18n::t("common.removes_your_mapping_for_the_selected"));
+        form->addWidget(new QLabel(::openbc::i18n::t("common.extension_or_file_name")), 0, 0);
+        form->addWidget(new QLabel(::openbc::i18n::t("common.language")), 0, 1);
         form->addWidget(key, 1, 0);
         form->addWidget(language, 1, 1);
         form->addWidget(addButton, 1, 2);
@@ -1011,14 +1000,12 @@ private:
         connect(addButton, &QPushButton::clicked, this, [=]() {
             const QString k = SyntaxCatalog::normalizeKey(key->text());
             if (k.isEmpty()) {
-                status->setText("Enter an extension such as cpp or a file name such as Makefile "
-                                "(no spaces, slashes or wildcards).");
+                status->setText(::openbc::i18n::t("common.enter_an_extension_such_as_cpp"));
                 return;
             }
             const SyntaxLanguage* chosen = catalog.findLanguage(language->currentText());
             if (!chosen) {
-                status->setText(QString("\"%1\" is not a known language. Pick one from the list.")
-                                    .arg(language->currentText().trimmed()));
+                status->setText(::openbc::i18n::t("common.is_not_a_known_language_pick", language->currentText().trimmed()));
                 return;
             }
             auto& list = draft_.syntaxMappings;
@@ -1057,8 +1044,8 @@ private:
             const QString fallback = catalog.builtInLanguageFor(k);
             populate();
             selectKey(k);
-            status->setText(fallback.isEmpty() ? QString("Removed the mapping for %1.").arg(k)
-                                               : QString("Removed. %1 uses %2 again.").arg(k, fallback));
+            status->setText(fallback.isEmpty() ? ::openbc::i18n::t("common.removed_the_mapping_for", k)
+                                               : ::openbc::i18n::t("common.removed_uses_again", k, fallback));
         });
 
         populate();
@@ -1069,15 +1056,15 @@ private:
     QWidget* buildNextDifference() {
         QVBoxLayout* v;
         auto* page = pageShell(&v);
-        v->addWidget(heading("Next Difference"));
-        v->addWidget(check("When &loading new files, go to first difference", &draft_.goToFirstDifferenceOnLoad));
-        v->addWidget(check("Go to next difference in files after &copying to other side",
+        v->addWidget(heading(::openbc::i18n::t("common.next_difference")));
+        v->addWidget(check(::openbc::i18n::t("common.when_loading_new_files_go_to"), &draft_.goToFirstDifferenceOnLoad));
+        v->addWidget(check(::openbc::i18n::t("common.go_to_next_difference_in_files"),
                            &draft_.goToNextDifferenceAfterCopy));
-        v->addWidget(check("Limit \"Next Difference Files\" to current &folder",
+        v->addWidget(check(::openbc::i18n::t("common.limit_next_difference_files_to_current"),
                            &draft_.limitNextDifferenceFilesToFolder));
-        v->addWidget(new QLabel("When no more differences:"));
-        v->addWidget(check("&Wrap around to first difference", &draft_.wrapAroundToFirstDifference));
-        v->addWidget(check("Show &message panel", &draft_.showMessagePanel));
+        v->addWidget(new QLabel(::openbc::i18n::t("common.when_no_more_differences")));
+        v->addWidget(check(::openbc::i18n::t("common.wrap_around_to_first_difference"), &draft_.wrapAroundToFirstDifference));
+        v->addWidget(check(::openbc::i18n::t("common.show_message_panel"), &draft_.showMessagePanel));
         v->addStretch(1);
         return page;
     }
@@ -1086,16 +1073,16 @@ private:
     QWidget* buildBackups() {
         QVBoxLayout* v;
         auto* page = pageShell(&v);
-        v->addWidget(heading("Backups"));
-        auto* beforeCopy = check("Back up files before &copy", &draft_.backupBeforeCopy);
-        auto* beforeSave = check("Back up files before &save", &draft_.backupBeforeSave);
+        v->addWidget(heading(::openbc::i18n::t("common.backups")));
+        auto* beforeCopy = check(::openbc::i18n::t("common.back_up_files_before_copy"), &draft_.backupBeforeCopy);
+        auto* beforeSave = check(::openbc::i18n::t("common.back_up_files_before_save"), &draft_.backupBeforeSave);
         v->addWidget(beforeCopy);
         v->addWidget(beforeSave);
 
         auto* naming = new QWidget;
         auto* grid = new QGridLayout(naming);
         grid->setContentsMargins(0, 0, 0, 0);
-        grid->addWidget(new QLabel("Back up \"abc.txt\" as:"), 0, 0, 1, 3);
+        grid->addWidget(new QLabel(::openbc::i18n::t("common.back_up_abc_txt_as")), 0, 0, 1, 3);
         auto* group = new QButtonGroup(this);
         struct Scheme { const char* label; BackupNaming value; };
         const Scheme schemes[] = {
@@ -1106,7 +1093,7 @@ private:
         for (int i = 0; i < 6; ++i)
             grid->addWidget(radio(schemes[i].label, &draft_.backupNaming, schemes[i].value, group),
                             1 + i / 3, i % 3);
-        auto* inFolder = radio("abc.txt in this &folder:", &draft_.backupNaming, BackupNaming::InFolder, group);
+        auto* inFolder = radio(::openbc::i18n::t("common.abc_txt_in_this_folder"), &draft_.backupNaming, BackupNaming::InFolder, group);
         grid->addWidget(inFolder, 3, 0, 1, 3);
         auto* folder = new QLineEdit(draft_.backupFolder);
         auto* browse = new QPushButton("...");
@@ -1118,7 +1105,7 @@ private:
             markDirty();
         });
         connect(browse, &QPushButton::clicked, this, [this, folder]() {
-            const QString dir = QFileDialog::getExistingDirectory(this, "Backup folder", folder->text());
+            const QString dir = QFileDialog::getExistingDirectory(this, ::openbc::i18n::t("common.backup_folder"), folder->text());
             if (!dir.isEmpty()) folder->setText(dir);
         });
         v->addWidget(naming);
@@ -1141,34 +1128,33 @@ private:
     QWidget* buildFileOperations() {
         QVBoxLayout* v;
         auto* page = pageShell(&v);
-        v->addWidget(heading("Confirmations"));
-        v->addWidget(check("Confirm file &copy", &draft_.confirmCopy));
-        v->addWidget(check("Confirm file m&ove", &draft_.confirmMove));
-        v->addWidget(check("Confirm replacing, deleting &read-only files", &draft_.confirmReplaceReadOnly));
-        v->addWidget(check("Confirm replacing, deleting &system files", &draft_.confirmReplaceSystem));
-        v->addWidget(check("Confirm &overwriting newer files", &draft_.confirmOverwriteNewer));
-        v->addWidget(check("Confirm replacing files during mo&ve", &draft_.confirmReplaceDuringMove));
-        v->addWidget(check("Confirm con&tent compare", &draft_.confirmContentCompare));
-        auto* del = check("Confirm file &delete", &draft_.confirmDelete);
+        v->addWidget(heading(::openbc::i18n::t("common.confirmations")));
+        v->addWidget(check(::openbc::i18n::t("common.confirm_file_copy"), &draft_.confirmCopy));
+        v->addWidget(check(::openbc::i18n::t("common.confirm_file_move"), &draft_.confirmMove));
+        v->addWidget(check(::openbc::i18n::t("common.confirm_replacing_deleting_read_only_files"), &draft_.confirmReplaceReadOnly));
+        v->addWidget(check(::openbc::i18n::t("common.confirm_replacing_deleting_system_files"), &draft_.confirmReplaceSystem));
+        v->addWidget(check(::openbc::i18n::t("common.confirm_overwriting_newer_files"), &draft_.confirmOverwriteNewer));
+        v->addWidget(check(::openbc::i18n::t("common.confirm_replacing_files_during_move"), &draft_.confirmReplaceDuringMove));
+        v->addWidget(check(::openbc::i18n::t("common.confirm_content_compare"), &draft_.confirmContentCompare));
+        auto* del = check(::openbc::i18n::t("common.confirm_file_delete"), &draft_.confirmDelete);
         v->addWidget(del);
-        auto* explicitSide = check("Require e&xplicit side selection in Delete dialog",
+        auto* explicitSide = check(::openbc::i18n::t("common.require_explicit_side_selection_in_delete"),
                                    &draft_.requireExplicitSideInDelete);
         explicitSide->setEnabled(draft_.confirmDelete);
         connect(del, &QCheckBox::toggled, explicitSide, &QWidget::setEnabled);
         v->addLayout(indented(explicitSide));
-        v->addWidget(check("Confirm file me&rge", &draft_.confirmMerge));
+        v->addWidget(check(::openbc::i18n::t("common.confirm_file_merge"), &draft_.confirmMerge));
 
-        v->addWidget(new QLabel("Synchronize confirmations:"));
+        v->addWidget(new QLabel(::openbc::i18n::t("common.synchronize_confirmations")));
         auto* group = new QButtonGroup(this);
-        v->addWidget(radio("&Prompt", &draft_.syncConfirmation, SyncConfirmation::Prompt, group));
-        v->addWidget(radio("&Yes to All", &draft_.syncConfirmation, SyncConfirmation::YesToAll, group));
-        v->addWidget(radio("&No to All", &draft_.syncConfirmation, SyncConfirmation::NoToAll, group));
+        v->addWidget(radio(::openbc::i18n::t("common.prompt"), &draft_.syncConfirmation, SyncConfirmation::Prompt, group));
+        v->addWidget(radio(::openbc::i18n::t("common.yes_to_all"), &draft_.syncConfirmation, SyncConfirmation::YesToAll, group));
+        v->addWidget(radio(::openbc::i18n::t("common.no_to_all"), &draft_.syncConfirmation, SyncConfirmation::NoToAll, group));
 
         v->addWidget(rule());
-        v->addWidget(heading("Filtered Items"));
-        v->addWidget(note("Actions performed on folders that contain items hidden by display or file "
-                          "filters can optionally affect the hidden items."));
-        v->addWidget(check("Include &hidden items by default", &draft_.includeHiddenItemsByDefault));
+        v->addWidget(heading(::openbc::i18n::t("common.filtered_items")));
+        v->addWidget(note(::openbc::i18n::t("common.actions_performed_on_folders_that_contain")));
+        v->addWidget(check(::openbc::i18n::t("common.include_hidden_items_by_default"), &draft_.includeHiddenItemsByDefault));
         v->addStretch(1);
         return page;
     }
@@ -1177,30 +1163,30 @@ private:
     QWidget* buildArchiveTypes() {
         QVBoxLayout* v;
         auto* page = pageShell(&v);
-        v->addWidget(heading("Java Decompiler"));
-        auto* enabled = check("Enable Java `.class` and `.jar` decompilation",
+        v->addWidget(heading(::openbc::i18n::t("options.java_decompiler")));
+        auto* enabled = check(::openbc::i18n::t("options.enable_java_class_and_jar_decompilation"),
                               &draft_.javaDecompilerEnabled);
         v->addWidget(enabled);
 
         auto* jarPath = new QLineEdit(draft_.decompilerJarPath);
-        jarPath->setPlaceholderText("Bundled CFR or cfr executable on PATH");
-        auto* browseJar = new QPushButton("Browse...");
+        jarPath->setPlaceholderText(::openbc::i18n::t("options.bundled_cfr_or_cfr_executable_on"));
+        auto* browseJar = new QPushButton(::openbc::i18n::t("options.browse"));
         auto* decompilerRow = new QHBoxLayout;
         decompilerRow->addWidget(jarPath, 1);
         decompilerRow->addWidget(browseJar);
-        v->addWidget(new QLabel("Decompiler executable or JAR:"));
+        v->addWidget(new QLabel(::openbc::i18n::t("options.decompiler_executable_or_jar")));
         v->addLayout(decompilerRow);
 
         auto* javaPath = new QLineEdit(draft_.javaBinPath);
-        javaPath->setPlaceholderText("java (from PATH)");
-        auto* browseJava = new QPushButton("Browse...");
+        javaPath->setPlaceholderText(::openbc::i18n::t("options.java_from_path"));
+        auto* browseJava = new QPushButton(::openbc::i18n::t("options.browse"));
         auto* javaRow = new QHBoxLayout;
         javaRow->addWidget(javaPath, 1);
         javaRow->addWidget(browseJava);
-        v->addWidget(new QLabel("Java Runtime executable:"));
+        v->addWidget(new QLabel(::openbc::i18n::t("options.java_runtime_executable")));
         v->addLayout(javaRow);
 
-        auto* test = new QPushButton("Test Decompiler");
+        auto* test = new QPushButton(::openbc::i18n::t("options.test_decompiler"));
         auto* testResult = new QLabel;
         testResult->setWordWrap(true);
         auto* testRow = new QHBoxLayout;
@@ -1222,7 +1208,7 @@ private:
                 });
         connect(browseJar, &QPushButton::clicked, this, [this, jarPath]() {
             const QString path = QFileDialog::getOpenFileName(
-                this, "Select Java decompiler", jarPath->text(),
+                this, ::openbc::i18n::t("options.select_java_decompiler"), jarPath->text(),
                 "JAR files (*.jar);;Executables and all files (*)");
             if (!path.isEmpty()) jarPath->setText(path);
         });
@@ -1233,7 +1219,7 @@ private:
             const QString filter = "Executables and all files (*)";
 #endif
             const QString path = QFileDialog::getOpenFileName(
-                this, "Select Java Runtime", javaPath->text(), filter);
+                this, ::openbc::i18n::t("options.select_java_runtime"), javaPath->text(), filter);
             if (!path.isEmpty()) javaPath->setText(path);
         });
         connect(test, &QPushButton::clicked, this,
@@ -1243,7 +1229,7 @@ private:
                     configuration.javaBinPath = javaPath->text().trimmed();
                     QString error;
                     if (JavaDecompilerAdapter::testConfiguration(configuration, &error)) {
-                        testResult->setText("Decompiler is available and responded successfully.");
+                        testResult->setText(::openbc::i18n::t("options.decompiler_is_available_and_responded_successful"));
                         testResult->setStyleSheet("color: palette(text);");
                     } else {
                         testResult->setText(error);
@@ -1274,9 +1260,9 @@ private:
         auto* tabs = new QTabWidget(page);
         auto* nameFilters = new QWidget(tabs);
         auto* nameLayout = new QVBoxLayout(nameFilters);
-        nameLayout->addWidget(heading("Name Filters"));
+        nameLayout->addWidget(heading(::openbc::i18n::t("common.name_filters")));
         nameLayout->addWidget(new QLabel(
-            "Choose the filter preset applied to each new folder comparison."));
+            ::openbc::i18n::t("options.choose_the_filter_preset_applied_to")));
         auto* defaultPreset = new QComboBox(nameFilters);
         defaultPreset->addItem("Built-in default", QString());
         for (const FolderFilterPreset& preset : draft_.folderFilterPresets)
@@ -1284,14 +1270,14 @@ private:
         const int defaultIndex =
             defaultPreset->findData(draft_.defaultFolderFilterPreset);
         defaultPreset->setCurrentIndex(defaultIndex < 0 ? 0 : defaultIndex);
-        nameLayout->addWidget(new QLabel("Default preset for folders:"));
+        nameLayout->addWidget(new QLabel(::openbc::i18n::t("options.default_preset_for_folders")));
         nameLayout->addWidget(defaultPreset, 0, Qt::AlignLeft);
         nameLayout->addStretch(1);
-        tabs->addTab(nameFilters, "Name Filters");
+        tabs->addTab(nameFilters, ::openbc::i18n::t("common.name_filters"));
 
         auto* misc = new QWidget(tabs);
         auto* miscLayout = new QVBoxLayout(misc);
-        miscLayout->addWidget(heading("Name filter presets"));
+        miscLayout->addWidget(heading(::openbc::i18n::t("options.name_filter_presets")));
         auto* table = new QTableWidget(0, 5, misc);
         table->setHorizontalHeaderLabels(
             {"Name", "Include files", "Exclude files", "Include folders",
@@ -1311,21 +1297,21 @@ private:
         auto* includeFolders = new QLineEdit(misc);
         auto* excludeFolders = new QLineEdit(misc);
         auto* fields = new QGridLayout;
-        fields->addWidget(new QLabel("Name"), 0, 0);
+        fields->addWidget(new QLabel(::openbc::i18n::t("common.name")), 0, 0);
         fields->addWidget(name, 0, 1);
-        fields->addWidget(new QLabel("Include files"), 1, 0);
+        fields->addWidget(new QLabel(::openbc::i18n::t("options.include_files")), 1, 0);
         fields->addWidget(includeFiles, 1, 1);
-        fields->addWidget(new QLabel("Exclude files"), 2, 0);
+        fields->addWidget(new QLabel(::openbc::i18n::t("options.exclude_files")), 2, 0);
         fields->addWidget(excludeFiles, 2, 1);
-        fields->addWidget(new QLabel("Include folders"), 3, 0);
+        fields->addWidget(new QLabel(::openbc::i18n::t("options.include_folders")), 3, 0);
         fields->addWidget(includeFolders, 3, 1);
-        fields->addWidget(new QLabel("Exclude folders"), 4, 0);
+        fields->addWidget(new QLabel(::openbc::i18n::t("options.exclude_folders")), 4, 0);
         fields->addWidget(excludeFolders, 4, 1);
         miscLayout->addLayout(fields);
-        auto* add = new QPushButton("Add");
-        auto* update = new QPushButton("Update");
-        auto* remove = new QPushButton("Delete");
-        auto* defaults = new QPushButton("Defaults");
+        auto* add = new QPushButton(::openbc::i18n::t("options.add"));
+        auto* update = new QPushButton(::openbc::i18n::t("options.update"));
+        auto* remove = new QPushButton(::openbc::i18n::t("common.delete"));
+        auto* defaults = new QPushButton(::openbc::i18n::t("options.defaults"));
         auto* buttons = new QHBoxLayout;
         buttons->addWidget(add);
         buttons->addWidget(update);
@@ -1333,7 +1319,7 @@ private:
         buttons->addStretch(1);
         buttons->addWidget(defaults);
         miscLayout->addLayout(buttons);
-        tabs->addTab(misc, "Misc");
+        tabs->addTab(misc, ::openbc::i18n::t("options.misc"));
         root->addWidget(tabs);
 
         const auto refreshTable = [this, table]() {
@@ -1393,15 +1379,15 @@ private:
                  refreshDefaultPresets]() {
                     const QString presetName = name->text().trimmed();
                     if (presetName.isEmpty()) {
-                        QMessageBox::warning(this, "Folder filters",
-                                             "Enter a preset name.");
+                        QMessageBox::warning(this, ::openbc::i18n::t("common.folder_filters"),
+                                             ::openbc::i18n::t("common.enter_a_preset_name"));
                         return;
                     }
                     for (const FolderFilterPreset& preset :
                          draft_.folderFilterPresets) {
                         if (preset.name.compare(presetName, Qt::CaseInsensitive) == 0) {
-                            QMessageBox::warning(this, "Folder filters",
-                                                 "A preset with that name already exists.");
+                            QMessageBox::warning(this, ::openbc::i18n::t("common.folder_filters"),
+                                                 ::openbc::i18n::t("common.a_preset_with_that_name_already"));
                             return;
                         }
                     }
@@ -1425,8 +1411,8 @@ private:
                         if (i != row &&
                             draft_.folderFilterPresets[i].name.compare(
                                 presetName, Qt::CaseInsensitive) == 0) {
-                            QMessageBox::warning(this, "Folder filters",
-                                                 "A preset with that name already exists.");
+                            QMessageBox::warning(this, ::openbc::i18n::t("common.folder_filters"),
+                                                 ::openbc::i18n::t("common.a_preset_with_that_name_already"));
                             return;
                         }
                     }
@@ -1498,9 +1484,9 @@ private:
     QWidget* buildCommands() {
         QVBoxLayout* v;
         auto* page = pageShell(&v);
-        v->addWidget(heading("Toolbars, Shortcuts, Menus"));
+        v->addWidget(heading(::openbc::i18n::t("common.toolbars_shortcuts_menus")));
 
-        v->addWidget(new QLabel("Select &view:"));
+        v->addWidget(new QLabel(::openbc::i18n::t("common.select_view")));
         auto* viewCombo = new QComboBox;
         viewCombo->addItems({"Home", "Folder Compare", "Text Compare", "Picture Compare", "3D Model Compare",
                              "Table Compare", "Registry Compare", "Hex Compare", "Media Compare"});
@@ -1508,10 +1494,10 @@ private:
         v->addWidget(viewCombo, 0, Qt::AlignLeft);
 
         auto* filter = new QLineEdit;
-        filter->setPlaceholderText("Search commands");
+        filter->setPlaceholderText(::openbc::i18n::t("common.search_commands"));
         filter->setClearButtonEnabled(true);
         auto* head = new QHBoxLayout;
-        head->addWidget(new QLabel("Commands:"));
+        head->addWidget(new QLabel(::openbc::i18n::t("common.commands")));
         head->addStretch(1);
         head->addWidget(filter);
         v->addLayout(head);
@@ -1531,11 +1517,11 @@ private:
 
         auto* description = note(QString());
         v->addWidget(description);
-        v->addWidget(new QLabel("&Shortcut:"));
+        v->addWidget(new QLabel(::openbc::i18n::t("common.shortcut")));
         auto* shortcut = new QKeySequenceEdit;
         shortcut->setEnabled(false);
-        auto* remove = new QPushButton("Remove");
-        auto* restore = new QPushButton("Default");
+        auto* remove = new QPushButton(::openbc::i18n::t("common.remove_2"));
+        auto* restore = new QPushButton(::openbc::i18n::t("common.default"));
         auto* shortcutRow = new QHBoxLayout;
         shortcutRow->addWidget(shortcut, 1);
         shortcutRow->addWidget(remove);
@@ -1544,7 +1530,7 @@ private:
         remove->setEnabled(false);
         restore->setEnabled(false);
         v->addWidget(rule());
-        v->addWidget(check("Large buttons with text labels (all views)", &draft_.largeToolbarButtonsWithText));
+        v->addWidget(check(::openbc::i18n::t("common.large_buttons_with_text_labels_all"), &draft_.largeToolbarButtonsWithText));
 
         // Rows keep the binding's index in UserRole so sorting/filtering never
         // loses track of which CommandBinding a row edits.
@@ -1655,8 +1641,8 @@ private:
         QVBoxLayout* v;
         auto* page = pageShell(&v);
 
-        v->addWidget(heading("Check for Updates"));
-        auto* updates = check("Check e&very:", &draft_.checkForUpdates);
+        v->addWidget(heading(::openbc::i18n::t("common.check_for_updates")));
+        auto* updates = check(::openbc::i18n::t("common.check_every"), &draft_.checkForUpdates);
         v->addWidget(updates);
         auto* row = new QHBoxLayout;
         row->setContentsMargins(22, 0, 0, 0);
@@ -1664,25 +1650,25 @@ private:
         row->addWidget(days);
         row->addWidget(new QLabel("days"));
         row->addSpacing(24);
-        row->addWidget(new QLabel("Last checked: " + draft_.lastUpdateCheck));
+        row->addWidget(new QLabel(::openbc::i18n::t("common.last_checked", draft_.lastUpdateCheck)));
         row->addStretch(1);
         v->addLayout(row);
         days->setEnabled(draft_.checkForUpdates);
         connect(updates, &QCheckBox::toggled, days, &QWidget::setEnabled);
 
         v->addWidget(rule());
-        v->addWidget(heading("Editor Display"));
-        v->addWidget(check("Show syntax highlighting on difference lines", &draft_.syntaxHighlightOnDiffLines));
-        v->addWidget(check("Use crosshatching for lines beyond the end of file", &draft_.crosshatchBeyondEndOfFile));
-        v->addWidget(check("Right side gutter for left editor (compare only)", &draft_.rightGutterForLeftEditor));
-        v->addWidget(check("Use orphan color", &draft_.useOrphanColor));
-        v->addWidget(new QLabel("Extra line spacing:"));
+        v->addWidget(heading(::openbc::i18n::t("common.editor_display")));
+        v->addWidget(check(::openbc::i18n::t("common.show_syntax_highlighting_on_difference_lines"), &draft_.syntaxHighlightOnDiffLines));
+        v->addWidget(check(::openbc::i18n::t("common.use_crosshatching_for_lines_beyond_the"), &draft_.crosshatchBeyondEndOfFile));
+        v->addWidget(check(::openbc::i18n::t("common.right_side_gutter_for_left_editor"), &draft_.rightGutterForLeftEditor));
+        v->addWidget(check(::openbc::i18n::t("common.use_orphan_color"), &draft_.useOrphanColor));
+        v->addWidget(new QLabel(::openbc::i18n::t("common.extra_line_spacing")));
         v->addLayout(withSuffix(spin(&draft_.extraLineSpacingPx, 0, 50), "pixels"));
-        v->addWidget(new QLabel("Show column line at:"));
+        v->addWidget(new QLabel(::openbc::i18n::t("common.show_column_line_at")));
         v->addWidget(spin(&draft_.columnLineAt, 0, 999), 0, Qt::AlignLeft);
-        v->addWidget(new QLabel("Dim inactive pane by:"));
+        v->addWidget(new QLabel(::openbc::i18n::t("common.dim_inactive_pane_by")));
         v->addLayout(withSuffix(spin(&draft_.dimInactivePanePercent, 0, 100), "%"));
-        auto* mergeFont = check("Use different font for merge input panes:", &draft_.useDifferentMergeInputFont);
+        auto* mergeFont = check(::openbc::i18n::t("common.use_different_font_for_merge_input"), &draft_.useDifferentMergeInputFont);
         v->addWidget(mergeFont);
         auto* font = fontButton(&draft_.mergeInputFont);
         font->setEnabled(draft_.useDifferentMergeInputFont);
@@ -1690,8 +1676,8 @@ private:
         v->addWidget(font, 0, Qt::AlignLeft);
 
         v->addWidget(rule());
-        v->addWidget(heading("File Operations"));
-        v->addWidget(check("Beep after long file operations", &draft_.beepAfterLongFileOperations));
+        v->addWidget(heading(::openbc::i18n::t("common.file_operations")));
+        v->addWidget(check(::openbc::i18n::t("common.beep_after_long_file_operations"), &draft_.beepAfterLongFileOperations));
         v->addStretch(1);
         return page;
     }
@@ -1709,7 +1695,7 @@ private:
         QVBoxLayout* v;
         auto* page = pageShell(&v);
         v->addWidget(heading(title));
-        v->addWidget(note("These settings are not available yet."));
+        v->addWidget(note(::openbc::i18n::t("common.these_settings_are_not_available_yet")));
         v->addStretch(1);
         return page;
     }

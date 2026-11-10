@@ -22,6 +22,7 @@
 #include "common/compare_font.h"
 #include "options/appearance_state.h"
 #include "common/line_number_editor.h"  // shared gutter look: colour, margins and width rule
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -707,7 +708,7 @@ void VirtualTextEditor::copySelection() {
     const QString text = selectedText(kDefaultCopyLimit, &truncated);
     if (text.isEmpty()) return;
     QGuiApplication::clipboard()->setText(text);
-    if (truncated) if (onStatusMessage) onStatusMessage(tr("Selection was larger than 64 MB; only the first part was copied."));
+    if (truncated) if (onStatusMessage) onStatusMessage(::openbc::i18n::t("text.selection_was_larger_than_64_mb"));
 }
 
 void VirtualTextEditor::selectAllText() {
@@ -840,16 +841,16 @@ void VirtualTextEditor::changeEvent(QEvent* e) {
 void VirtualTextEditor::contextMenuEvent(QContextMenuEvent* e) {
     QMenu menu(this);
     // Edit entries stay enabled while read-only so choosing one flashes the lock (like typing does).
-    menu.addAction(tr("Undo"), this, [this] { undo(); })->setEnabled(readOnly_ || canUndo());
-    menu.addAction(tr("Redo"), this, [this] { redo(); })->setEnabled(readOnly_ || canRedo());
+    menu.addAction(::openbc::i18n::t("text.undo"), this, [this] { undo(); })->setEnabled(readOnly_ || canUndo());
+    menu.addAction(::openbc::i18n::t("text.redo"), this, [this] { redo(); })->setEnabled(readOnly_ || canRedo());
     menu.addSeparator();
-    menu.addAction(tr("Cut"), this, [this] { cutSelection(); });
-    menu.addAction(tr("Copy"), this, [this] { copySelection(); })->setEnabled(hasSelection());
-    menu.addAction(tr("Paste"), this, [this] { pasteClipboard(); });
-    menu.addAction(tr("Select All"), this, [this] { selectAllText(); });
+    menu.addAction(::openbc::i18n::t("text.cut"), this, [this] { cutSelection(); });
+    menu.addAction(::openbc::i18n::t("common.copy"), this, [this] { copySelection(); })->setEnabled(hasSelection());
+    menu.addAction(::openbc::i18n::t("text.paste"), this, [this] { pasteClipboard(); });
+    menu.addAction(::openbc::i18n::t("text.select_all_2"), this, [this] { selectAllText(); });
     menu.addSeparator();
-    menu.addAction(tr("Next Difference"), this, [this] { goToNextDifference(); });
-    menu.addAction(tr("Previous Difference"), this, [this] { goToPreviousDifference(); });
+    menu.addAction(::openbc::i18n::t("common.next_difference"), this, [this] { goToNextDifference(); });
+    menu.addAction(::openbc::i18n::t("text.previous_difference_2"), this, [this] { goToPreviousDifference(); });
     menu.exec(e->globalPos());
 }
 
@@ -866,13 +867,13 @@ void VirtualTextEditor::goToLine(std::uint64_t line) {
 void VirtualTextEditor::goToNextDifference() {
     if (!model_) return;
     if (const auto row = model_->nextDifference(cursor_.row)) setCaret(*row, 0, false, true);
-    else if (onStatusMessage) onStatusMessage(tr("No more differences."));
+    else if (onStatusMessage) onStatusMessage(::openbc::i18n::t("text.no_more_differences"));
 }
 
 void VirtualTextEditor::goToPreviousDifference() {
     if (!model_) return;
     if (const auto row = model_->prevDifference(cursor_.row)) setCaret(*row, 0, false, true);
-    else if (onStatusMessage) onStatusMessage(tr("No earlier differences."));
+    else if (onStatusMessage) onStatusMessage(::openbc::i18n::t("text.no_earlier_differences"));
 }
 
 bool VirtualTextEditor::findText(const QString& text, bool caseSensitive, bool forward) {
@@ -904,7 +905,7 @@ bool VirtualTextEditor::findText(const QString& text, bool caseSensitive, bool f
     if (!hit) {
         haveMatch_ = false;
         viewport()->update();
-        if (onStatusMessage) onStatusMessage(failed ? tr("Search was cancelled.") : tr("Not found: %1").arg(text));
+        if (onStatusMessage) onStatusMessage(failed ? ::openbc::i18n::t("text.search_was_cancelled") : ::openbc::i18n::t("text.not_found").arg(text));
         return false;
     }
     const auto row = model_->rowForLine(side_, hit->line);
@@ -959,7 +960,7 @@ bool VirtualTextEditor::applyReplace(Pos from, Pos to, const QString& textIn, bo
     const qint64 lt = haveRows ? lineOf(model_->row(to.row)) : -1;
     for (const qint64 line : {lf, lt}) {
         if (line >= 0 && model_->lineBytes(side_, static_cast<quint64>(line)) > kMaxRenderChars) {
-            if (onStatusMessage) onStatusMessage(tr("This line is too long to edit in the Virtual editor."));
+            if (onStatusMessage) onStatusMessage(::openbc::i18n::t("text.this_line_is_too_long_to"));
             return false;
         }
     }
@@ -1059,7 +1060,7 @@ bool VirtualTextEditor::pasteClipboard() {
     const QString text = QGuiApplication::clipboard()->text();
     if (text.isEmpty()) return false;
     if (text.size() > 64 * 1024 * 1024) {
-        if (onStatusMessage) onStatusMessage(tr("The clipboard text is too large to paste."));
+        if (onStatusMessage) onStatusMessage(::openbc::i18n::t("text.the_clipboard_text_is_too_large"));
         return false;
     }
     return insertText(text);

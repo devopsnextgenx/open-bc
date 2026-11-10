@@ -28,6 +28,7 @@
 #include "common/diff_algorithms.h"
 #include "common/diff_arrow.h"
 #include "options/appearance_state.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -190,7 +191,7 @@ private:
 
     void updateAffordance() {
         setCursor(editable() ? Qt::IBeamCursor : Qt::ArrowCursor);
-        setToolTip(editable() ? QStringLiteral("Double-click to edit this line") : QString());
+        setToolTip(editable() ? ::openbc::i18n::t("common.double_click_to_edit_this_line") : QString());
     }
 
     // Slightly lowered (sunken) frame: dark on the top/left edges, light on the bottom/right ones.

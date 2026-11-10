@@ -33,6 +33,7 @@
 #include "options/appearance_state.h"
 #include <functional>
 #include <vector>
+#include "i18n/i18n.h"
 
 namespace openbc::ui {
 
@@ -1407,7 +1408,7 @@ public:
   explicit CompareTree(QWidget *parent = nullptr) : QTreeWidget(parent) {
     setColumnCount(6);
     setHeaderLabels(
-        {"Name", "Status", "Ext", "Size", "Modified", "Attributes"});
+        {::openbc::i18n::t("common.name"), ::openbc::i18n::t("style.status"), ::openbc::i18n::t("style.ext"), ::openbc::i18n::t("style.size"), ::openbc::i18n::t("style.modified"), ::openbc::i18n::t("common.attributes")});
     setItemDelegate(new CompareDelegate(this));
     setRootIsDecorated(true);
     setIndentation(20);

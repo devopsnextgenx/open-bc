@@ -45,6 +45,7 @@
 #include "remote/remote_connections_dialog.h"
 #include "remote/remote_profile.h"
 #include "remote/remote_profile_store.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -58,7 +59,7 @@ public:
     explicit RemotePathBrowserDialog(PathPickMode mode, RemoteBrowseBridge* bridge = nullptr,
                                       QWidget* parent = nullptr)
         : QDialog(parent), mode_(mode), bridge_(bridge) {
-        setWindowTitle(mode_ == PathPickMode::Folder ? "Select folder" : "Select file");
+        setWindowTitle(mode_ == PathPickMode::Folder ? ::openbc::i18n::t("remote.select_folder") : ::openbc::i18n::t("remote.select_file"));
         resize(780, 580);
         auto* root = new QVBoxLayout(this);
 
@@ -75,16 +76,16 @@ public:
         root->addWidget(status_);
 
         auto* pathRow = new QHBoxLayout;
-        pathRow->addWidget(new QLabel("Path:", this));
+        pathRow->addWidget(new QLabel(::openbc::i18n::t("remote.path"), this));
         selectedPathEdit_ = new QLineEdit(this);
         pathRow->addWidget(selectedPathEdit_, 1);
         manage_ = new QToolButton(this);
-        manage_->setText("Manage connections...");
+        manage_->setText(::openbc::i18n::t("remote.manage_connections"));
         pathRow->addWidget(manage_);
         root->addLayout(pathRow);
 
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-        buttons->button(QDialogButtonBox::Ok)->setText("Select");
+        buttons->button(QDialogButtonBox::Ok)->setText(::openbc::i18n::t("remote.select"));
         root->addWidget(buttons);
         connect(buttons, &QDialogButtonBox::accepted, this, [this]() { attemptAccept(); });
         connect(buttons, &QDialogButtonBox::rejected, this, [this]() { reject(); });
@@ -447,17 +448,17 @@ private:
             return;
         }
 
-        status_->setText("Connecting to " + profile.name + "...");
+        status_->setText(::openbc::i18n::t("remote.connecting_to", profile.name));
         bridge_->connectProfile(profile, [this, item, profile](bool ok, const QString& error) {
             item->setData(0, kConnectingRole, false);
             if (!ok) {
                 item->takeChildren();
                 auto* err = new QTreeWidgetItem(item, {"Couldn't connect: " + error});
                 err->setDisabled(true);
-                status_->setText("Couldn't connect to " + profile.name + ": " + error);
+                status_->setText(::openbc::i18n::t("remote.couldn_t_connect_to_2", profile.name, error));
                 return;
             }
-            status_->setText("Connected to " + profile.name + ".");
+            status_->setText(::openbc::i18n::t("remote.connected_to", profile.name));
             // List "/" and then walk down to the profile's initial folder,
             // loading only the levels along that path. Other levels are
             // pulled in as the user expands them. The item's kLoadedRole is
@@ -614,7 +615,7 @@ private:
 
     void attemptAccept() {
         if (selectedPath().isEmpty()) {
-            QMessageBox::information(this, windowTitle(), "Pick a path before continuing.");
+            QMessageBox::information(this, windowTitle(), ::openbc::i18n::t("remote.pick_a_path_before_continuing"));
             return;
         }
         accept();

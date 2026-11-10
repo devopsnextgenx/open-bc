@@ -40,6 +40,7 @@
 #include "common/path_selector.h"
 #include "common/remote_selector.h"
 #include "common/file_change_controller.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -225,7 +226,7 @@ private:
         shared_.size[0] = shared_.size[1] = 0;
         const QByteArray left = openbc_remote::localCopy(leftPath_).toUtf8(), right = openbc_remote::localCopy(rightPath_).toUtf8();
         session_ = openbc_hex_session_create(left.constData(), right.constData(), BackendChannel::callback(), channel_.user());
-        status_->setText("Scanning...");
+        status_->setText(::openbc::i18n::t("hex.scanning"));
         progress_->setValue(0);
         progress_->show();
         requestWindow(0);
@@ -277,7 +278,7 @@ private:
             const quint64 done = event.message.section('|', 0, 0).toULongLong();
             const quint64 total = std::max<quint64>(1, event.message.section('|', 1, 1).toULongLong());
             progress_->setValue(static_cast<int>(done * 100 / total));
-            status_->setText(QString("Scanning... %1%").arg(done * 100 / total));
+            status_->setText(::openbc::i18n::t("hex.scanning_2", done * 100 / total));
             break;
         }
         case OPENBC_EV_RESULT:
@@ -399,17 +400,17 @@ private:
         toolbar_->setFloatable(false);
         toolbar_->setIconSize(QSize(20, 20));
         toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-        homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), "Home");
-        sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), "Sessions");
+        homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), ::openbc::i18n::t("tab.home"));
+        sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), ::openbc::i18n::t("common.sessions"));
         toolbar_->addSeparator();
-        nextAction_ = toolbar_->addAction(icons::glyph(Glyph::NextSection), "Next Diff");
-        prevAction_ = toolbar_->addAction(icons::glyph(Glyph::PrevSection), "Prev Diff");
+        nextAction_ = toolbar_->addAction(icons::glyph(Glyph::NextSection), ::openbc::i18n::t("hex.next_diff"));
+        prevAction_ = toolbar_->addAction(icons::glyph(Glyph::PrevSection), ::openbc::i18n::t("hex.prev_diff"));
         nextAction_->setShortcut(QKeySequence(Qt::Key_F3));
         prevAction_->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F3));
-        reloadAction_ = toolbar_->addAction(icons::glyph(Glyph::Refresh), "Reload");
+        reloadAction_ = toolbar_->addAction(icons::glyph(Glyph::Refresh), ::openbc::i18n::t("common.reload"));
         toolbar_->addSeparator();
         gotoEdit_ = new QLineEdit(toolbar_);
-        gotoEdit_->setPlaceholderText("Go to offset (hex)");
+        gotoEdit_->setPlaceholderText(::openbc::i18n::t("hex.go_to_offset_hex"));
         gotoEdit_->setMaximumWidth(160);
         toolbar_->addWidget(gotoEdit_);
         widthBox_ = new QComboBox(toolbar_);

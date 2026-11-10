@@ -75,6 +75,7 @@
 #include "viewers/picture/picture_compare_api.h"
 #include "viewers/picture/picture_extensions.h"
 #include "viewers/picture/picture_metadata.h"
+#include "i18n/i18n.h"
 
 
 namespace openbc::app {
@@ -482,7 +483,7 @@ public:
     QString leftLocal, rightLocal, resolveError;
     if (!openbc_remote::resolveLocalPath(left, &leftLocal, &resolveError) ||
         !openbc_remote::resolveLocalPath(right, &rightLocal, &resolveError)) {
-      QMessageBox::warning(this, "Picture Compare", resolveError);
+      QMessageBox::warning(this, ::openbc::i18n::t("common.picture_compare"), resolveError);
       return;
     }
     const QByteArray l = leftLocal.toUtf8();
@@ -676,7 +677,7 @@ private:
     const OpenbcImageCompareOptions native = nativeOptions();
     openbc_image_compare_set_options(handle_, &native);
     if (leftPane_->hasImage() && !busy_)
-      setStatus("Comparing...", false);
+      setStatus(::openbc::i18n::t("common.comparing"), false);
   }
 
   // ===== applying events (GUI thread) ======================================
@@ -686,7 +687,7 @@ private:
       busy_ = true;
       loadTimer_.start();
       loadTimerArmed_ = true;
-      setStatus("Loading...", false);
+      setStatus(::openbc::i18n::t("common.loading"), false);
       break;
     case OPENBC_IMAGE_LOADED:
       leftInfo_ = e.left;
@@ -712,12 +713,12 @@ private:
       refreshMetadata(false);
       overlayPane_->setImage(QImage());
       clearProbe();
-      setStatus("Cannot open " + QFileInfo(e.path).fileName(), true);
+      setStatus(::openbc::i18n::t("common.cannot_open", QFileInfo(e.path).fileName()), true);
       break;
     }
     case OPENBC_IMAGE_FAILED:
       busy_ = false;
-      setStatus("Compare failed: " + e.message, true);
+      setStatus(::openbc::i18n::t("common.compare_failed", e.message), true);
       break;
     default:
       break;
@@ -743,15 +744,10 @@ private:
                                   "Minor differences", "Important differences"};
     const bool bad = e.verdict == 3;
     setStatus(texts[std::min<std::uint32_t>(e.verdict, 3)], bad);
-    statsLabel_->setText(QString("%1 of %2 pixels differ - max delta %3%4")
-                             .arg(QLocale().toString(qulonglong(e.different)),
-                                  QLocale().toString(qulonglong(e.compared)))
-                             .arg(e.maxDelta)
-                             .arg(e.backend == 1 ? " - GPU" : ""));
+    statsLabel_->setText(::openbc::i18n::t("picture.of_pixels_differ_max_delta", QLocale().toString(qulonglong(e.different)), QLocale().toString(qulonglong(e.compared)), e.maxDelta, e.backend == 1 ? " - GPU" : ""));
     if (loadTimerArmed_) {
       loadTimerArmed_ = false;
-      timeLabel_->setText(QString("Load time: %1 seconds")
-                              .arg(loadTimer_.elapsed() / 1000.0, 0, 'f', 2));
+      timeLabel_->setText(::openbc::i18n::t("picture.load_time_seconds", QString::number(loadTimer_.elapsed() / 1000.0, 'f', 2)));
     }
     if (hover_)
       hoverAt(*hover_); // keep the probe in step with the new alignment
@@ -817,9 +813,7 @@ private:
   }
 
   void updateOffsetLabel() {
-    offsetLabel_->setText(QString("Offset:  (%1,%2)")
-                              .arg(options_.offset.x())
-                              .arg(options_.offset.y()));
+    offsetLabel_->setText(::openbc::i18n::t("picture.offset", options_.offset.x(), options_.offset.y()));
   }
 
   void updateAllPanes() {
@@ -830,7 +824,7 @@ private:
 
   void updateZoomLabel() {
     const int percent = int(std::lround(leftPane_->effectiveScale() * 100.0));
-    zoomLabel_->setText(QString("Zoom:  %1%").arg(percent));
+    zoomLabel_->setText(::openbc::i18n::t("picture.zoom", percent));
     const QSignalBlocker block(zoomSlider_);
     zoomSlider_->setValue(
         std::clamp(percent, zoomSlider_->minimum(), zoomSlider_->maximum()));
@@ -884,8 +878,8 @@ private:
       sideButton_->setChecked(controlsRight_);
       sideButton_->setToolTip(
           controlsRight_
-              ? "Controls are on the right - click to move them left"
-              : "Controls are on the left - click to move them right");
+              ? ::openbc::i18n::t("picture.controls_are_on_the_right_click")
+              : ::openbc::i18n::t("picture.controls_are_on_the_left_click"));
     }
     if (actControlsRight_) {
       const QSignalBlocker b(actControlsRight_);
@@ -920,11 +914,9 @@ private:
       resizeCombo_->setCurrentIndex(options_.resize);
       alphaCheck_->setChecked(options_.compareAlpha);
     }
-    tolLabel_->setText(QString("Tolerance:  %1").arg(options_.tolerance));
-    rangeLabel_->setText(QString("Range:  %1 - %2")
-                             .arg(options_.rangeMin)
-                             .arg(options_.rangeMax));
-    blendLabel_->setText(QString("Blend:  %1").arg(options_.blend));
+    tolLabel_->setText(::openbc::i18n::t("picture.tolerance", options_.tolerance));
+    rangeLabel_->setText(::openbc::i18n::t("picture.range", options_.rangeMin, options_.rangeMax));
+    blendLabel_->setText(::openbc::i18n::t("picture.blend", options_.blend));
     updateOffsetLabel();
   }
 
@@ -1080,7 +1072,7 @@ private:
     QString leftLocal, rightLocal, error;
     if (!openbc_remote::resolveLocalPath(left, &leftLocal, &error, /*refresh=*/true) ||
         !openbc_remote::resolveLocalPath(right, &rightLocal, &error, /*refresh=*/true)) {
-      QMessageBox::warning(this, "Picture Compare", error);
+      QMessageBox::warning(this, ::openbc::i18n::t("common.picture_compare"), error);
       return;
     }
     const QByteArray l = leftLocal.toUtf8();
@@ -1108,62 +1100,62 @@ private:
       return a;
     };
     using icons::Glyph;
-    actSwap_ = make("Swap Sides", QKeySequence(), [this]() { swapSides(); });
+    actSwap_ = make(::openbc::i18n::t("common.swap_sides"), QKeySequence(), [this]() { swapSides(); });
     actSwap_->setIcon(icons::glyph(Glyph::Swap));
-    actSwap_->setIconText("Swap"); // short caption under the toolbar icon
-    actSwap_->setToolTip("Swap left and right");
-    actReload_ = make("Reload", QKeySequence("F5"), [this]() { reload(); });
+    actSwap_->setIconText(::openbc::i18n::t("common.swap")); // short caption under the toolbar icon
+    actSwap_->setToolTip(::openbc::i18n::t("picture.swap_left_and_right"));
+    actReload_ = make(::openbc::i18n::t("common.reload"), QKeySequence("F5"), [this]() { reload(); });
     actReload_->setIcon(icons::glyph(Glyph::Refresh));
-    actReload_->setToolTip("Reload both images (F5)");
+    actReload_->setToolTip(::openbc::i18n::t("picture.reload_both_images_f5"));
 
     actTol_ =
-        make("Tolerance Mode", QKeySequence(), [this]() { setMode(0); }, true);
+        make(::openbc::i18n::t("picture.tolerance_mode"), QKeySequence(), [this]() { setMode(0); }, true);
     actTol_->setIcon(icons::pictureicons::tolerance());
-    actTol_->setIconText("Tol");
+    actTol_->setIconText(::openbc::i18n::t("picture.tol"));
     actTol_->setToolTip(
-        "Highlight pixels that differ by more than the tolerance");
+        ::openbc::i18n::t("picture.highlight_pixels_that_differ_by_more"));
     actRange_ =
-        make("Range Mode", QKeySequence(), [this]() { setMode(1); }, true);
+        make(::openbc::i18n::t("picture.range_mode"), QKeySequence(), [this]() { setMode(1); }, true);
     actRange_->setIcon(icons::pictureicons::range());
-    actRange_->setIconText("Range");
-    actRange_->setToolTip("Show per-pixel difference magnitude inside a range");
+    actRange_->setIconText(::openbc::i18n::t("picture.range_2"));
+    actRange_->setToolTip(::openbc::i18n::t("picture.show_per_pixel_difference_magnitude_inside"));
     actBlend_ =
-        make("Blend Mode", QKeySequence(), [this]() { setMode(2); }, true);
+        make(::openbc::i18n::t("picture.blend_mode"), QKeySequence(), [this]() { setMode(2); }, true);
     actBlend_->setIcon(icons::pictureicons::blend());
-    actBlend_->setIconText("Blend");
-    actBlend_->setToolTip("Blend both images");
+    actBlend_->setIconText(::openbc::i18n::t("picture.blend_2"));
+    actBlend_->setToolTip(::openbc::i18n::t("picture.blend_both_images"));
     for (QAction *a : {actTol_, actRange_, actBlend_})
       a->setIconVisibleInMenu(false);
 
-    actMetadata_ = new QAction("Metadata", this);
+    actMetadata_ = new QAction(::openbc::i18n::t("common.metadata"), this);
     actMetadata_->setCheckable(true);
     actMetadata_->setChecked(showMetadata_);
     actMetadata_->setIcon(icons::pictureicons::info());
     actMetadata_->setIconVisibleInMenu(false);
     actMetadata_->setToolTip(
-        "Show a side-by-side list of file / image / EXIF properties");
+        ::openbc::i18n::t("picture.show_a_side_by_side_list"));
     connect(actMetadata_, &QAction::toggled, this, [this](bool on) {
       showMetadata_ = on;
       if (metaPanel_)
         metaPanel_->setVisible(on);
     });
 
-    actResetOffset_ = make("Reset Offset", QKeySequence(), [this]() {
+    actResetOffset_ = make(::openbc::i18n::t("picture.reset_offset"), QKeySequence(), [this]() {
       options_.offset = QPoint(0, 0);
       updateOffsetLabel();
       sendOptions();
     });
-    actZoomIn_ = make("Zoom In", QKeySequence(Qt::CTRL | Qt::Key_Plus),
+    actZoomIn_ = make(::openbc::i18n::t("picture.zoom_in"), QKeySequence(Qt::CTRL | Qt::Key_Plus),
                       [this]() { zoomBy(1); });
-    actZoomOut_ = make("Zoom Out", QKeySequence(Qt::CTRL | Qt::Key_Minus),
+    actZoomOut_ = make(::openbc::i18n::t("picture.zoom_out"), QKeySequence(Qt::CTRL | Qt::Key_Minus),
                        [this]() { zoomBy(-1); });
-    actFit_ = make("Fit to Window", QKeySequence(Qt::CTRL | Qt::Key_0),
+    actFit_ = make(::openbc::i18n::t("picture.fit_to_window"), QKeySequence(Qt::CTRL | Qt::Key_0),
                    [this]() { fitToWindow(); });
     actFit_->setIcon(icons::pictureicons::fit());
-    actActual_ = make("Actual Size (1:1)", QKeySequence(Qt::CTRL | Qt::Key_1),
+    actActual_ = make(::openbc::i18n::t("picture.actual_size_1_1"), QKeySequence(Qt::CTRL | Qt::Key_1),
                       [this]() { setZoomPercent(100); });
 
-    actControlsRight_ = new QAction("Controls on Right", this);
+    actControlsRight_ = new QAction(::openbc::i18n::t("picture.controls_on_right"), this);
     actControlsRight_->setCheckable(true);
     actControlsRight_->setChecked(controlsRight_);
     connect(actControlsRight_, &QAction::triggered, this,
@@ -1190,19 +1182,19 @@ private:
     toolbar_->addAction(actReload_);
     toolbar_->addSeparator();
 
-    toolbar_->addWidget(new QLabel("Size:", toolbar_));
+    toolbar_->addWidget(new QLabel(::openbc::i18n::t("common.size"), toolbar_));
     resizeCombo_ = new QComboBox(toolbar_);
     resizeCombo_->addItems({"Auto scale", "Native size", "Fit to left",
                             "Fit to right", "Fit to larger", "Fit to smaller"});
     resizeCombo_->setToolTip(
-        "How differently sized images are matched before comparing");
+        ::openbc::i18n::t("picture.how_differently_sized_images_are_matched"));
     connect(resizeCombo_, &QComboBox::currentIndexChanged, this, [this](int i) {
       options_.resize = i;
       sendOptions();
     });
     toolbar_->addWidget(resizeCombo_);
 
-    alphaCheck_ = new QCheckBox("Compare alpha", toolbar_);
+    alphaCheck_ = new QCheckBox(::openbc::i18n::t("picture.compare_alpha"), toolbar_);
     connect(alphaCheck_, &QCheckBox::toggled, this, [this](bool on) {
       options_.compareAlpha = on;
       sendOptions();
@@ -1287,7 +1279,7 @@ private:
     col->setSpacing(4);
 
     offsetLabel_ = new QLabel(panel);
-    zoomLabel_ = new QLabel("Zoom:  100%", panel);
+    zoomLabel_ = new QLabel(::openbc::i18n::t("picture.zoom_100"), panel);
 
     auto *head = new QHBoxLayout;
     head->setContentsMargins(0, 0, 0, 0);
@@ -1311,7 +1303,7 @@ private:
             [this](int v) { setZoomPercent(v); });
     auto *actual = new QToolButton(panel);
     actual->setText("1:1");
-    actual->setToolTip("Actual size (Ctrl+1)");
+    actual->setToolTip(::openbc::i18n::t("picture.actual_size_ctrl_1"));
     actual->setMinimumSize(32, 26);
     QFont actualFont = actual->font();
     actualFont.setBold(true);
@@ -1321,7 +1313,7 @@ private:
     fitButton_ = new QToolButton(panel);
     fitButton_->setIcon(icons::pictureicons::fit());
     fitButton_->setIconSize(QSize(16, 16));
-    fitButton_->setToolTip("Fit to window (Ctrl+0)");
+    fitButton_->setToolTip(::openbc::i18n::t("picture.fit_to_window_ctrl_0"));
     fitButton_->setCheckable(true); // lit while the view is in fit mode
     fitButton_->setChecked(view_.fit);
     fitButton_->setMinimumSize(32, 26);
@@ -1337,20 +1329,20 @@ private:
     paramStack_->addWidget(
         sliderPage(tolLabel_, tolSlider_, 0, 255, [this](int v) {
           options_.tolerance = v;
-          tolLabel_->setText(QString("Tolerance:  %1").arg(v));
+          tolLabel_->setText(::openbc::i18n::t("picture.tolerance", v));
           sendOptions();
         }));
     paramStack_->addWidget(rangePage());
     paramStack_->addWidget(
         sliderPage(blendLabel_, blendSlider_, 0, 100, [this](int v) {
           options_.blend = v;
-          blendLabel_->setText(QString("Blend:  %1").arg(v));
+          blendLabel_->setText(::openbc::i18n::t("picture.blend", v));
           sendOptions();
         }));
     col->addWidget(paramStack_);
 
     col->addSpacing(6);
-    col->addWidget(new QLabel("Pixel details:", panel));
+    col->addWidget(new QLabel(::openbc::i18n::t("picture.pixel_details"), panel));
     auto *grids = new QHBoxLayout;
     for (int s = 0; s < 2; ++s) {
       auto *g = new QVBoxLayout;
@@ -1400,9 +1392,7 @@ private:
         const QSignalBlocker b(rangeMaxSlider_);
         rangeMaxSlider_->setValue(v);
       }
-      rangeLabel_->setText(QString("Range:  %1 - %2")
-                               .arg(options_.rangeMin)
-                               .arg(options_.rangeMax));
+      rangeLabel_->setText(::openbc::i18n::t("picture.range", options_.rangeMin, options_.rangeMax));
       sendOptions();
     });
     connect(rangeMaxSlider_, &QSlider::valueChanged, this, [this](int v) {
@@ -1412,9 +1402,7 @@ private:
         const QSignalBlocker b(rangeMinSlider_);
         rangeMinSlider_->setValue(v);
       }
-      rangeLabel_->setText(QString("Range:  %1 - %2")
-                               .arg(options_.rangeMin)
-                               .arg(options_.rangeMax));
+      rangeLabel_->setText(::openbc::i18n::t("picture.range", options_.rangeMin, options_.rangeMax));
       sendOptions();
     });
     col->addWidget(rangeLabel_);
@@ -1427,7 +1415,7 @@ private:
     auto *bar = new QWidget(this);
     auto *row = new QHBoxLayout(bar);
     row->setContentsMargins(8, 3, 8, 3);
-    statusLabel_ = new QLabel("Choose two images to compare", bar);
+    statusLabel_ = new QLabel(::openbc::i18n::t("picture.choose_two_images_to_compare"), bar);
     statsLabel_ = new QLabel(bar);
     timeLabel_ = new QLabel(bar);
     row->addWidget(statusLabel_);

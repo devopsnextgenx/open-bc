@@ -30,6 +30,7 @@
 #include <algorithm>
 
 #include "viewers/picture/picture_exif.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -84,11 +85,11 @@ public:
         column->setSpacing(4);
 
         auto* header = new QHBoxLayout;
-        summary_ = new QLabel("Metadata", this);
+        summary_ = new QLabel(::openbc::i18n::t("common.metadata"), this);
         summary_->setWordWrap(true);
-        onlyDifferences_ = new QCheckBox("Differences only", this);
-        auto* copy = new QPushButton("Copy", this);
-        copy->setToolTip("Copy the visible rows to the clipboard (tab separated)");
+        onlyDifferences_ = new QCheckBox(::openbc::i18n::t("common.differences_only"), this);
+        auto* copy = new QPushButton(::openbc::i18n::t("common.copy"), this);
+        copy->setToolTip(::openbc::i18n::t("picture.copy_the_visible_rows_to_the"));
         header->addWidget(summary_, 1);
         header->addWidget(onlyDifferences_);
         header->addWidget(copy);
@@ -96,7 +97,7 @@ public:
 
         tree_ = new QTreeWidget(this);
         tree_->setColumnCount(3);
-        tree_->setHeaderLabels({"Property", "Left", "Right"});
+        tree_->setHeaderLabels({::openbc::i18n::t("common.property"), ::openbc::i18n::t("common.left"), ::openbc::i18n::t("common.right")});
         tree_->setRootIsDecorated(true);
         tree_->setUniformRowHeights(true);
         tree_->setAlternatingRowColors(true);
@@ -160,7 +161,7 @@ private:
         });
 
         if (groups.isEmpty()) {
-            summary_->setText("No images loaded");
+            summary_->setText(::openbc::i18n::t("picture.no_images_loaded"));
             return;
         }
 
@@ -207,8 +208,8 @@ private:
         }
         plainText_ = lines.join('\n');
         summary_->setText(compared == 0
-                              ? QString("Metadata")
-                              : QString("%1 of %2 properties differ").arg(differing).arg(compared));
+                              ? ::openbc::i18n::t("common.metadata")
+                              : ::openbc::i18n::t("common.of_properties_differ", differing, compared));
     }
 
     QLabel* summary_ = nullptr;

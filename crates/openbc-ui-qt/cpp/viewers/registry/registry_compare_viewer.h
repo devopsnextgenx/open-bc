@@ -58,6 +58,7 @@
 #include "common/path_selector.h"
 #include "common/unsaved_changes_dialog.h"
 #include "common/file_change_controller.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -280,7 +281,7 @@ private:
         view_.reset();
         const QByteArray left = leftPath_.toUtf8(), right = rightPath_.toUtf8();
         session_ = openbc_registry_session_create(left.constData(), right.constData(), BackendChannel::callback(), channel_.user());
-        status_->setText("Loading...");
+        status_->setText(::openbc::i18n::t("common.loading"));
         if (onTitleChanged) onTitleChanged();
     }
 
@@ -291,7 +292,7 @@ private:
     }
 
     void send(bool accepted) {
-        if (!accepted) status_->setText("Backend is busy; try again in a moment.");
+        if (!accepted) status_->setText(::openbc::i18n::t("common.backend_is_busy_try_again_in"));
     }
 
     void onEvent(const BackendChannel::Event& event) {
@@ -305,7 +306,7 @@ private:
             finishSave(false, event.message);
             break;
         case OPENBC_EV_SAVED:
-            status_->setText("Saved " + QFileInfo(event.message.section('|', 1)).fileName());
+            status_->setText(::openbc::i18n::t("common.saved", QFileInfo(event.message.section('|', 1)).fileName()));
             finishSave(true, {});
             break;
         case OPENBC_EV_RESULT:
@@ -352,8 +353,8 @@ private:
 
         const int groups = groupCount();
         currentGroup_ = groups ? std::min(currentGroup_, groups - 1) : -1;
-        status_->setText(groups ? QString("%1 difference %2.").arg(groups).arg(groups == 1 ? "section" : "sections")
-                                : QString("Registry exports match: no differences."));
+        status_->setText(groups ? ::openbc::i18n::t("registry.difference", groups, groups == 1 ? "section" : "sections")
+                                : ::openbc::i18n::t("registry.registry_exports_match_no_differences"));
         if (onTitleChanged) onTitleChanged();
     }
 
@@ -403,7 +404,7 @@ private:
                 });
                 return;
             }
-            status_->setText("Backend is busy; try again in a moment.");
+            status_->setText(::openbc::i18n::t("common.backend_is_busy_try_again_in"));
             if (done) done(false, "The backend is busy; try again in a moment.");
             return;
         }
@@ -431,14 +432,14 @@ private:
         const bool dirty = dirty_[side];
         const int count = changeCount(side);
         labels_[side]->setText(!error.isEmpty() ? "<span style='color:#e5534b'>" + error.toHtmlEscaped() + "</span>"
-                               : dirty        ? QString("%1 unsaved %2").arg(count).arg(count == 1 ? "change" : "changes")
+                               : dirty        ? ::openbc::i18n::t("common.unsaved", count, count == 1 ? "change" : "changes")
                                               : QString());
         saves_[side]->setObjectName("saveSideBtn");
         saves_[side]->setIcon(icons::saveIcon(dirty ? QColor(0x4e, 0x9c, 0xff) : QColor(0xdd, 0xe0, 0xee)));
         saves_[side]->setProperty("dirty", dirty);
-        saves_[side]->setToolTip(dirty ? "Unsaved changes on this side - click or Ctrl+S to write to disk"
-                                       : (side == 0 ? "Save left file (Ctrl+S while this side is active)"
-                                                    : "Save right file (Ctrl+S while this side is active)"));
+        saves_[side]->setToolTip(dirty ? ::openbc::i18n::t("common.unsaved_changes_on_this_side_click")
+                                       : (side == 0 ? ::openbc::i18n::t("common.save_left_file_ctrl_s_while")
+                                                    : ::openbc::i18n::t("common.save_right_file_ctrl_s_while")));
         saves_[side]->style()->unpolish(saves_[side]);
         saves_[side]->style()->polish(saves_[side]);
     }
@@ -449,10 +450,10 @@ private:
         const std::uint8_t side = static_cast<std::uint8_t>(activeSide_);
         const QString name = side == 0 ? "left" : "right";
         if (!dirty_[side]) {
-            status_->setText("Nothing to save on the " + name + " side.");
+            status_->setText(::openbc::i18n::t("common.nothing_to_save_on_the_side", name));
             return;
         }
-        status_->setText("Saving the " + name + " file...");
+        status_->setText(::openbc::i18n::t("common.saving_the_file", name));
         startSave(side == 0, {});
     }
 
@@ -475,7 +476,7 @@ private:
         const QString path = cleanPathInput(raw);
         if (path == current) return;
         if (!path.isEmpty() && !QFileInfo(path).isFile()) {
-            status_->setText("Not a file: " + path);
+            status_->setText(::openbc::i18n::t("registry.not_a_file", path));
             selector->setText(current);
             return;
         }
@@ -508,8 +509,8 @@ private:
         toolbar_->setFloatable(false);
         toolbar_->setIconSize(QSize(20, 20));
         toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-        homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), "Home");
-        sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), "Sessions");
+        homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), ::openbc::i18n::t("tab.home"));
+        sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), ::openbc::i18n::t("common.sessions"));
         toolbar_->addSeparator();
         auto* group = new QActionGroup(this);
         auto addFilter = [&](Glyph glyph, const QString& text, diffgrid::RowFilter filter, bool checked) {
@@ -524,28 +525,28 @@ private:
         showDiffsAction_ = addFilter(Glyph::ShowDiffs, "Diffs", diffgrid::RowFilter::DiffsOnly, false);
         contextAction_ = addFilter(Glyph::Context, "Context", diffgrid::RowFilter::Context, false);
         toolbar_->addSeparator();
-        copyRightAction_ = toolbar_->addAction(icons::glyph(Glyph::CopyLine), "Copy ->");
+        copyRightAction_ = toolbar_->addAction(icons::glyph(Glyph::CopyLine), ::openbc::i18n::t("common.copy_2"));
         copyLeftAction_ = toolbar_->addAction(icons::glyph(Glyph::CopyLine), "<- Copy");
-        nextAction_ = toolbar_->addAction(icons::glyph(Glyph::NextSection), "Next Section");
-        prevAction_ = toolbar_->addAction(icons::glyph(Glyph::PrevSection), "Prev Section");
+        nextAction_ = toolbar_->addAction(icons::glyph(Glyph::NextSection), ::openbc::i18n::t("common.next_section"));
+        prevAction_ = toolbar_->addAction(icons::glyph(Glyph::PrevSection), ::openbc::i18n::t("common.prev_section"));
         nextAction_->setShortcut(QKeySequence(Qt::Key_F3));
         prevAction_->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F3));
         toolbar_->addSeparator();
-        swapAction_ = toolbar_->addAction(icons::glyph(Glyph::Swap), "Swap");
-        reloadAction_ = toolbar_->addAction(icons::glyph(Glyph::Refresh), "Reload");
-        saveLeftAction_ = new QAction(icons::glyph(Glyph::Save), "Save Left", this);
-        saveRightAction_ = new QAction(icons::glyph(Glyph::Save), "Save Right", this);
+        swapAction_ = toolbar_->addAction(icons::glyph(Glyph::Swap), ::openbc::i18n::t("common.swap"));
+        reloadAction_ = toolbar_->addAction(icons::glyph(Glyph::Refresh), ::openbc::i18n::t("common.reload"));
+        saveLeftAction_ = new QAction(icons::glyph(Glyph::Save), ::openbc::i18n::t("common.save_left"), this);
+        saveRightAction_ = new QAction(icons::glyph(Glyph::Save), ::openbc::i18n::t("common.save_right"), this);
         // Ctrl+S saves the active side; scoped to this tab (and its children) like text compare's save action.
-        saveAction_ = new QAction(icons::glyph(Glyph::Save), "Save", this);
+        saveAction_ = new QAction(icons::glyph(Glyph::Save), ::openbc::i18n::t("common.save"), this);
         saveAction_->setShortcut(QKeySequence::Save);
         saveAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-        saveAction_->setToolTip("Save the active side (the side of the current cell)");
+        saveAction_->setToolTip(::openbc::i18n::t("registry.save_the_active_side_the_side"));
         addAction(saveAction_);
         root->addWidget(toolbar_);
 
         auto* header = new QHBoxLayout;
         header->setContentsMargins(6, 2, 6, 2);
-        ignoreCase_ = new QCheckBox("Ignore data case", this);
+        ignoreCase_ = new QCheckBox(::openbc::i18n::t("registry.ignore_data_case"), this);
         header->addWidget(ignoreCase_);
         for (int side = 0; side < 2; ++side) {
             selectors_[side] = makeCommitSelector(
@@ -557,7 +558,7 @@ private:
             saves_[side] = new QToolButton(this);
             saves_[side]->setAutoRaise(true);
             saves_[side]->setIcon(icons::glyph(Glyph::Save));
-            saves_[side]->setToolTip(side == 0 ? "Save left" : "Save right");
+            saves_[side]->setToolTip(side == 0 ? ::openbc::i18n::t("registry.save_left") : ::openbc::i18n::t("registry.save_right"));
             auto* column = new QVBoxLayout;
             column->setSpacing(2);
             auto* line = new QHBoxLayout;

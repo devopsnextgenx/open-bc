@@ -76,6 +76,7 @@
 #include "style/qt_style.h"
 #include "viewers/folder/folder_model.h"
 #include "viewers/picture/picture_extensions.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -1008,7 +1009,7 @@ public:
       pendingView_.valid = false;
       leftTree_->clear();
       rightTree_->clear();
-      log("Select a folder to list, or two folders to compare");
+      log(::openbc::i18n::t("folder.select_a_folder_to_list_or"));
       return;
     }
     // One side picked, the other still blank: list that side on its own
@@ -1033,7 +1034,7 @@ public:
       pendingView_.valid = false;
       leftTree_->clear();
       rightTree_->clear();
-      log("Left folder not found: " + QDir::toNativeSeparators(left));
+      log(::openbc::i18n::t("folder.left_folder_not_found", QDir::toNativeSeparators(left)));
       return;
     }
     if (!right.isEmpty() && !rightRemote && !QFileInfo(right).isDir() &&
@@ -1041,7 +1042,7 @@ public:
       pendingView_.valid = false;
       leftTree_->clear();
       rightTree_->clear();
-      log("Right folder not found: " + QDir::toNativeSeparators(right));
+      log(::openbc::i18n::t("folder.right_folder_not_found", QDir::toNativeSeparators(right)));
       return;
     }
 
@@ -1085,23 +1086,20 @@ public:
         restoreViewState(/*final=*/true);
       pendingView_.valid = false;
       focusPendingEdit();
-      log("Folder comparison completed");
+      log(::openbc::i18n::t("folder.folder_comparison_completed"));
     };
     run_->onError = [this, expected](const QString &error) {
       if (run_.get() != expected)
         return;
-      log("Folder comparison failed: " + error);
+      log(::openbc::i18n::t("folder.folder_comparison_failed", error));
     };
     if (!left.isEmpty() && !right.isEmpty()) {
-      log("Load comparison: " + QDir::toNativeSeparators(left) + " <-> " +
-          QDir::toNativeSeparators(right));
+      log(::openbc::i18n::t("folder.load_comparison", QDir::toNativeSeparators(left), QDir::toNativeSeparators(right)));
       log(contentsAction_->isChecked()
-              ? "Comparing folder contents (byte-for-byte)..."
-              : "Comparing folder structure (size and timestamp)...");
+              ? ::openbc::i18n::t("folder.comparing_folder_contents_byte_for_byte")
+              : ::openbc::i18n::t("folder.comparing_folder_structure_size_and_timestamp"));
     } else {
-      log("Listing " + QString(left.isEmpty() ? "right" : "left") +
-          " folder: " +
-          QDir::toNativeSeparators(left.isEmpty() ? right : left));
+      log(::openbc::i18n::t("folder.listing_folder", QString(left.isEmpty() ? "right" : "left"), QDir::toNativeSeparators(left.isEmpty() ? right : left)));
     }
     run_->start(left, right, leftProfile, leftRemote, rightProfile,
                 rightRemote);
@@ -1115,9 +1113,7 @@ public:
   void reportRemoteFolderCheck(QString left, RemoteProfile leftProfile,
                                bool leftRemote, QString right,
                                RemoteProfile rightProfile, bool rightRemote) {
-    log("Recursive comparison against a remote connection isn't wired up yet - "
-        "checking whether "
-        "the picked remote path(s) resolve to a folder...");
+    log(::openbc::i18n::t("folder.recursive_comparison_against_a_remote_connection"));
     QPointer<FolderCompareViewer> self(this);
     QThreadPool::globalInstance()->start([self, left, leftProfile, leftRemote,
                                           right, rightProfile, rightRemote]() {
@@ -1140,7 +1136,7 @@ public:
           [self, leftStatus, rightStatus]() {
             if (!self)
               return;
-            self->log("Left: " + leftStatus + " / Right: " + rightStatus);
+            self->log(::openbc::i18n::t("folder.left_right", leftStatus, rightStatus));
           },
           Qt::QueuedConnection);
     });
@@ -1156,7 +1152,7 @@ private:
 
   void editNameFilters() {
     QDialog dialog(this);
-    dialog.setWindowTitle("Name Filters");
+    dialog.setWindowTitle(::openbc::i18n::t("common.name_filters"));
     dialog.setMinimumWidth(720);
     auto *layout = new QVBoxLayout(&dialog);
     auto *grid = new QGridLayout;
@@ -1171,23 +1167,22 @@ private:
     for (QPlainTextEdit *editor :
          {includeFiles, excludeFiles, includeFolders, excludeFolders})
       editor->setMinimumHeight(92);
-    grid->addWidget(new QLabel("Include files:"), 0, 0);
-    grid->addWidget(new QLabel("Exclude files:"), 0, 1);
+    grid->addWidget(new QLabel(::openbc::i18n::t("folder.include_files")), 0, 0);
+    grid->addWidget(new QLabel(::openbc::i18n::t("folder.exclude_files")), 0, 1);
     grid->addWidget(includeFiles, 1, 0);
     grid->addWidget(excludeFiles, 1, 1);
-    grid->addWidget(new QLabel("Include folders:"), 2, 0);
-    grid->addWidget(new QLabel("Exclude folders:"), 2, 1);
+    grid->addWidget(new QLabel(::openbc::i18n::t("folder.include_folders")), 2, 0);
+    grid->addWidget(new QLabel(::openbc::i18n::t("folder.exclude_folders")), 2, 1);
     grid->addWidget(includeFolders, 3, 0);
     grid->addWidget(excludeFolders, 3, 1);
     layout->addLayout(grid);
     auto *help = new QLabel(
-        "One mask per line (or separated by ';'). Wildcards: * and ?. "
-        "Masks with a path separator match from the base folder.");
+        ::openbc::i18n::t("folder.one_mask_per_line_or_separated"));
     help->setWordWrap(true);
     layout->addWidget(help);
 
     auto *controls = new QHBoxLayout;
-    auto *clear = new QPushButton("Clear", &dialog);
+    auto *clear = new QPushButton(::openbc::i18n::t("common.clear"), &dialog);
     auto *loadPreset = new QComboBox(&dialog);
     loadPreset->addItem("Load preset...", QString());
     if (optionsStore_) {
@@ -1197,17 +1192,17 @@ private:
     } else {
       loadPreset->setEnabled(false);
     }
-    auto *addPreset = new QPushButton("Add To Presets...", &dialog);
+    auto *addPreset = new QPushButton(::openbc::i18n::t("folder.add_to_presets"), &dialog);
     addPreset->setEnabled(optionsStore_ != nullptr);
-    auto *savePreset = new QPushButton("Save Preset", &dialog);
+    auto *savePreset = new QPushButton(::openbc::i18n::t("folder.save_preset"), &dialog);
     savePreset->setEnabled(false);
     controls->addWidget(clear);
     controls->addWidget(loadPreset);
     controls->addWidget(addPreset);
     controls->addWidget(savePreset);
     controls->addStretch(1);
-    auto *apply = new QPushButton("Apply", &dialog);
-    auto *cancel = new QPushButton("Cancel", &dialog);
+    auto *apply = new QPushButton(::openbc::i18n::t("common.apply"), &dialog);
+    auto *cancel = new QPushButton(::openbc::i18n::t("common.cancel"), &dialog);
     controls->addWidget(apply);
     controls->addWidget(cancel);
     layout->addLayout(controls);
@@ -1242,21 +1237,21 @@ private:
              includeFolders, excludeFolders]() {
       bool accepted = false;
       const QString name =
-          QInputDialog::getText(&dialog, "Add Filter Preset", "Name:",
+          QInputDialog::getText(&dialog, ::openbc::i18n::t("folder.add_filter_preset"), ::openbc::i18n::t("folder.name"),
                                 QLineEdit::Normal, QString(), &accepted)
               .trimmed();
       if (!accepted)
         return;
       if (name.isEmpty()) {
-        QMessageBox::warning(&dialog, "Folder filters",
-                             "Enter a preset name.");
+        QMessageBox::warning(&dialog, ::openbc::i18n::t("common.folder_filters"),
+                             ::openbc::i18n::t("common.enter_a_preset_name"));
         return;
       }
       AppOptions next = optionsStore_->options();
       for (const FolderFilterPreset &preset : next.folderFilterPresets) {
         if (preset.name.compare(name, Qt::CaseInsensitive) == 0) {
-          QMessageBox::warning(&dialog, "Folder filters",
-                               "A preset with that name already exists.");
+          QMessageBox::warning(&dialog, ::openbc::i18n::t("common.folder_filters"),
+                               ::openbc::i18n::t("common.a_preset_with_that_name_already"));
           return;
         }
       }
@@ -1283,14 +1278,14 @@ private:
                     return value.name == selectedName;
                   });
               if (preset == next.folderFilterPresets.end()) {
-                QMessageBox::warning(&dialog, "Folder filters",
-                                     "The selected preset no longer exists.");
+                QMessageBox::warning(&dialog, ::openbc::i18n::t("common.folder_filters"),
+                                     ::openbc::i18n::t("folder.the_selected_preset_no_longer_exists"));
                 return;
               }
               if (preset->builtIn) {
                 QMessageBox::warning(
-                    &dialog, "Folder filters",
-                    "Built-in presets cannot be overwritten. Use Add To Presets to save a copy.");
+                    &dialog, ::openbc::i18n::t("common.folder_filters"),
+                    ::openbc::i18n::t("folder.built_in_presets_cannot_be_overwritten"));
                 return;
               }
               preset->includeFiles = includeFiles->toPlainText();
@@ -1309,7 +1304,7 @@ private:
     });
     connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
     if (dialog.exec() == QDialog::Accepted) {
-      log("Applied name filters");
+      log(::openbc::i18n::t("folder.applied_name_filters"));
       refresh();
     }
   }
@@ -1317,17 +1312,17 @@ private:
   // ---------------------------------------------------------------- actions
   void createActions() {
     using icons::Glyph;
-    compareAction_ = new QAction(icons::glyph(Glyph::Compare), "Compare", this);
-    compareAction_->setToolTip("Compare the two folders again (recursive)");
-    refreshAction_ = new QAction(icons::glyph(Glyph::Refresh), "Refresh", this);
+    compareAction_ = new QAction(icons::glyph(Glyph::Compare), ::openbc::i18n::t("folder.compare"), this);
+    compareAction_->setToolTip(::openbc::i18n::t("folder.compare_the_two_folders_again_recursive"));
+    refreshAction_ = new QAction(icons::glyph(Glyph::Refresh), ::openbc::i18n::t("folder.refresh"), this);
     refreshAction_->setShortcut(QKeySequence(Qt::Key_F5));
-    refreshAction_->setToolTip("Refresh (F5)");
-    swapAction_ = new QAction(icons::glyph(Glyph::Swap), "Swap sides", this);
-    swapAction_->setToolTip("Swap left and right folders");
+    refreshAction_->setToolTip(::openbc::i18n::t("folder.refresh_f5"));
+    swapAction_ = new QAction(icons::glyph(Glyph::Swap), ::openbc::i18n::t("folder.swap_sides"), this);
+    swapAction_->setToolTip(::openbc::i18n::t("folder.swap_left_and_right_folders"));
     selectLeftAction_ = new QAction(icons::glyph(Glyph::FolderOpen),
-                                    "Select left folder...", this);
+                                    ::openbc::i18n::t("folder.select_left_folder"), this);
     selectRightAction_ = new QAction(icons::glyph(Glyph::FolderOpen),
-                                     "Select right folder...", this);
+                                     ::openbc::i18n::t("folder.select_right_folder"), this);
 
     struct Toggle {
       const char *text;
@@ -1361,45 +1356,44 @@ private:
     }
 
     expandAllAction_ =
-        new QAction(icons::glyph(Glyph::ExpandAll), "Expand all", this);
-    expandAllAction_->setToolTip("Expand all folders");
+        new QAction(icons::glyph(Glyph::ExpandAll), ::openbc::i18n::t("folder.expand_all"), this);
+    expandAllAction_->setToolTip(::openbc::i18n::t("folder.expand_all_folders"));
     collapseAllAction_ =
-        new QAction(icons::glyph(Glyph::CollapseAll), "Collapse all", this);
-    collapseAllAction_->setToolTip("Collapse all folders");
+        new QAction(icons::glyph(Glyph::CollapseAll), ::openbc::i18n::t("folder.collapse_all"), this);
+    collapseAllAction_->setToolTip(::openbc::i18n::t("folder.collapse_all_folders"));
 
     contentsAction_ =
-        new QAction(icons::glyph(Glyph::Contents), "Compare contents", this);
+        new QAction(icons::glyph(Glyph::Contents), ::openbc::i18n::t("folder.compare_contents"), this);
     contentsAction_->setCheckable(true);
     contentsAction_->setToolTip(
-        "Compare file contents byte-for-byte instead of size + timestamp");
+        ::openbc::i18n::t("folder.compare_file_contents_byte_for_byte"));
     timestampsAction_ =
-        new QAction(icons::glyph(Glyph::Timestamps), "Ignore timestamps", this);
+        new QAction(icons::glyph(Glyph::Timestamps), ::openbc::i18n::t("folder.ignore_timestamps"), this);
     timestampsAction_->setCheckable(true);
-    timestampsAction_->setToolTip("Ignore modification times when comparing");
+    timestampsAction_->setToolTip(::openbc::i18n::t("folder.ignore_modification_times_when_comparing"));
     archivesAction_ = new QAction(icons::glyph(Glyph::FolderOpen),
-                                  "Open archives as folders", this);
+                                  ::openbc::i18n::t("folder.open_archives_as_folders"), this);
     archivesAction_->setCheckable(true);
     archivesAction_->setChecked(true); // before the toggled connection: no refresh at startup
     archivesAction_->setToolTip(
-        "Show archives (zip, 7z, rar, tar.gz, ...) as folders: differing ones expand "
-        "automatically, any archive opens in place on double-click");
+        ::openbc::i18n::t("folder.show_archives_zip_7z_rar_tar"));
 
     filterApplyAction_ =
-        new QAction(icons::glyph(Glyph::Filter), "Apply filter", this);
-    filterApplyAction_->setToolTip("Apply the file filter");
+        new QAction(icons::glyph(Glyph::Filter), ::openbc::i18n::t("folder.apply_filter"), this);
+    filterApplyAction_->setToolTip(::openbc::i18n::t("folder.apply_the_file_filter"));
     filterClearAction_ =
-        new QAction(icons::glyph(Glyph::FilterClear), "Clear filter", this);
-    filterClearAction_->setToolTip("Show all files");
-    nameFiltersButton_ = new QPushButton("Name Filters...", toolbar_);
+        new QAction(icons::glyph(Glyph::FilterClear), ::openbc::i18n::t("folder.clear_filter"), this);
+    filterClearAction_->setToolTip(::openbc::i18n::t("folder.show_all_files"));
+    nameFiltersButton_ = new QPushButton(::openbc::i18n::t("folder.name_filters"), toolbar_);
     nameFiltersButton_->setToolTip(
-        "Configure include and exclude masks for files and folders");
+        ::openbc::i18n::t("folder.configure_include_and_exclude_masks_for"));
 
-    consoleAction_ = new QAction("Toggle console", this);
+    consoleAction_ = new QAction(::openbc::i18n::t("folder.toggle_console"), this);
     consoleAction_->setCheckable(true);
     consoleAction_->setChecked(true);
-    editSelectionAction_ = new QAction("Edit selection", this);
-    findAction_ = new QAction("Find", this);
-    optionsAction_ = new QAction("Comparison options", this);
+    editSelectionAction_ = new QAction(::openbc::i18n::t("folder.edit_selection"), this);
+    findAction_ = new QAction(::openbc::i18n::t("common.find"), this);
+    optionsAction_ = new QAction(::openbc::i18n::t("folder.comparison_options"), this);
   }
 
   // --------------------------------------------------------------------- UI
@@ -1482,7 +1476,7 @@ private:
     topLayout->setSpacing(0);
     bothUp_ = new QToolButton(top);
     bothUp_->setIcon(icons::glyph(Glyph::FolderUp));
-    bothUp_->setToolTip("Go to parent folder on both sides");
+    bothUp_->setToolTip(::openbc::i18n::t("folder.go_to_parent_folder_on_both"));
     topLayout->addStretch(1);
     topLayout->addWidget(bothUp_);
     topLayout->addStretch(1);
@@ -1529,21 +1523,21 @@ private:
     toolbar_->addAction(timestampsAction_);
     toolbar_->addAction(archivesAction_);
     toolbar_->addSeparator();
-    toolbar_->addWidget(new QLabel("Compare:", toolbar_));
+    toolbar_->addWidget(new QLabel(::openbc::i18n::t("folder.compare_2"), toolbar_));
     modeCombo_ = new QComboBox(toolbar_);
     modeCombo_->addItems({"Folder structure", "Folder contents", "Text compare",
                           "Binary compare"});
     modeCombo_->setMinimumWidth(150);
     toolbar_->addWidget(modeCombo_);
     toolbar_->addSeparator();
-    toolbar_->addWidget(new QLabel("Filters:", toolbar_));
+    toolbar_->addWidget(new QLabel(::openbc::i18n::t("folder.filters"), toolbar_));
     filterCombo_ = new QComboBox(toolbar_);
     filterCombo_->setEditable(true);
     filterCombo_->setInsertPolicy(QComboBox::NoInsert);
     filterCombo_->setMinimumWidth(190);
     filterCombo_->addItem("*.*");
     filterCombo_->setToolTip(
-        "Quick include-file filter; use Name Filters for folder and exclude masks.");
+        ::openbc::i18n::t("folder.quick_include_file_filter_use_name"));
     toolbar_->addWidget(filterCombo_);
     toolbar_->addWidget(nameFiltersButton_);
     toolbar_->addAction(filterApplyAction_);
@@ -1567,11 +1561,11 @@ private:
     // picked.
     leftSelector_->onBrowsed = [this](const QString &path) {
       refresh();
-      log("left resource selected: " + path);
+      log(::openbc::i18n::t("folder.left_resource_selected", path));
     };
     rightSelector_->onBrowsed = [this](const QString &path) {
       refresh();
-      log("right resource selected: " + path);
+      log(::openbc::i18n::t("folder.right_resource_selected", path));
     };
     leftSelector_->onWentUp = [this](const QString &) { refresh(); };
     rightSelector_->onWentUp = [this](const QString &) { refresh(); };
@@ -1598,7 +1592,7 @@ private:
     console_->setObjectName("console");
     console_->setReadOnly(true);
     console_->setMaximumBlockCount(500);
-    console_->setPlaceholderText("Activity log");
+    console_->setPlaceholderText(::openbc::i18n::t("folder.activity_log"));
     console_->setMinimumHeight(60);
 
     splitter_ = new QSplitter(Qt::Vertical, this);
@@ -1615,7 +1609,7 @@ private:
   void connectSignals() {
     using QAct = QAction;
     connect(compareAction_, &QAct::triggered, this, [this]() {
-      log("Comparing folder contents recursively");
+      log(::openbc::i18n::t("folder.comparing_folder_contents_recursively"));
       refresh();
     });
     connect(refreshAction_, &QAct::triggered, this, [this]() { refresh(); });
@@ -1624,7 +1618,7 @@ private:
       setPath(leftPath_, rightText());
       setPath(rightPath_, oldLeft);
       refresh();
-      log("Left and right resources swapped");
+      log(::openbc::i18n::t("folder.left_and_right_resources_swapped"));
     });
     connect(selectLeftAction_, &QAct::triggered, this,
             [this]() { chooseFolder(leftSelector_, "left"); });
@@ -1645,7 +1639,7 @@ private:
             this, [this](int index) {
               const QSignalBlocker blocker(contentsAction_);
               contentsAction_->setChecked(index != 0);
-              log("Compare mode: " + modeCombo_->itemText(index));
+              log(::openbc::i18n::t("folder.compare_mode", modeCombo_->itemText(index)));
               refresh();
             });
     connect(contentsAction_, &QAct::toggled, this, [this](bool checked) {
@@ -1658,17 +1652,17 @@ private:
       refresh();
     });
     connect(timestampsAction_, &QAct::toggled, this, [this](bool checked) {
-      log(checked ? "Ignoring timestamps" : "Timestamps are compared");
+      log(checked ? ::openbc::i18n::t("folder.ignoring_timestamps") : ::openbc::i18n::t("folder.timestamps_are_compared"));
       refresh();
     });
     connect(archivesAction_, &QAct::toggled, this, [this](bool checked) {
-      log(checked ? "Archives open as folders" : "Archives are plain files");
+      log(checked ? ::openbc::i18n::t("folder.archives_open_as_folders") : ::openbc::i18n::t("folder.archives_are_plain_files"));
       refresh();
     });
 
     connect(filterApplyAction_, &QAct::triggered, this, [this]() {
       includeFilesText_ = filterCombo_->currentText();
-      log("Applied filter: " + filterCombo_->currentText());
+      log(::openbc::i18n::t("folder.applied_filter", filterCombo_->currentText()));
       refresh();
     });
     connect(filterClearAction_, &QAct::triggered, this, [this]() {
@@ -1677,7 +1671,7 @@ private:
       excludeFilesText_.clear();
       includeFoldersText_ = "*";
       excludeFoldersText_.clear();
-      log("Filter cleared");
+      log(::openbc::i18n::t("folder.filter_cleared"));
       refresh();
     });
     connect(filterCombo_->lineEdit(), &QLineEdit::returnPressed, this,
@@ -1713,9 +1707,9 @@ private:
       }
     });
     connect(findAction_, &QAct::triggered, this,
-            [this]() { log("Find requested in current folder level"); });
+            [this]() { log(::openbc::i18n::t("folder.find_requested_in_current_folder_level")); });
     connect(optionsAction_, &QAct::triggered, this,
-            [this]() { log("Comparison options opened"); });
+            [this]() { log(::openbc::i18n::t("folder.comparison_options_opened")); });
 
     connectTreePair(leftTree_, rightTree_, "left");
     connectTreePair(rightTree_, leftTree_, "right");
@@ -1763,7 +1757,7 @@ private:
     item->setExpanded(true);
     if (counterpart)
       counterpart->setExpanded(true);
-    log("Opened archive: " + item->data(0, kPathRole).toString());
+    log(::openbc::i18n::t("folder.opened_archive", item->data(0, kPathRole).toString()));
     return true;
   }
 
@@ -1821,8 +1815,7 @@ private:
     if (onTextCompare) {
       onTextCompare(leftPath, rightPath, QString(), QString());
     }
-    log("Opening text comparison: " + QDir::toNativeSeparators(leftPath) +
-        " <-> " + QDir::toNativeSeparators(rightPath));
+    log(::openbc::i18n::t("folder.opening_text_comparison", QDir::toNativeSeparators(leftPath), QDir::toNativeSeparators(rightPath)));
   }
 
   // Both present sides must be pictures (a.png vs a.txt still goes to the text
@@ -1904,9 +1897,7 @@ private:
     const bool rightRemote =
         !rightPath.isEmpty() &&
         RemoteProfileStore::findProfileForPath(rightPath, &rightProfile);
-    log("Opening " + what +
-        " comparison: " + QDir::toNativeSeparators(leftPath) + " <-> " +
-        QDir::toNativeSeparators(rightPath));
+    log(::openbc::i18n::t("folder.opening_comparison", what, QDir::toNativeSeparators(leftPath), QDir::toNativeSeparators(rightPath)));
     // Files inside archives are copied to a temp file like remote ones: the viewers need a real
     // file on disk.
     const bool leftVirtual =
@@ -1921,7 +1912,7 @@ private:
 
     auto tempDir = std::make_shared<QTemporaryDir>();
     if (!tempDir->isValid()) {
-      log("Could not create a temporary folder for the remote file");
+      log(::openbc::i18n::t("folder.could_not_create_a_temporary_folder"));
       return;
     }
     const QString root = tempDir->path();
@@ -2045,8 +2036,7 @@ private:
               }
               loadFolderLevel(tree, other, item);
               if (item->data(0, kIsDirRole).toBool()) {
-                log("Expanded " + side +
-                    " folder: " + item->data(0, kPathRole).toString());
+                log(::openbc::i18n::t("folder.expanded_folder", side, item->data(0, kPathRole).toString()));
               }
             });
     connect(tree, &QTreeWidget::itemCollapsed, this,
@@ -2265,7 +2255,7 @@ private:
       if (item->treeWidget())
         item->treeWidget()->editItem(item, 0);
     });
-    log("Created " + QDir::toNativeSeparators(path));
+    log(::openbc::i18n::t("folder.created", QDir::toNativeSeparators(path)));
   }
 
   void handleItemRenamed(CompareTree *tree, QTreeWidgetItem *item, int column) {
@@ -2309,14 +2299,14 @@ private:
                 }
               }
               QMessageBox::warning(
-                  self.data(), "Rename failed",
+                  self.data(), ::openbc::i18n::t("folder.rename_failed"),
                   error.isEmpty()
-                      ? QStringLiteral("Could not rename the entry.")
+                      ? ::openbc::i18n::t("folder.could_not_rename_the_entry")
                       : error);
               return;
             }
             self->refresh();
-            self->log("Renamed " + oldPath + " to " + newPath);
+            self->log(::openbc::i18n::t("folder.renamed_to", oldPath, newPath));
           },
           Qt::QueuedConnection);
     });
@@ -2369,9 +2359,9 @@ private:
                 return;
               if (!created) {
                 QMessageBox::warning(
-                    self.data(), "Create failed",
+                    self.data(), ::openbc::i18n::t("folder.create_failed"),
                     error.isEmpty()
-                        ? QStringLiteral("Could not create the entry.")
+                        ? ::openbc::i18n::t("folder.could_not_create_the_entry")
                         : error);
                 return;
               }
@@ -2405,9 +2395,9 @@ private:
               return;
             if (!created) {
               QMessageBox::warning(
-                  self, "Create failed",
+                  self, ::openbc::i18n::t("folder.create_failed"),
                   error.isEmpty()
-                      ? QStringLiteral("Could not create the entry.")
+                      ? ::openbc::i18n::t("folder.could_not_create_the_entry")
                       : error);
               return;
             }
@@ -2424,8 +2414,8 @@ private:
     const QString rightPath =
         ctx.side == Side::Right ? ctx.path : ctx.otherPath;
     if (leftPath.isEmpty() || rightPath.isEmpty()) {
-      QMessageBox::information(this, "Folder comparison",
-                               "A matching folder is missing on one side.");
+      QMessageBox::information(this, ::openbc::i18n::t("folder.folder_comparison"),
+                               ::openbc::i18n::t("folder.a_matching_folder_is_missing_on"));
       return;
     }
     if (onNewFolderCompare)
@@ -2435,8 +2425,8 @@ private:
   void compareNodeFiles(const NodeContext &ctx, bool showReport,
                         const QString &comparisonPath = {}) {
     if (ctx.isDir) {
-      QMessageBox::information(this, "File comparison",
-                               "Select a file to compare its contents.");
+      QMessageBox::information(this, ::openbc::i18n::t("folder.file_comparison"),
+                               ::openbc::i18n::t("folder.select_a_file_to_compare_its"));
       return;
     }
     const bool updateRows = comparisonPath.isEmpty();
@@ -2445,14 +2435,14 @@ private:
     const QString leftPath = ctx.side == Side::Left ? ctx.path : otherPath;
     const QString rightPath = ctx.side == Side::Right ? ctx.path : otherPath;
     if (leftPath.isEmpty() || rightPath.isEmpty()) {
-      QMessageBox::information(this, "File comparison",
-                               "A file is missing on one side.");
+      QMessageBox::information(this, ::openbc::i18n::t("folder.file_comparison"),
+                               ::openbc::i18n::t("folder.a_file_is_missing_on_one"));
       return;
     }
     auto comparisonRun = run_;
     if (!comparisonRun) {
-      QMessageBox::warning(this, "File comparison",
-                           "Refresh the folder comparison first.");
+      QMessageBox::warning(this, ::openbc::i18n::t("folder.file_comparison"),
+                           ::openbc::i18n::t("folder.refresh_the_folder_comparison_first"));
       return;
     }
     RemoteProfile leftProfile, rightProfile;
@@ -2490,9 +2480,9 @@ private:
                   return;
                 if (!compared) {
                   QMessageBox::warning(
-                      self, "File comparison",
+                      self, ::openbc::i18n::t("folder.file_comparison"),
                       error.isEmpty()
-                          ? QStringLiteral("Could not compare the files.")
+                          ? ::openbc::i18n::t("folder.could_not_compare_the_files")
                           : error);
                   return;
                 }
@@ -2526,7 +2516,7 @@ private:
                 self->log(result + " " + QDir::toNativeSeparators(leftPath) +
                           " <-> " + QDir::toNativeSeparators(rightPath));
                 if (showReport)
-                  QMessageBox::information(self, "File Compare Report", result);
+                  QMessageBox::information(self, ::openbc::i18n::t("folder.file_compare_report"), result);
               },
               Qt::QueuedConnection);
         }));
@@ -2537,8 +2527,8 @@ private:
     if (sourcePath.isEmpty() || destinationPath.isEmpty())
       return;
     if (sourcePath == destinationPath) {
-      QMessageBox::information(this, "Transfer",
-                               "Source and destination are the same path.");
+      QMessageBox::information(this, ::openbc::i18n::t("folder.transfer"),
+                               ::openbc::i18n::t("folder.source_and_destination_are_the_same"));
       return;
     }
     RemoteProfile sourceProfile, destinationProfile;
@@ -2547,16 +2537,16 @@ private:
     const bool destinationRemote = RemoteProfileStore::findProfileForPath(
         destinationPath, &destinationProfile);
     if (!destinationRemote && QFileInfo::exists(destinationPath) &&
-        QMessageBox::question(this, "Replace file",
-                              "Replace the existing destination file?") !=
+        QMessageBox::question(this, ::openbc::i18n::t("folder.replace_file"),
+                              ::openbc::i18n::t("folder.replace_the_existing_destination_file")) !=
             QMessageBox::Yes) {
       return;
     }
     if (sourceRemote && destinationRemote &&
         sourceProfile.name == destinationProfile.name &&
         destinationPath.startsWith(sourcePath + "/")) {
-      QMessageBox::warning(this, "Transfer",
-                           "A folder cannot be moved inside itself.");
+      QMessageBox::warning(this, ::openbc::i18n::t("folder.transfer"),
+                           ::openbc::i18n::t("folder.a_folder_cannot_be_moved_inside"));
       return;
     }
     if (!sourceRemote && !destinationRemote && QFileInfo(sourcePath).isDir()) {
@@ -2565,8 +2555,8 @@ private:
       const QString destinationAbsolute =
           QDir::cleanPath(QFileInfo(destinationPath).absoluteFilePath());
       if (destinationAbsolute.startsWith(sourceAbsolute + QDir::separator())) {
-        QMessageBox::warning(this, "Transfer",
-                             "A folder cannot be copied inside itself.");
+        QMessageBox::warning(this, ::openbc::i18n::t("folder.transfer"),
+                             ::openbc::i18n::t("folder.a_folder_cannot_be_copied_inside"));
         return;
       }
     }
@@ -2591,14 +2581,13 @@ private:
                   return;
                 if (!ok) {
                   QMessageBox::warning(
-                      self, "Transfer failed",
+                      self, ::openbc::i18n::t("folder.transfer_failed"),
                       error.isEmpty()
-                          ? QStringLiteral("Could not transfer the file.")
+                          ? ::openbc::i18n::t("folder.could_not_transfer_the_file")
                           : error);
                   return;
                 }
-                self->log("Transferred " + sourcePath + " to " +
-                          destinationPath);
+                self->log(::openbc::i18n::t("folder.transferred_to", sourcePath, destinationPath));
                 self->refresh();
               },
               Qt::QueuedConnection);
@@ -2610,8 +2599,8 @@ private:
     const QString sourcePath =
         sourceSide == ctx.side ? ctx.path : ctx.otherPath;
     if (sourcePath.isEmpty()) {
-      QMessageBox::information(this, "Synchronize",
-                               "The selected source side is missing.");
+      QMessageBox::information(this, ::openbc::i18n::t("folder.synchronize"),
+                               ::openbc::i18n::t("folder.the_selected_source_side_is_missing"));
       return;
     }
     const Side destinationSide =
@@ -2657,12 +2646,12 @@ private:
       }
     } else if (action == "Compare To...") {
       const QString chosen =
-          QFileDialog::getOpenFileName(this, "Choose file to compare");
+          QFileDialog::getOpenFileName(this, ::openbc::i18n::t("folder.choose_file_to_compare"));
       if (!chosen.isEmpty())
         compareNodeFiles(ctx, false, chosen);
     } else if (action == "Align With...") {
       const QString chosen =
-          QFileDialog::getOpenFileName(this, "Choose file to align with");
+          QFileDialog::getOpenFileName(this, ::openbc::i18n::t("folder.choose_file_to_align_with"));
       if (!chosen.isEmpty()) {
         const QString leftPath = ctx.side == Side::Left ? ctx.path : chosen;
         const QString rightPath = ctx.side == Side::Right ? ctx.path : chosen;
@@ -2703,15 +2692,15 @@ private:
       transferNode(ctx, ctx.side, move, false);
     } else if (action == "Copy to Folder..." || action == "Move to Folder...") {
       const QString folder =
-          QFileDialog::getExistingDirectory(this, "Choose destination folder");
+          QFileDialog::getExistingDirectory(this, ::openbc::i18n::t("folder.choose_destination_folder"));
       if (!folder.isEmpty()) {
         transferFile(ctx.path,
                      QDir(folder).filePath(QFileInfo(ctx.path).fileName()),
                      action.startsWith("Move"));
       }
     } else if (action == "Delete...") {
-      if (QMessageBox::question(this, "Delete",
-                                "Delete this entry permanently?") !=
+      if (QMessageBox::question(this, ::openbc::i18n::t("common.delete"),
+                                ::openbc::i18n::t("folder.delete_this_entry_permanently")) !=
           QMessageBox::Yes)
         return;
       RemoteProfile profile;
@@ -2729,7 +2718,7 @@ private:
               if (!self)
                 return;
               if (!removed)
-                QMessageBox::warning(self, "Delete failed", error);
+                QMessageBox::warning(self, ::openbc::i18n::t("folder.delete_failed"), error);
               else
                 self->refresh();
             },
@@ -2739,8 +2728,8 @@ private:
       RemoteProfile profile;
       if (RemoteProfileStore::findProfileForPath(ctx.path, &profile)) {
         QMessageBox::information(
-            this, "Attributes",
-            "Attributes are unavailable for this provider.");
+            this, ::openbc::i18n::t("common.attributes"),
+            ::openbc::i18n::t("folder.attributes_are_unavailable_for_this_provider"));
       } else {
         const QString path = ctx.path;
         const QPointer<FolderCompareViewer> self(this);
@@ -2755,7 +2744,7 @@ private:
               qApp,
               [self, details]() {
                 if (self)
-                  QMessageBox::information(self, "Attributes", details);
+                  QMessageBox::information(self, ::openbc::i18n::t("common.attributes"), details);
               },
               Qt::QueuedConnection);
         });
@@ -2765,8 +2754,8 @@ private:
       if (RemoteProfileStore::findProfileForPath(ctx.path, &profile)) {
         if (ctx.isDir) {
           QMessageBox::warning(
-              this, "Touch",
-              "Directory timestamps are not supported by this provider.");
+              this, ::openbc::i18n::t("folder.touch"),
+              ::openbc::i18n::t("folder.directory_timestamps_are_not_supported_by"));
           return;
         }
         const QString path = ctx.path;
@@ -2786,7 +2775,7 @@ private:
                 if (!self)
                   return;
                 if (!touched)
-                  QMessageBox::warning(self, "Touch failed", error);
+                  QMessageBox::warning(self, ::openbc::i18n::t("folder.touch_failed"), error);
                 else
                   self->refresh();
               },
@@ -2808,8 +2797,8 @@ private:
                   return;
                 if (!touched)
                   QMessageBox::warning(
-                      self, "Touch failed",
-                      "Could not update the modification time.");
+                      self, ::openbc::i18n::t("folder.touch_failed"),
+                      ::openbc::i18n::t("folder.could_not_update_the_modification_time"));
                 else
                   self->refresh();
               },
@@ -2823,8 +2812,8 @@ private:
                    false, false);
     } else if (action == "Update Both...") {
       QMessageBox choice(this);
-      choice.setWindowTitle("Update both sides");
-      choice.setText("Choose which side is the source of truth.");
+      choice.setWindowTitle(::openbc::i18n::t("folder.update_both_sides"));
+      choice.setText(::openbc::i18n::t("folder.choose_which_side_is_the_source"));
       auto *useLeft = choice.addButton("Use Left", QMessageBox::AcceptRole);
       auto *useRight = choice.addButton("Use Right", QMessageBox::AcceptRole);
       choice.addButton(QMessageBox::Cancel);
@@ -2838,8 +2827,8 @@ private:
       const Side source =
           action == "Mirror to Right..." ? Side::Left : Side::Right;
       if (QMessageBox::question(
-              this, "Mirror",
-              "Remove destination-only entries and mirror the source?") ==
+              this, ::openbc::i18n::t("folder.mirror"),
+              ::openbc::i18n::t("folder.remove_destination_only_entries_and_mirror")) ==
           QMessageBox::Yes) {
         transferNode(ctx, source, false, true);
       }
@@ -2848,8 +2837,8 @@ private:
           ctx.isDir ? ctx.path : QFileInfo(ctx.path).absolutePath();
       if (RemoteProfileStore::findProfileForPath(directory, nullptr)) {
         QMessageBox::information(
-            this, "Explorer",
-            "Remote paths are not available in the local file manager.");
+            this, ::openbc::i18n::t("folder.explorer"),
+            ::openbc::i18n::t("folder.remote_paths_are_not_available_in"));
       } else {
         QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
       }
@@ -2874,7 +2863,7 @@ private:
       addNodeAction(&menu, ctx, "Set as Base on Other Side");
       addNodeAction(&menu, ctx, "Open in New View");
     }
-    QMenu *openWith = menu.addMenu("Open With");
+    QMenu *openWith = menu.addMenu(::openbc::i18n::t("common.open_with"));
     openWith->menuAction()->setEnabled(ctx.existsHere);
     fillProviderMenu(openWith, ctx, populateOpenWithMenu);
     if (!ctx.isDir) {
@@ -2900,7 +2889,7 @@ private:
     addNodeAction(&menu, ctx, ctx.isDir ? "Exclude" : "Exclude...");
     addNodeAction(&menu, ctx, "Copy Filename");
 
-    QMenu *create = menu.addMenu("Create");
+    QMenu *create = menu.addMenu(::openbc::i18n::t("folder.create"));
     addNodeAction(create, ctx, "New Folder", mi::newFolder(), {}, false);
     addNodeAction(create, ctx, "New File", {}, {}, false);
     create->menuAction()->setEnabled(!ctx.parentPath.isEmpty());
@@ -2917,7 +2906,7 @@ private:
     menu.addSeparator();
 
     // ---- synchronize (acts on the whole comparison, not on this node)
-    QMenu *sync = menu.addMenu("Synchronize");
+    QMenu *sync = menu.addMenu(::openbc::i18n::t("folder.synchronize"));
     addNodeAction(sync, ctx, "Update Right...", mi::update(mi::SyncDir::Right),
                   {}, false);
     addNodeAction(sync, ctx, "Update Left...", mi::update(mi::SyncDir::Left),
@@ -2930,7 +2919,7 @@ private:
                   "Shift+Ctrl+L", false);
     menu.addSeparator();
 
-    QMenu *explorer = menu.addMenu("Explorer");
+    QMenu *explorer = menu.addMenu(::openbc::i18n::t("folder.explorer"));
     explorer->menuAction()->setEnabled(ctx.existsHere);
     fillProviderMenu(explorer, ctx, populateExplorerMenu);
   }
@@ -2964,26 +2953,25 @@ private:
       return;
     }
     if (submenu->title() == "Open With") {
-      QAction *defaultApplication = submenu->addAction("Default Application");
-      QAction *chooseProgram = submenu->addAction("Choose Program...");
+      QAction *defaultApplication = submenu->addAction(::openbc::i18n::t("common.default_application"));
+      QAction *chooseProgram = submenu->addAction(::openbc::i18n::t("common.choose_program"));
       connect(defaultApplication, &QAction::triggered, this, [this, ctx]() {
         if (RemoteProfileStore::findProfileForPath(ctx.path, nullptr)) {
           QMessageBox::information(
-              this, "Open With",
-              "No local application can open a remote path directly.");
+              this, ::openbc::i18n::t("common.open_with"),
+              ::openbc::i18n::t("folder.no_local_application_can_open_a"));
         } else {
           QDesktopServices::openUrl(QUrl::fromLocalFile(ctx.path));
         }
       });
       connect(chooseProgram, &QAction::triggered, this, [this, ctx]() {
         if (RemoteProfileStore::findProfileForPath(ctx.path, nullptr)) {
-          QMessageBox::information(this, "Open With",
-                                   "Download the remote file before opening it "
-                                   "with a local program.");
+          QMessageBox::information(this, ::openbc::i18n::t("common.open_with"),
+                                   ::openbc::i18n::t("folder.download_the_remote_file_before_opening"));
           return;
         }
         const QString program =
-            QFileDialog::getOpenFileName(this, "Choose application");
+            QFileDialog::getOpenFileName(this, ::openbc::i18n::t("common.choose_application"));
         if (!program.isEmpty())
           QProcess::startDetached(program, {ctx.path});
       });
@@ -3164,7 +3152,7 @@ private:
     if (!selected.isEmpty()) {
       selector->setText(selected);
       refresh();
-      log(side + " resource selected: " + selected);
+      log(::openbc::i18n::t("folder.resource_selected", side, selected));
     }
   }
 
@@ -3180,7 +3168,7 @@ private:
     }
     if (moved) {
       refresh();
-      log("Both folders moved up to their parent folders");
+      log(::openbc::i18n::t("folder.both_folders_moved_up_to_their"));
     }
   }
 
@@ -3196,9 +3184,9 @@ private:
     const int rf = run_ ? run_->rightFiles : 0;
     const qint64 lb = run_ ? run_->leftBytes : 0;
     const qint64 rb = run_ ? run_->rightBytes : 0;
-    leftCount_->setText(QString("%1 file(s), %2").arg(lf).arg(formatBytes(lb)));
+    leftCount_->setText(::openbc::i18n::t("folder.file_s", lf, formatBytes(lb)));
     rightCount_->setText(
-        QString("%1 file(s), %2").arg(rf).arg(formatBytes(rb)));
+        ::openbc::i18n::t("folder.file_s", rf, formatBytes(rb)));
     if (!run_) {
       leftFree_->clear();
       rightFree_->clear();

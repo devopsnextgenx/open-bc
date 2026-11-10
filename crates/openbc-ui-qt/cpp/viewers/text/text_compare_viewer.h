@@ -74,6 +74,7 @@
 #include "viewers/text/engine/text_model.h"
 #include "viewers/text/plain_text_editor_adapter.h"
 #include "viewers/text/syntax_highlighter.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -315,7 +316,7 @@ private:
             if (!path.isEmpty() && (!QFileInfo(path).exists() || !QFileInfo(path).isFile())) {
                 largePageLoading_ = false;
                 progress_->hide();
-                status_->setText("Large-file mode currently requires local, regular files.");
+                status_->setText(::openbc::i18n::t("text.large_file_mode_currently_requires_local"));
                 return;
             }
         }
@@ -323,7 +324,7 @@ private:
             if (!path.isEmpty() && QFileInfo(path).size() > static_cast<qint64>(kMaxLargeCompareFileBytes)) {
                 largePageLoading_ = false;
                 progress_->hide();
-                status_->setText(QString("The Existing editor supports local files up to 500 MiB per side in large-file mode; use the Virtual Editor for larger files."));
+                status_->setText(::openbc::i18n::t("text.the_existing_editor_supports_local_files"));
                 setEditabilityIndicator(false, false);
                 return;
             }
@@ -336,7 +337,7 @@ private:
         if (!largeLoader_) largeLoader_ = new TextModelLoader(this);
         largeLoader_->onProgress = [this, generation](const QString& phase, quint64 done, quint64 total) {
             if (generation != largePageGeneration_) return;
-            status_->setText(QString("Large file mode · %1 · %2%").arg(phase).arg(total ? done * 100 / total : 0));
+            status_->setText(::openbc::i18n::t("text.large_file_mode", phase, total ? done * 100 / total : 0));
         };
         largeLoader_->onFinished = [this, generation](std::shared_ptr<TextModel> model) {
             if (generation != largePageGeneration_ || !largeFileMode_) return;
@@ -347,7 +348,7 @@ private:
             if (generation != largePageGeneration_) return;
             largePageLoading_ = false;
             progress_->hide();
-            status_->setText("Could not compare large files: " + message);
+            status_->setText(::openbc::i18n::t("text.could_not_compare_large_files", message));
         };
         largeLoader_->start(leftPath_, rightPath_, ModelOptions{});
     }
@@ -385,8 +386,7 @@ private:
         appendLargeRows(std::move(rows), inlineDiffs, leftConsumed, rightConsumed);
         largePageLoading_ = false;
         progress_->hide();
-        status_->setText(QString("Large file mode · globally aligned · %1 of %2 rows loaded")
-                             .arg(largeNextRow_).arg(total));
+        status_->setText(::openbc::i18n::t("text.large_file_mode_globally_aligned_of", largeNextRow_, total));
         if (largeNextRow_ < total) {
             const int generation = largePageGeneration_;
             QTimer::singleShot(0, this, [this, generation]() {
@@ -448,8 +448,7 @@ private:
     void finishLargeFileLoading() {
         largePageLoading_ = false;
         progress_->hide();
-        status_->setText(QString("Large file loaded · %1 left line(s), %2 right line(s) · styling as viewed")
-                             .arg(largeLeftLineCount_).arg(largeRightLineCount_));
+        status_->setText(::openbc::i18n::t("text.large_file_loaded_left_line_s", largeLeftLineCount_, largeRightLineCount_));
         leftHighlighter_->setIncremental(true);
         rightHighlighter_->setIncremental(true);
         leftHighlighter_->setDeferred(false);
@@ -487,33 +486,33 @@ private:
         if (row < 0 || row >= rows_.size()) return;
         const int sourceNumber = sourceIsLeft ? rows_[row].leftNumber : rows_[row].rightNumber;
         if (sourceNumber == 0) {
-            status_->setText("Align Manually: select a real line, not an inserted blank.");
+            status_->setText(::openbc::i18n::t("text.align_manually_select_a_real_line"));
             return;
         }
         manualAlignmentPending_ = true;
         manualAlignmentSourceIsLeft_ = sourceIsLeft;
         manualAlignmentSourceNumber_ = sourceNumber;
         setManualAlignmentCursor(true);
-        status_->setText(sourceIsLeft ? "Align Manually: select the matching line on the right."
-                                      : "Align Manually: select the matching line on the left.");
+        status_->setText(sourceIsLeft ? ::openbc::i18n::t("text.align_manually_select_the_matching_line")
+                                      : ::openbc::i18n::t("text.align_manually_select_the_matching_line_2"));
     }
 
     void cancelManualAlignment() {
         manualAlignmentPending_ = false;
         setManualAlignmentCursor(false);
-        status_->setText("Align Manually cancelled.");
+        status_->setText(::openbc::i18n::t("text.align_manually_cancelled"));
     }
 
     void completeManualAlignment(LineNumberEditor* editor, int row) {
         const bool targetIsLeft = editor == leftEditor_;
         if (targetIsLeft == manualAlignmentSourceIsLeft_) {
-            status_->setText("Align Manually: select the other editor.");
+            status_->setText(::openbc::i18n::t("text.align_manually_select_the_other_editor"));
             return;
         }
         if (row < 0 || row >= rows_.size()) return;
         const int targetNumber = targetIsLeft ? rows_[row].leftNumber : rows_[row].rightNumber;
         if (targetNumber == 0) {
-            status_->setText("Align Manually: select a real line, not an inserted blank.");
+            status_->setText(::openbc::i18n::t("text.align_manually_select_a_real_line"));
             return;
         }
 
@@ -535,7 +534,7 @@ private:
         });
         for (int i = 1; i < proposed.size(); ++i) {
             if (proposed[i - 1].rightNumber >= proposed[i].rightNumber) {
-                status_->setText("Align Manually: that match would cross an existing alignment.");
+                status_->setText(::openbc::i18n::t("text.align_manually_that_match_would_cross"));
                 return;
             }
         }
@@ -544,8 +543,7 @@ private:
         manualAlignmentPending_ = false;
         setManualAlignmentCursor(false);
         rebuild();
-        status_->setText(QString("Manual alignment added: left %1 to right %2.")
-                             .arg(alignment.leftNumber).arg(alignment.rightNumber));
+        status_->setText(::openbc::i18n::t("text.manual_alignment_added_left_to_right", alignment.leftNumber, alignment.rightNumber));
     }
 
     void applyLanguageHighlighting() {
@@ -719,7 +717,7 @@ private:
 
     void beginAsyncRebuild() {
         if (largeFileMode_) {
-            status_->setText("Large-file blocks are matched once as they load.");
+            status_->setText(::openbc::i18n::t("text.large_file_blocks_are_matched_once"));
             return;
         }
         const int generation = ++loadGeneration_;
@@ -730,8 +728,7 @@ private:
         const QString sessionId = instrumentationSessionId_;
         const bool deferHighlighting = leftText.size() + rightText.size() > 4 * 1024 * 1024;
         progress_->show();
-        status_->setText(QString("Loading comparison... %1 / %2 line(s) read")
-                             .arg("pending").arg("pending"));
+        status_->setText(::openbc::i18n::t("text.loading_comparison_line_s_read", "pending", "pending"));
 
         const QPointer<TextCompareViewer> view(this);
         QThreadPool::globalInstance()->start(
@@ -860,8 +857,8 @@ private:
         saveButton->setObjectName("saveSideBtn");
         saveButton->setIcon(icons::glyph(icons::Glyph::Save));
         saveButton->setIconSize(QSize(15, 15));
-        saveButton->setToolTip(left ? "Save left file (Ctrl+S while focused)"
-                                    : "Save right file (Ctrl+S while focused)");
+        saveButton->setToolTip(left ? ::openbc::i18n::t("text.save_left_file_ctrl_s_while")
+                                    : ::openbc::i18n::t("text.save_right_file_ctrl_s_while"));
         saveButton->setCursor(Qt::PointingHandCursor);
         connect(saveButton, &QToolButton::clicked, this, [this, left]() {
             syncFromEditors();
@@ -917,7 +914,7 @@ private:
             attrsLabel->setText(QString("%1    %2    %3    %4")
                                      .arg(modified, size, "UTF-8", lineEnding));
         } else {
-            attrsLabel->setText(path.isEmpty() ? "(missing on this side)" : "(unavailable)");
+            attrsLabel->setText(path.isEmpty() ? ::openbc::i18n::t("text.missing_on_this_side") : ::openbc::i18n::t("text.unavailable"));
         }
         if (saveButton) {
             // A side is "unsaved" if it has copied-but-not-saved rows *or* if the
@@ -932,9 +929,9 @@ private:
             saveButton->setIcon(icons::saveIcon(dirty ? kDirtyBlue : kCleanInk));
             saveButton->setProperty("dirty", dirty);
             saveButton->setToolTip(
-                dirty ? "Unsaved changes on this side - click or Ctrl+S to write to disk"
-                    : (left ? "Save left file (Ctrl+S while focused)"
-                            : "Save right file (Ctrl+S while focused)"));
+                dirty ? ::openbc::i18n::t("common.unsaved_changes_on_this_side_click")
+                    : (left ? ::openbc::i18n::t("text.save_left_file_ctrl_s_while")
+                            : ::openbc::i18n::t("text.save_right_file_ctrl_s_while")));
             saveButton->style()->unpolish(saveButton);
             saveButton->style()->polish(saveButton);
         }
@@ -961,15 +958,15 @@ private:
         toolbar_->setIconSize(QSize(20, 20));
         toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
 
-        homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), "Home");
-        sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), "Sessions");
+        homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), ::openbc::i18n::t("tab.home"));
+        sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), ::openbc::i18n::t("common.sessions"));
         toolbar_->addSeparator();
 
         auto* viewGroup = new QActionGroup(this);
         viewGroup->setExclusive(true);
-        showAllAction_ = toolbar_->addAction(icons::glyph(Glyph::ShowAll), "All");
-        showDiffsAction_ = toolbar_->addAction(icons::glyph(Glyph::ShowDiffs), "Diffs");
-        contextAction_ = toolbar_->addAction(icons::glyph(Glyph::Context), "Context");
+        showAllAction_ = toolbar_->addAction(icons::glyph(Glyph::ShowAll), ::openbc::i18n::t("text.all"));
+        showDiffsAction_ = toolbar_->addAction(icons::glyph(Glyph::ShowDiffs), ::openbc::i18n::t("text.diffs"));
+        contextAction_ = toolbar_->addAction(icons::glyph(Glyph::Context), ::openbc::i18n::t("text.context"));
         for (QAction* action : {showAllAction_, showDiffsAction_, contextAction_}) {
             action->setCheckable(true);
             viewGroup->addAction(action);
@@ -977,51 +974,51 @@ private:
         showAllAction_->setChecked(true);
         toolbar_->addSeparator();
 
-        minorAction_ = toolbar_->addAction(icons::glyph(Glyph::Minor), "Minor");
+        minorAction_ = toolbar_->addAction(icons::glyph(Glyph::Minor), ::openbc::i18n::t("text.minor"));
         minorAction_->setCheckable(true);
-        minorAction_->setToolTip("Treat whitespace-only differences as unimportant");
-        rulesAction_ = toolbar_->addAction(icons::glyph(Glyph::Rules), "Rules");
+        minorAction_->setToolTip(::openbc::i18n::t("text.treat_whitespace_only_differences_as_unimportant"));
+        rulesAction_ = toolbar_->addAction(icons::glyph(Glyph::Rules), ::openbc::i18n::t("text.rules"));
         rulesAction_->setCheckable(true);
-        rulesAction_->setToolTip("Ignore matching samples such as timestamps, UUIDs, or pod IDs");
-        formatAction_ = toolbar_->addAction(icons::glyph(Glyph::Format), "Word Wrap");
+        rulesAction_->setToolTip(::openbc::i18n::t("text.ignore_matching_samples_such_as_timestamps"));
+        formatAction_ = toolbar_->addAction(icons::glyph(Glyph::Format), ::openbc::i18n::t("text.word_wrap"));
         formatAction_->setCheckable(true);
         formatAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Z));
         formatAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-        formatAction_->setToolTip("Wrap long lines (Alt+Z)");
+        formatAction_->setToolTip(::openbc::i18n::t("text.wrap_long_lines_alt_z"));
         addAction(formatAction_);
-        decompileJavaAction_ = toolbar_->addAction("Java Source");
+        decompileJavaAction_ = toolbar_->addAction(::openbc::i18n::t("text.java_source"));
         decompileJavaAction_->setCheckable(true);
         decompileJavaAction_->setChecked(classFileCompare_);
         decompileJavaAction_->setVisible(classFileCompare_);
         decompileJavaAction_->setToolTip(
-            "Show decompiled Java source; turn off to view the class-file bytes");
+            ::openbc::i18n::t("text.show_decompiled_java_source_turn_off"));
         connect(decompileJavaAction_, &QAction::toggled, this, [this](bool) {
             reloadClassFiles();
         });
         toolbar_->addSeparator();
 
-        pixelMinimapAction_ = toolbar_->addAction(icons::glyph(Glyph::MinimapPixel), "Minimap");
+        pixelMinimapAction_ = toolbar_->addAction(icons::glyph(Glyph::MinimapPixel), ::openbc::i18n::t("common.minimap"));
         pixelMinimapAction_->setCheckable(true);
         pixelMinimapAction_->setToolTip(
-            "Minimap: one pixel-thin line per differing row, instead of one bar per change block");
+            ::openbc::i18n::t("common.minimap_one_pixel_thin_line_per"));
         pixelMinimapAction_->setChecked(true);
-        findAction_ = toolbar_->addAction(icons::glyph(Glyph::Find), "Find");
+        findAction_ = toolbar_->addAction(icons::glyph(Glyph::Find), ::openbc::i18n::t("common.find"));
         findAction_->setShortcut(QKeySequence::Find);
         findAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-        findAction_->setToolTip("Find / Replace (Ctrl+F)");
+        findAction_->setToolTip(::openbc::i18n::t("text.find_replace_ctrl_f"));
         addAction(findAction_);
         toolbar_->addSeparator();
 
-        copyAction_ = toolbar_->addAction(icons::glyph(Glyph::CopyLine), "Copy");
-        copyAction_->setToolTip("Copy the current change to the other side");
+        copyAction_ = toolbar_->addAction(icons::glyph(Glyph::CopyLine), ::openbc::i18n::t("common.copy"));
+        copyAction_->setToolTip(::openbc::i18n::t("text.copy_the_current_change_to_the"));
         toolbar_->addSeparator();
 
-        nextSectionAction_ = toolbar_->addAction(icons::glyph(Glyph::NextSection), "Next Section");
-        prevSectionAction_ = toolbar_->addAction(icons::glyph(Glyph::PrevSection), "Prev Section");
+        nextSectionAction_ = toolbar_->addAction(icons::glyph(Glyph::NextSection), ::openbc::i18n::t("common.next_section"));
+        prevSectionAction_ = toolbar_->addAction(icons::glyph(Glyph::PrevSection), ::openbc::i18n::t("common.prev_section"));
         toolbar_->addSeparator();
 
-        swapAction_ = toolbar_->addAction(icons::glyph(Glyph::Swap), "Swap");
-        reloadAction_ = toolbar_->addAction(icons::glyph(Glyph::Refresh), "Reload");
+        swapAction_ = toolbar_->addAction(icons::glyph(Glyph::Swap), ::openbc::i18n::t("common.swap"));
+        reloadAction_ = toolbar_->addAction(icons::glyph(Glyph::Refresh), ::openbc::i18n::t("common.reload"));
         root->addWidget(toolbar_);
 
         auto* header = new QHBoxLayout;
@@ -1097,25 +1094,25 @@ private:
             applyingProgrammaticUpdate_ = wasApplyingProgrammaticUpdate;
         });
 
-        syntaxStyleMenu_ = new QMenu("Syntax & Style", this);
-        auto* syntaxMenu = syntaxStyleMenu_->addMenu("Syntax Highlighting");
+        syntaxStyleMenu_ = new QMenu(::openbc::i18n::t("text.syntax_style"), this);
+        auto* syntaxMenu = syntaxStyleMenu_->addMenu(::openbc::i18n::t("common.syntax_highlighting"));
         auto* syntaxGroup = new QActionGroup(this);
         syntaxGroup->setExclusive(true);
-        syntaxAutoAction_ = syntaxMenu->addAction("Automatic");
+        syntaxAutoAction_ = syntaxMenu->addAction(::openbc::i18n::t("text.automatic"));
         syntaxAutoAction_->setCheckable(true);
         syntaxAutoAction_->setChecked(true);
-        syntaxPlainAction_ = syntaxMenu->addAction("Plain Text");
+        syntaxPlainAction_ = syntaxMenu->addAction(::openbc::i18n::t("text.plain_text"));
         syntaxPlainAction_->setCheckable(true);
         syntaxGroup->addAction(syntaxAutoAction_);
         syntaxGroup->addAction(syntaxPlainAction_);
 
-        auto* styleMenu = syntaxStyleMenu_->addMenu("Editor Style");
+        auto* styleMenu = syntaxStyleMenu_->addMenu(::openbc::i18n::t("text.editor_style"));
         auto* styleGroup = new QActionGroup(this);
         styleGroup->setExclusive(true);
-        vscodeDarkStyleAction_ = styleMenu->addAction("VS Code Dark");
-        vibrantStyleAction_ = styleMenu->addAction("Vibrant");
-        classicStyleAction_ = styleMenu->addAction("Classic");
-        contrastStyleAction_ = styleMenu->addAction("High Contrast");
+        vscodeDarkStyleAction_ = styleMenu->addAction(::openbc::i18n::t("text.vs_code_dark"));
+        vibrantStyleAction_ = styleMenu->addAction(::openbc::i18n::t("text.vibrant"));
+        classicStyleAction_ = styleMenu->addAction(::openbc::i18n::t("text.classic"));
+        contrastStyleAction_ = styleMenu->addAction(::openbc::i18n::t("text.high_contrast"));
         for (QAction* action : {vibrantStyleAction_, classicStyleAction_, contrastStyleAction_,
                     vscodeDarkStyleAction_}) {
             action->setCheckable(true);
@@ -1150,15 +1147,15 @@ private:
         auto* ruleLayout = new QHBoxLayout(ruleBar_);
         ruleLayout->setContentsMargins(8, 4, 8, 4);
         ruleLayout->setSpacing(6);
-        ruleLayout->addWidget(new QLabel("Rules:", ruleBar_));
+        ruleLayout->addWidget(new QLabel(::openbc::i18n::t("text.rules_2"), ruleBar_));
         ruleEdit_ = new QLineEdit(ruleBar_);
         ruleEdit_->setObjectName("compareRuleInput");
-        ruleEdit_->setPlaceholderText("timestamp, correlation-id, pod-123, or a,,b for a literal comma");
-        ruleEdit_->setToolTip("Separate samples with commas; use two commas for a literal comma");
+        ruleEdit_->setPlaceholderText(::openbc::i18n::t("text.timestamp_correlation_id_pod_123_or"));
+        ruleEdit_->setToolTip(::openbc::i18n::t("text.separate_samples_with_commas_use_two"));
         ruleLayout->addWidget(ruleEdit_, 1);
         ruleClose_ = new QToolButton(ruleBar_);
         ruleClose_->setText(QString::fromUtf8("\u2715"));
-        ruleClose_->setToolTip("Close rules");
+        ruleClose_->setToolTip(::openbc::i18n::t("text.close_rules"));
         ruleClose_->setAutoRaise(true);
         ruleLayout->addWidget(ruleClose_);
         root->addWidget(ruleBar_);
@@ -1196,10 +1193,10 @@ private:
         saveAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         addAction(saveAction_);
 
-        undoAction_ = new QAction("Undo", this);
+        undoAction_ = new QAction(::openbc::i18n::t("text.undo"), this);
         undoAction_->setShortcut(QKeySequence::Undo);
         undoAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-        redoAction_ = new QAction("Redo", this);
+        redoAction_ = new QAction(::openbc::i18n::t("text.redo"), this);
         redoAction_->setShortcut(QKeySequence::Redo);
         redoAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         addAction(undoAction_);
@@ -1502,33 +1499,33 @@ private:
         const DiffGroup* group = groupContainingRow(row);
 
         QMenu menu(this);
-        QAction* alignManually = menu.addAction("Align Manually");
-        QAction* isolate = menu.addAction("Isolate");
-        QAction* copyToOther = menu.addAction(isLeft ? "Copy to Right" : "Copy to Left");
+        QAction* alignManually = menu.addAction(::openbc::i18n::t("text.align_manually"));
+        QAction* isolate = menu.addAction(::openbc::i18n::t("text.isolate"));
+        QAction* copyToOther = menu.addAction(isLeft ? ::openbc::i18n::t("text.copy_to_right") : ::openbc::i18n::t("text.copy_to_left"));
         copyToOther->setEnabled(!classFileCompare_ && group != nullptr);
         menu.addSeparator();
-        QAction* editLine = menu.addAction("Edit Line");
-        QAction* insertBlank = menu.addAction("Insert Blank Line");
-        QAction* increaseIndent = menu.addAction("Increase Indent");
-        QAction* decreaseIndent = menu.addAction("Decrease Indent");
+        QAction* editLine = menu.addAction(::openbc::i18n::t("text.edit_line"));
+        QAction* insertBlank = menu.addAction(::openbc::i18n::t("text.insert_blank_line"));
+        QAction* increaseIndent = menu.addAction(::openbc::i18n::t("text.increase_indent"));
+        QAction* decreaseIndent = menu.addAction(::openbc::i18n::t("text.decrease_indent"));
         for (QAction* action : {editLine, insertBlank, increaseIndent, decreaseIndent})
             action->setEnabled(!classFileCompare_);
         menu.addSeparator();
-        QAction* compareClipboard = menu.addAction("Compare to Clipboard");
+        QAction* compareClipboard = menu.addAction(::openbc::i18n::t("text.compare_to_clipboard"));
         menu.addSeparator();
-        QAction* cutAction = menu.addAction("Cut");
-        QAction* copyAction = menu.addAction("Copy");
-        QAction* pasteAction = menu.addAction("Paste");
-        QAction* deleteAction = menu.addAction("Delete");
+        QAction* cutAction = menu.addAction(::openbc::i18n::t("text.cut"));
+        QAction* copyAction = menu.addAction(::openbc::i18n::t("common.copy"));
+        QAction* pasteAction = menu.addAction(::openbc::i18n::t("text.paste"));
+        QAction* deleteAction = menu.addAction(::openbc::i18n::t("common.delete"));
         const bool hasSelection = editor->textCursor().hasSelection();
         cutAction->setEnabled(!classFileCompare_ && hasSelection);
         copyAction->setEnabled(hasSelection);
         deleteAction->setEnabled(!classFileCompare_ && hasSelection);
         pasteAction->setEnabled(!classFileCompare_);
         menu.addSeparator();
-        QMenu* openWith = menu.addMenu("Open With");
-        QAction* openDefault = openWith->addAction("Default Application");
-        QAction* openChoose = openWith->addAction("Choose Program...");
+        QMenu* openWith = menu.addMenu(::openbc::i18n::t("common.open_with"));
+        QAction* openDefault = openWith->addAction(::openbc::i18n::t("common.default_application"));
+        QAction* openChoose = openWith->addAction(::openbc::i18n::t("common.choose_program"));
 
         QAction* chosen = menu.exec(editor->viewport()->mapToGlobal(viewportPos));
         if (!chosen) return;
@@ -1540,7 +1537,7 @@ private:
         if (chosen == alignManually) {
             beginManualAlignment(sideIsLeft, row);
         } else if (chosen == isolate) {
-            status_->setText("Isolate: showing only this difference section.");
+            status_->setText(::openbc::i18n::t("text.isolate_showing_only_this_difference_section"));
             if (!showDiffsAction_->isChecked() && !contextAction_->isChecked()) {
                 showDiffsAction_->setChecked(true);
             } else {
@@ -1595,19 +1592,19 @@ private:
             const QString path = isLeft ? leftPath_ : rightPath_;
             RemoteProfile profile;
             if (RemoteProfileStore::findProfileForPath(path, &profile)) {
-                QMessageBox::information(this, "Open With",
-                                         "Remote files must be downloaded before opening in a local application.");
+                QMessageBox::information(this, ::openbc::i18n::t("common.open_with"),
+                                         ::openbc::i18n::t("text.remote_files_must_be_downloaded_before"));
                 return;
             }
             if (archives::isVirtual(path)) {
-                QMessageBox::information(this, "Open With",
-                                         "Files inside an archive must be extracted before opening in a local application.");
+                QMessageBox::information(this, ::openbc::i18n::t("common.open_with"),
+                                         ::openbc::i18n::t("text.files_inside_an_archive_must_be"));
                 return;
             }
             if (chosen == openDefault) {
                 QDesktopServices::openUrl(QUrl::fromLocalFile(path));
             } else {
-                const QString program = QFileDialog::getOpenFileName(this, "Choose application");
+                const QString program = QFileDialog::getOpenFileName(this, ::openbc::i18n::t("common.choose_application"));
                 if (!program.isEmpty()) QProcess::startDetached(program, {path});
             }
         }
@@ -1635,7 +1632,7 @@ private:
     void compareToClipboard(bool isLeft) {
         const QString clipboard = QApplication::clipboard()->text();
         if (clipboard.isEmpty()) {
-            status_->setText("Clipboard is empty - nothing to compare.");
+            status_->setText(::openbc::i18n::t("text.clipboard_is_empty_nothing_to_compare"));
             return;
         }
         const QStringList clipboardLines = clipboard.split('\n');
@@ -1646,9 +1643,7 @@ private:
         for (const auto& line : comparison) {
             if (line.changed) ++differences;
         }
-        status_->setText(QString("Compare to Clipboard: %1 differing line(s) against the %2 pane.")
-                             .arg(differences)
-                             .arg(isLeft ? "left" : "right"));
+        status_->setText(::openbc::i18n::t("text.compare_to_clipboard_differing_line_s", differences, isLeft ? "left" : "right"));
     }
 
     void syncFromEditors() {
@@ -1772,10 +1767,7 @@ private:
         if (index <= 0) return;
         --index;
         applySideSnapshot(left);
-        status_->setText(QString("Undo %1  (%2 / %3)")
-                             .arg(left ? "left" : "right")
-                             .arg(index + 1)
-                             .arg(history.size()));
+        status_->setText(::openbc::i18n::t("text.undo_2", left ? "left" : "right", index + 1, history.size()));
     }
 
     void redoFocusedSide() {
@@ -1788,10 +1780,7 @@ private:
         if (index < 0 || index >= history.size() - 1) return;
         ++index;
         applySideSnapshot(left);
-        status_->setText(QString("Redo %1  (%2 / %3)")
-                             .arg(left ? "left" : "right")
-                             .arg(index + 1)
-                             .arg(history.size()));
+        status_->setText(::openbc::i18n::t("text.redo_2", left ? "left" : "right", index + 1, history.size()));
     }
 
     // Restores one side from its current history entry and rebuilds the
@@ -2065,7 +2054,7 @@ private:
 
     void rebuild() {
         if (largeFileMode_) {
-            status_->setText("Large-file blocks are matched once as they load.");
+            status_->setText(::openbc::i18n::t("text.large_file_blocks_are_matched_once"));
             return;
         }
         const CursorSnapshot leftSnap = captureCursor(leftEditor_);
@@ -2277,7 +2266,7 @@ private:
         } else if (rightEditor_->hasFocus()) {
             saveSide(false);
         } else {
-            status_->setText("Click into a pane first, then Ctrl+S saves that side.");
+            status_->setText(::openbc::i18n::t("text.click_into_a_pane_first_then"));
         }
     }
 
@@ -2288,7 +2277,7 @@ private:
         const QFileInfo candidateInfo(path);
         if (!path.isEmpty() && candidateInfo.exists() && candidateInfo.isFile() &&
             static_cast<quint64>(candidateInfo.size()) > kMaxLargeCompareFileBytes) {
-            status_->setText(QString("Text comparisons support local files up to 500 MiB per side."));
+            status_->setText(::openbc::i18n::t("text.text_comparisons_support_local_files_up"));
             return;
         }
         const bool useLargeMode =
@@ -2349,7 +2338,7 @@ private:
         }
         const QPointer<TextCompareViewer> view(this);
         progress_->show();
-        status_->setText("Loading " + QFileInfo(path).fileName() + "...");
+        status_->setText(::openbc::i18n::t("text.loading", QFileInfo(path).fileName()));
         // Resolved on the GUI thread (cheap: an in-memory profile-tree
         // lookup) so the background lambda below only ever needs the
         // profile struct, not RemoteProfileStore itself.
@@ -2426,7 +2415,7 @@ private:
                 view->refreshSideHeader(false);
                 view->refreshDirtyIndicators();
                 if (view->onTitleChanged) view->onTitleChanged();
-                view->status_->setText(QFileInfo(path).fileName() + " loaded; comparing...");
+                view->status_->setText(::openbc::i18n::t("text.loaded_comparing", QFileInfo(path).fileName()));
             }, Qt::QueuedConnection);
         });
     }
@@ -2468,7 +2457,7 @@ private:
             const QByteArray bytes = contents.toUtf8();
             const QString relativePath = isRemote ? remoteRelativePath(path, remoteProfile) : path;
             const QPointer<TextCompareViewer> view(this);
-            status_->setText("Saving " + QFileInfo(relativePath).fileName() + "...");
+            status_->setText(::openbc::i18n::t("common.saving_2", QFileInfo(relativePath).fileName()));
             QThreadPool::globalInstance()->start([view, left, path, remoteProfile, relativePath,
                                                   isRemote, contents, bytes, done]() {
                 QString error;
@@ -2491,7 +2480,7 @@ private:
                         view->refreshDirtyIndicators();
                         view->refreshSideHeader(left);
                     }
-                    view->status_->setText(QFileInfo(path).fileName() + " saved.");
+                    view->status_->setText(::openbc::i18n::t("text.saved", QFileInfo(path).fileName()));
                     if (done) done(true, QString());
                 }, Qt::QueuedConnection);
             });
@@ -2511,7 +2500,7 @@ private:
         if (left) leftUnsaved_ = false; else rightUnsaved_ = false;
         refreshDirtyIndicators();
         refreshSideHeader(left);
-        status_->setText(QFileInfo(path).fileName() + " saved.");
+        status_->setText(::openbc::i18n::t("text.saved", QFileInfo(path).fileName()));
         // Deliberately no history push: saving must not wipe the undo/redo
         // stacks, otherwise Ctrl+Z after a save would have nothing to walk
         // back to.

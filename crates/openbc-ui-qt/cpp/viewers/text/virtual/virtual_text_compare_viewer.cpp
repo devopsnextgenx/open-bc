@@ -21,6 +21,7 @@
 #include "options/appearance_state.h"
 #include "options/text_font.h"
 #include "style/qt_style.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -137,7 +138,7 @@ void VirtualTextCompareViewer::buildUi() {
         pathRow->setSpacing(4);
         PathSelector*& selector = left ? leftSelector_ : rightSelector_;
         selector = makeCommitSelector(
-            frame, left ? tr("Left") : tr("Right"), left ? leftPath_ : rightPath_,
+            frame, left ? ::openbc::i18n::t("common.left") : ::openbc::i18n::t("common.right"), left ? leftPath_ : rightPath_,
             QStringLiteral("All files (*.*)"),
             [this, left](QString path) { commitPath(left, path); });
         selector->setObjectName(QStringLiteral("sidePathSelector"));
@@ -150,7 +151,7 @@ void VirtualTextCompareViewer::buildUi() {
         saveButton->setObjectName(QStringLiteral("saveSideBtn"));
         saveButton->setIcon(icons::glyph(icons::Glyph::Save));
         saveButton->setIconSize(QSize(15, 15));
-        saveButton->setToolTip(tr("Save this side (no unsaved changes)"));
+        saveButton->setToolTip(::openbc::i18n::t("text.save_this_side_no_unsaved_changes"));
         saveButton->setEnabled(false);
         QObject::connect(saveButton, &QToolButton::clicked, this, [this, left] { saveSide(left); });
         pathRow->addWidget(saveButton, 0);
@@ -201,12 +202,12 @@ void VirtualTextCompareViewer::buildUi() {
     findBar_ = new QWidget;
     auto* fl = new QHBoxLayout(findBar_);
     fl->setContentsMargins(6, 3, 6, 3);
-    fl->addWidget(new QLabel(tr("Find:")));
+    fl->addWidget(new QLabel(::openbc::i18n::t("common.find_2")));
     findEdit_ = new QLineEdit;
-    caseBox_ = new QCheckBox(tr("Match case"));
-    auto* prev = new QPushButton(tr("Previous"));
-    auto* next = new QPushButton(tr("Next"));
-    auto* close = new QPushButton(tr("Close"));
+    caseBox_ = new QCheckBox(::openbc::i18n::t("text.match_case"));
+    auto* prev = new QPushButton(::openbc::i18n::t("text.previous"));
+    auto* next = new QPushButton(::openbc::i18n::t("text.next"));
+    auto* close = new QPushButton(::openbc::i18n::t("common.close"));
     fl->addWidget(findEdit_, 1);
     fl->addWidget(caseBox_);
     fl->addWidget(prev);
@@ -230,14 +231,13 @@ void VirtualTextCompareViewer::buildUi() {
     rulesBar_->setObjectName(QStringLiteral("rulesBar"));
     auto* rl = new QHBoxLayout(rulesBar_);
     rl->setContentsMargins(6, 3, 6, 3);
-    rl->addWidget(new QLabel(tr("Rules:")));
+    rl->addWidget(new QLabel(::openbc::i18n::t("text.rules_2")));
     rulesEdit_ = new QLineEdit;
     rulesEdit_->setObjectName(QStringLiteral("rulesEdit"));
-    rulesEdit_->setPlaceholderText(tr("timestamp, correlation-id, pod-123, /regex/, or a,,b for a literal comma"));
-    rulesEdit_->setToolTip(tr("Parts of lines matching these samples or /regular expressions/ are ignored, so lines that "
-                              "differ only there count as matched."));
-    auto* applyRulesButton = new QPushButton(tr("Apply"));
-    auto* clearRulesButton = new QPushButton(tr("Clear"));
+    rulesEdit_->setPlaceholderText(::openbc::i18n::t("text.timestamp_correlation_id_pod_123_regex"));
+    rulesEdit_->setToolTip(::openbc::i18n::t("text.parts_of_lines_matching_these_samples"));
+    auto* applyRulesButton = new QPushButton(::openbc::i18n::t("common.apply"));
+    auto* clearRulesButton = new QPushButton(::openbc::i18n::t("common.clear"));
     rulesStatus_ = new QLabel;
     rl->addWidget(rulesEdit_, 1);
     rl->addWidget(applyRulesButton);
@@ -290,8 +290,8 @@ void VirtualTextCompareViewer::buildActions() {
         addAction(a);
         return a;
     };
-    homeAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::Home), tr("Home"));
-    sessionsAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::Sessions), tr("Sessions"));
+    homeAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::Home), ::openbc::i18n::t("tab.home"));
+    sessionsAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::Sessions), ::openbc::i18n::t("common.sessions"));
     toolbar_->addSeparator();
     QObject::connect(homeAction_, &QAction::triggered, this,
                      [this] { if (onHomeRequested) onHomeRequested(); });
@@ -305,48 +305,48 @@ void VirtualTextCompareViewer::buildActions() {
         return action;
     };
     QAction* showAllAction =
-        unavailable(icons::Glyph::ShowAll, tr("All"), tr("Row filtering is unavailable in the Virtual editor"));
+        unavailable(icons::Glyph::ShowAll, ::openbc::i18n::t("text.all"), ::openbc::i18n::t("text.row_filtering_is_unavailable_in_the"));
     showAllAction->setCheckable(true);
     showAllAction->setChecked(true);
     QAction* showDiffsAction =
-        unavailable(icons::Glyph::ShowDiffs, tr("Diffs"), tr("Row filtering is unavailable in the Virtual editor"));
+        unavailable(icons::Glyph::ShowDiffs, ::openbc::i18n::t("text.diffs"), ::openbc::i18n::t("text.row_filtering_is_unavailable_in_the"));
     showDiffsAction->setCheckable(true);
     QAction* contextAction =
-        unavailable(icons::Glyph::Context, tr("Context"), tr("Row filtering is unavailable in the Virtual editor"));
+        unavailable(icons::Glyph::Context, ::openbc::i18n::t("text.context"), ::openbc::i18n::t("text.row_filtering_is_unavailable_in_the"));
     contextAction->setCheckable(true);
     toolbar_->addSeparator();
-    unavailable(icons::Glyph::Minor, tr("Minor"), tr("Whitespace filtering is unavailable in the Virtual editor"));
-    rulesAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::Rules), tr("Rules"));
+    unavailable(icons::Glyph::Minor, ::openbc::i18n::t("text.minor"), ::openbc::i18n::t("text.whitespace_filtering_is_unavailable_in_the"));
+    rulesAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::Rules), ::openbc::i18n::t("text.rules"));
     rulesAction_->setCheckable(true);
-    rulesAction_->setToolTip(tr("Ignore parts of lines that match samples or /regular expressions/"));
+    rulesAction_->setToolTip(::openbc::i18n::t("text.ignore_parts_of_lines_that_match"));
     QObject::connect(rulesAction_, &QAction::toggled, this, [this](bool on) { showRulesBar(on); });
-    unavailable(icons::Glyph::Format, tr("Word Wrap"), tr("Word wrapping is unavailable in the Virtual editor"));
+    unavailable(icons::Glyph::Format, ::openbc::i18n::t("text.word_wrap"), ::openbc::i18n::t("text.word_wrapping_is_unavailable_in_the"));
     toolbar_->addSeparator();
 
-    minimapAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::MinimapPixel), tr("Minimap"));
+    minimapAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::MinimapPixel), ::openbc::i18n::t("common.minimap"));
     minimapAction_->setCheckable(true);
     minimapAction_->setChecked(true);
-    minimapAction_->setToolTip(tr("Toggle pixel-line versus block markers in the minimap"));
-    findAction_ = make(tr("&Find..."), QKeySequence::Find, [this] { showFindBar(true); });
+    minimapAction_->setToolTip(::openbc::i18n::t("text.toggle_pixel_line_versus_block_markers"));
+    findAction_ = make(::openbc::i18n::t("text.find"), QKeySequence::Find, [this] { showFindBar(true); });
     findAction_->setIcon(icons::glyph(icons::Glyph::Find));
     toolbar_->addAction(findAction_);
     toolbar_->addSeparator();
 
-    copyDiffAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::CopyLine), tr("Copy"));
-    copyDiffAction_->setToolTip(tr("Copy the difference at the caret to the other side (needs write mode)"));
+    copyDiffAction_ = toolbar_->addAction(icons::glyph(icons::Glyph::CopyLine), ::openbc::i18n::t("common.copy"));
+    copyDiffAction_->setToolTip(::openbc::i18n::t("text.copy_the_difference_at_the_caret"));
     QObject::connect(copyDiffAction_, &QAction::triggered, this, [this] { copyCurrentBlock(); });
     toolbar_->addSeparator();
-    nextDiffAction_ = make(tr("&Next Difference"), QKeySequence(Qt::Key_F8),
+    nextDiffAction_ = make(::openbc::i18n::t("text.next_difference"), QKeySequence(Qt::Key_F8),
                            [this] { if (auto* e = activeEditor()) e->goToNextDifference(); });
     nextDiffAction_->setIcon(icons::glyph(icons::Glyph::NextSection));
     toolbar_->addAction(nextDiffAction_);
-    prevDiffAction_ = make(tr("P&revious Difference"), QKeySequence(Qt::SHIFT | Qt::Key_F8),
+    prevDiffAction_ = make(::openbc::i18n::t("text.previous_difference"), QKeySequence(Qt::SHIFT | Qt::Key_F8),
                            [this] { if (auto* e = activeEditor()) e->goToPreviousDifference(); });
     prevDiffAction_->setIcon(icons::glyph(icons::Glyph::PrevSection));
     toolbar_->addAction(prevDiffAction_);
     toolbar_->addSeparator();
 
-    swapAction_ = make(tr("S&wap Sides"), QKeySequence(), [this] {
+    swapAction_ = make(::openbc::i18n::t("text.swap_sides"), QKeySequence(), [this] {
         if (!confirmDiscard()) return;
         std::swap(leftPath_, rightPath_);
         changes_->track(0, leftPath_);
@@ -356,31 +356,31 @@ void VirtualTextCompareViewer::buildActions() {
     });
     swapAction_->setIcon(icons::glyph(icons::Glyph::Swap));
     toolbar_->addAction(swapAction_);
-    reloadAction_ = make(tr("&Reload"), QKeySequence(Qt::Key_F5), [this] {
+    reloadAction_ = make(::openbc::i18n::t("text.reload"), QKeySequence(Qt::Key_F5), [this] {
         if (confirmDiscard()) reload(true);
     });
     reloadAction_->setIcon(icons::glyph(icons::Glyph::Refresh));
     toolbar_->addAction(reloadAction_);
 
-    saveAction_ = make(tr("&Save"), QKeySequence::Save, [this] { saveActive(false); });
-    saveAsAction_ = make(tr("Save &As..."), QKeySequence::SaveAs, [this] { saveActive(true); });
-    undoAction_ = make(tr("&Undo"), QKeySequence::Undo, [this] { activeEditor()->undo(); });
-    redoAction_ = make(tr("&Redo"), QKeySequence::Redo, [this] { activeEditor()->redo(); });
+    saveAction_ = make(::openbc::i18n::t("text.save"), QKeySequence::Save, [this] { saveActive(false); });
+    saveAsAction_ = make(::openbc::i18n::t("text.save_as"), QKeySequence::SaveAs, [this] { saveActive(true); });
+    undoAction_ = make(::openbc::i18n::t("text.undo_3"), QKeySequence::Undo, [this] { activeEditor()->undo(); });
+    redoAction_ = make(::openbc::i18n::t("text.redo_3"), QKeySequence::Redo, [this] { activeEditor()->redo(); });
 
-    copyAction_ = make(tr("&Copy"), QKeySequence::Copy, [this] { if (auto* e = activeEditor()) e->copySelection(); });
-    selectAllAction_ = make(tr("Select &All"), QKeySequence::SelectAll, [this] { if (auto* e = activeEditor()) e->selectAllText(); });
-    findNextAction_ = make(tr("Find &Next"), QKeySequence(Qt::Key_F3), [this] { findNext(true); });
-    findPrevAction_ = make(tr("Find &Previous"), QKeySequence(Qt::SHIFT | Qt::Key_F3), [this] { findNext(false); });
-    gotoLineAction_ = make(tr("&Go to Line..."), QKeySequence(Qt::CTRL | Qt::Key_G), [this] {
+    copyAction_ = make(::openbc::i18n::t("text.copy"), QKeySequence::Copy, [this] { if (auto* e = activeEditor()) e->copySelection(); });
+    selectAllAction_ = make(::openbc::i18n::t("text.select_all"), QKeySequence::SelectAll, [this] { if (auto* e = activeEditor()) e->selectAllText(); });
+    findNextAction_ = make(::openbc::i18n::t("text.find_next"), QKeySequence(Qt::Key_F3), [this] { findNext(true); });
+    findPrevAction_ = make(::openbc::i18n::t("text.find_previous"), QKeySequence(Qt::SHIFT | Qt::Key_F3), [this] { findNext(false); });
+    gotoLineAction_ = make(::openbc::i18n::t("text.go_to_line"), QKeySequence(Qt::CTRL | Qt::Key_G), [this] {
         VirtualTextEditor* e = activeEditor();
         if (!e || !model_) return;
         bool ok = false;
         const quint64 max = qMax<quint64>(1, model_->lineCount(e->side()));
-        const qlonglong v = QInputDialog::getInt(this, tr("Go to Line"), tr("Line number (1 - %1):").arg(max), 1, 1,
+        const qlonglong v = QInputDialog::getInt(this, ::openbc::i18n::t("text.go_to_line_2"), ::openbc::i18n::t("text.line_number_1").arg(max), 1, 1,
                                                  static_cast<int>(qMin<quint64>(max, 2147483647)), 1, &ok);
         if (ok) e->goToLine(static_cast<quint64>(v));
     });
-    syntaxAction_ = make(tr("Syntax &Highlighting"), QKeySequence(), [this] {
+    syntaxAction_ = make(::openbc::i18n::t("text.syntax_highlighting"), QKeySequence(), [this] {
         left_->setSyntaxEnabled(syntaxAction_->isChecked());
         right_->setSyntaxEnabled(syntaxAction_->isChecked());
     });
@@ -454,21 +454,21 @@ void VirtualTextCompareViewer::refreshSideHeader(bool left) {
 
     const QFileInfo info(path);
     if (!info.exists()) {
-        attrs->setText(path.isEmpty() ? tr("(missing on this side)") : tr("(unavailable)"));
+        attrs->setText(path.isEmpty() ? ::openbc::i18n::t("text.missing_on_this_side") : ::openbc::i18n::t("text.unavailable"));
         return;
     }
 
     static const char* const encodings[] = {"UTF-8", "UTF-16 LE", "UTF-16 BE", "?"};
-    QString encoding = tr("UTF-8");
+    QString encoding = ::openbc::i18n::t("text.utf_8");
     if (model_) {
         const int code = model_->encodingCode(left ? Side::Left : Side::Right);
         encoding = QString::fromLatin1(encodings[qMin(code & 0x7f, 3)]);
-        if (code & 0x80) encoding += tr(" (binary?)");
+        if (code & 0x80) encoding += ::openbc::i18n::t("text.binary");
     }
     QString line = QStringLiteral("%1    %2    %3")
                        .arg(info.lastModified().toString(QStringLiteral("M/d/yyyy h:mm:ss AP")),
-                            QLocale().toString(info.size()) + tr(" bytes"), encoding);
-    if (model_ && model_->isDirty(left ? Side::Left : Side::Right)) line += tr("    ● modified");
+                            QLocale().toString(info.size()) + ::openbc::i18n::t("text.bytes_2"), encoding);
+    if (model_ && model_->isDirty(left ? Side::Left : Side::Right)) line += ::openbc::i18n::t("text.modified");
     attrs->setText(line);
 }
 
@@ -539,7 +539,7 @@ void VirtualTextCompareViewer::startLoad(bool keepScroll) {
     refreshSideHeader(true);
     refreshSideHeader(false);
     if (leftPath_.isEmpty() && rightPath_.isEmpty()) {
-        status_->setText(tr("Drop two files here to compare them."));
+        status_->setText(::openbc::i18n::t("text.drop_two_files_here_to_compare"));
         return;
     }
     keepScrollOnLoad_ = keepScroll;
@@ -547,17 +547,17 @@ void VirtualTextCompareViewer::startLoad(bool keepScroll) {
     loading_ = true;
     progress_->setValue(0);
     progress_->show();
-    status_->setText(tr("Comparing..."));
+    status_->setText(::openbc::i18n::t("common.comparing"));
     if (!loader_) loader_ = std::make_unique<TextModelLoader>();
     loader_->onProgress = [this](const QString& phase, quint64 done, quint64 total) {
         progress_->setValue(total ? static_cast<int>(done * 100 / total) : 0);
-        status_->setText(tr("Comparing (%1)...").arg(phase));
+        status_->setText(::openbc::i18n::t("text.comparing").arg(phase));
     };
     loader_->onFinished = [this](std::shared_ptr<TextModel> model) { onModelReady(std::move(model)); };
     loader_->onFailed = [this](const QString& message) {
         loading_ = false;
         progress_->hide();
-        status_->setText(message == QLatin1String("cancelled") ? tr("Cancelled.") : tr("Could not compare: %1").arg(message));
+        status_->setText(message == QLatin1String("cancelled") ? ::openbc::i18n::t("text.cancelled") : ::openbc::i18n::t("text.could_not_compare").arg(message));
     };
     ModelOptions options;
     options.bufferedIo = bufferedIo_;
@@ -609,18 +609,18 @@ void VirtualTextCompareViewer::updateStatus() {
     static const char* const kEnc[] = {"UTF-8", "UTF-16 LE", "UTF-16 BE", "?"};
     auto enc = [this](Side side) {
         const int code = model_->encodingCode(side);
-        return QString::fromLatin1(kEnc[qMin(code & 0x7f, 3)]) + ((code & 0x80) ? tr(" (binary?)") : QString());
+        return QString::fromLatin1(kEnc[qMin(code & 0x7f, 3)]) + ((code & 0x80) ? ::openbc::i18n::t("text.binary") : QString());
     };
     // Same wording as the Existing editor: "N difference section(s) | M line(s) | K changed row(s)".
     const quint64 changedRows = s.insertedRows + s.deletedRows + s.replacedRows;
     QString text = compare_status::summaryText(s.blocks, s.rows, changedRows);
-    if (anyDirty()) text += tr("   |   unsaved changes");
-    if (!rulesText_.isEmpty()) text += tr("   |   rules active");
-    if (s.blocks == 0 && s.rows > 0) text = tr("Files are identical   |   ") + text;
-    if (s.degraded) text += tr("   |   coarse alignment used for a very large unmatched region");
+    if (anyDirty()) text += ::openbc::i18n::t("text.unsaved_changes");
+    if (!rulesText_.isEmpty()) text += ::openbc::i18n::t("text.rules_active");
+    if (s.blocks == 0 && s.rows > 0) text = ::openbc::i18n::t("text.files_are_identical") + text;
+    if (s.degraded) text += ::openbc::i18n::t("text.coarse_alignment_used_for_a_very");
     status_->setText(text);
-    status_->setToolTip(tr("%1 / %2 · Virtual editor (%3)")
-                            .arg(enc(Side::Left), enc(Side::Right), writeEnabled_ ? tr("editing") : tr("read-only")));
+    status_->setToolTip(::openbc::i18n::t("text.virtual_editor")
+                            .arg(enc(Side::Left), enc(Side::Right), writeEnabled_ ? ::openbc::i18n::t("text.editing") : ::openbc::i18n::t("text.read_only")));
     if (diffNavigator_) diffNavigator_->setEnabled(s.blocks > 0);
     updatePreview(left_->currentRow());
 }
@@ -666,8 +666,8 @@ void VirtualTextCompareViewer::updateLockIcon() {
     if (!lockFlashing()) lockColor_ = writeEnabled_ ? kLockGreen : kLockRed;
     if (!lockButton_) return;
     lockButton_->setIcon(lockIcon(writeEnabled_, lockColor_));
-    lockButton_->setToolTip(writeEnabled_ ? tr("Editing is enabled - click to lock (read-only)")
-                                          : tr("Read-only - click to unlock and enable editing"));
+    lockButton_->setToolTip(writeEnabled_ ? ::openbc::i18n::t("text.editing_is_enabled_click_to_lock")
+                                          : ::openbc::i18n::t("text.read_only_click_to_unlock_and"));
 }
 
 void VirtualTextCompareViewer::flashLock() {
@@ -675,7 +675,7 @@ void VirtualTextCompareViewer::flashLock() {
     lockColor_ = kLockRed;            // first colour of red-blue-yellow-red
     lockTimer_.start();               // restarts the 1.2 s sequence when a flash is already running
     updateLockIcon();
-    status_->setText(tr("Read-only: click the lock icon to enable editing."));
+    status_->setText(::openbc::i18n::t("text.read_only_click_the_lock_icon"));
 }
 
 void VirtualTextCompareViewer::setWriteMode(bool enabled) {
@@ -720,8 +720,8 @@ void VirtualTextCompareViewer::refreshDirtyUi() {
         QToolButton* button = left ? leftSaveButton_ : rightSaveButton_;
         button->setEnabled(dirty);
         const QString path = left ? leftPath_ : rightPath_;
-        button->setToolTip(dirty ? (path.isEmpty() ? tr("Save this side as...") : tr("Save %1").arg(path))
-                                 : tr("Save this side (no unsaved changes)"));
+        button->setToolTip(dirty ? (path.isEmpty() ? ::openbc::i18n::t("text.save_this_side_as") : ::openbc::i18n::t("text.save_2").arg(path))
+                                 : ::openbc::i18n::t("text.save_this_side_no_unsaved_changes"));
         refreshSideHeader(left);
     }
     const bool dirty = anyDirty();
@@ -749,7 +749,7 @@ void VirtualTextCompareViewer::copyBlockAt(quint64 row, Side from) {
     QString error;
     const auto edit = model_->copyBlock(from, row, &error);
     if (!edit) {
-        status_->setText(error.isEmpty() ? tr("Nothing to copy here.") : error);
+        status_->setText(error.isEmpty() ? ::openbc::i18n::t("text.nothing_to_copy_here") : error);
         return;
     }
     handleEdited(*edit);
@@ -767,7 +767,7 @@ void VirtualTextCompareViewer::copyCurrentBlock() {
     }
     VirtualTextEditor* e = activeEditor();
     if (!model_->blockAt(e->currentRow())) {
-        status_->setText(tr("Place the caret in a difference (or press F8) to copy it to the other side."));
+        status_->setText(::openbc::i18n::t("text.place_the_caret_in_a_difference"));
         return;
     }
     copyBlockAt(e->currentRow(), e->side());
@@ -784,14 +784,14 @@ void VirtualTextCompareViewer::saveActive(bool saveAs) {
     }
     if (!model_ || taskBusy()) return;
     const QString current = left ? leftPath_ : rightPath_;
-    const QString target = QFileDialog::getSaveFileName(this, tr("Save As"), current, tr("All files (*.*)"));
+    const QString target = QFileDialog::getSaveFileName(this, ::openbc::i18n::t("text.save_as_2"), current, ::openbc::i18n::t("text.all_files"));
     if (target.isEmpty()) return;
     if (!taskRunner_) taskRunner_ = std::make_unique<ModelTaskRunner>();
     const Side side = e->side();
     taskRunner_->onProgress = {};
     taskRunner_->onFailed = [this](const QString& message) {
         progress_->hide();
-        status_->setText(tr("Could not save: %1").arg(message));
+        status_->setText(::openbc::i18n::t("text.could_not_save").arg(message));
     };
     taskRunner_->onFinished = [this, left, target](const QString&) {
         (left ? leftPath_ : rightPath_) = target;
@@ -800,32 +800,32 @@ void VirtualTextCompareViewer::saveActive(bool saveAs) {
         progress_->hide();
         refreshDirtyUi();
         updateEditActions();
-        status_->setText(tr("Saved %1").arg(target));
+        status_->setText(::openbc::i18n::t("common.saved").arg(target));
         if (onTitleChanged) onTitleChanged();
     };
     progress_->setValue(0);
     progress_->show();
-    status_->setText(tr("Saving..."));
+    status_->setText(::openbc::i18n::t("common.saving"));
     taskRunner_->start(model_, ModelTaskRunner::Task::SaveAs, side, target);
 }
 
 void VirtualTextCompareViewer::saveSide(bool left, SaveDone done) {
     const auto finish = [done](bool ok, const QString& error) { if (done) done(ok, error); };
-    if (!model_) { finish(false, tr("Nothing is loaded.")); return; }
+    if (!model_) { finish(false, ::openbc::i18n::t("text.nothing_is_loaded")); return; }
     const Side side = left ? Side::Left : Side::Right;
     if (!model_->isDirty(side)) { finish(true, QString()); return; }
-    if (taskBusy()) { finish(false, tr("Another operation is still running.")); return; }
+    if (taskBusy()) { finish(false, ::openbc::i18n::t("text.another_operation_is_still_running")); return; }
     QString saveAsPath;
     if ((left ? leftPath_ : rightPath_).isEmpty()) {          // a side that had no file yet
-        saveAsPath = QFileDialog::getSaveFileName(this, left ? tr("Save left side as") : tr("Save right side as"),
-                                                  QString(), tr("All files (*.*)"));
-        if (saveAsPath.isEmpty()) { finish(false, tr("Save was cancelled.")); return; }
+        saveAsPath = QFileDialog::getSaveFileName(this, left ? ::openbc::i18n::t("text.save_left_side_as") : ::openbc::i18n::t("text.save_right_side_as"),
+                                                  QString(), ::openbc::i18n::t("text.all_files"));
+        if (saveAsPath.isEmpty()) { finish(false, ::openbc::i18n::t("text.save_was_cancelled")); return; }
     }
     if (!taskRunner_) taskRunner_ = std::make_unique<ModelTaskRunner>();
     taskRunner_->onProgress = {};
     taskRunner_->onFailed = [this, finish](const QString& message) {
         progress_->hide();
-        status_->setText(tr("Could not save: %1").arg(message));
+        status_->setText(::openbc::i18n::t("text.could_not_save").arg(message));
         finish(false, message);
     };
     taskRunner_->onFinished = [this, left, saveAsPath, finish](const QString& written) {
@@ -839,13 +839,13 @@ void VirtualTextCompareViewer::saveSide(bool left, SaveDone done) {
         refreshDirtyUi();
         updateEditActions();
         updateStatus();
-        status_->setText(tr("Saved %1").arg(written.isEmpty() ? path : written));
+        status_->setText(::openbc::i18n::t("common.saved").arg(written.isEmpty() ? path : written));
         if (onTitleChanged) onTitleChanged();
         finish(true, QString());
     };
     progress_->setValue(0);
     progress_->show();
-    status_->setText(tr("Saving..."));
+    status_->setText(::openbc::i18n::t("common.saving"));
     taskRunner_->start(model_, saveAsPath.isEmpty() ? ModelTaskRunner::Task::Save : ModelTaskRunner::Task::SaveAs, side,
                        saveAsPath);
 }
@@ -875,7 +875,7 @@ void VirtualTextCompareViewer::applyRules(const QString& text) {
     }
     if (text == model_->rulesText() && text == rulesText_) return;
     if (taskBusy()) {
-        rulesStatus_->setText(tr("Busy - try again in a moment."));
+        rulesStatus_->setText(::openbc::i18n::t("text.busy_try_again_in_a_moment"));
         return;
     }
     if (!taskRunner_) taskRunner_ = std::make_unique<ModelTaskRunner>();
@@ -885,14 +885,14 @@ void VirtualTextCompareViewer::applyRules(const QString& text) {
     taskRunner_->onFailed = [this](const QString& message) {
         progress_->hide();
         rulesStatus_->setStyleSheet(QStringLiteral("color: #e53935;"));
-        rulesStatus_->setText(message == QLatin1String("cancelled") ? tr("Cancelled.") : message);
-        status_->setText(tr("Rules not applied: %1").arg(message));
+        rulesStatus_->setText(message == QLatin1String("cancelled") ? ::openbc::i18n::t("text.cancelled") : message);
+        status_->setText(::openbc::i18n::t("text.rules_not_applied").arg(message));
     };
     taskRunner_->onFinished = [this, text](const QString&) {
         rulesText_ = text;
         progress_->hide();
         rulesStatus_->setStyleSheet(QString());
-        rulesStatus_->setText(text.isEmpty() ? QString() : tr("active"));
+        rulesStatus_->setText(text.isEmpty() ? QString() : ::openbc::i18n::t("text.active"));
         left_->invalidateAll();
         right_->invalidateAll();
         updateOverview();

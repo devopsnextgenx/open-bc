@@ -23,6 +23,7 @@
 #include <QVector>
 #include <QWidget>
 #include <functional>
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -42,25 +43,25 @@ public:
         layout->setSpacing(6);
 
         findEdit_ = new QLineEdit(this);
-        findEdit_->setPlaceholderText("Find");
+        findEdit_->setPlaceholderText(::openbc::i18n::t("common.find"));
         findEdit_->setFixedWidth(200);
         replaceEdit_ = new QLineEdit(this);
-        replaceEdit_->setPlaceholderText("Replace with");
+        replaceEdit_->setPlaceholderText(::openbc::i18n::t("common.replace_with"));
         replaceEdit_->setFixedWidth(200);
 
         auto* prev = new QToolButton(this);
         prev->setText(QString::fromUtf8("\u2191"));
-        prev->setToolTip("Previous match (Shift+Enter)");
+        prev->setToolTip(::openbc::i18n::t("common.previous_match_shift_enter"));
         auto* next = new QToolButton(this);
         next->setText(QString::fromUtf8("\u2193"));
-        next->setToolTip("Next match (Enter)");
-        replaceOne_ = new QPushButton("Replace", this);
-        replaceAll_ = new QPushButton("Replace All", this);
+        next->setToolTip(::openbc::i18n::t("common.next_match_enter"));
+        replaceOne_ = new QPushButton(::openbc::i18n::t("common.replace"), this);
+        replaceAll_ = new QPushButton(::openbc::i18n::t("common.replace_all"), this);
 
-        caseSensitive_ = new QCheckBox("Aa", this);
-        caseSensitive_->setToolTip("Case sensitive");
-        wholeWord_ = new QCheckBox("Word", this);
-        wholeWord_->setToolTip("Whole word only");
+        caseSensitive_ = new QCheckBox(::openbc::i18n::t("common.aa"), this);
+        caseSensitive_->setToolTip(::openbc::i18n::t("common.case_sensitive"));
+        wholeWord_ = new QCheckBox(::openbc::i18n::t("common.word"), this);
+        wholeWord_->setToolTip(::openbc::i18n::t("common.whole_word_only"));
 
         scopeCombo_ = new QComboBox(this);
         scopeCombo_->addItem("This pane", static_cast<int>(Scope::FocusedPane));
@@ -71,17 +72,17 @@ public:
 
         auto* close = new QToolButton(this);
         close->setText(QString::fromUtf8("\u2715"));
-        close->setToolTip("Close (Esc)");
+        close->setToolTip(::openbc::i18n::t("common.close_esc"));
         close->setAutoRaise(true);
 
-        layout->addWidget(new QLabel("Find:", this));
+        layout->addWidget(new QLabel(::openbc::i18n::t("common.find_2"), this));
         layout->addWidget(findEdit_);
         layout->addWidget(prev);
         layout->addWidget(next);
         layout->addWidget(caseSensitive_);
         layout->addWidget(wholeWord_);
         layout->addSpacing(8);
-        layout->addWidget(new QLabel("Replace:", this));
+        layout->addWidget(new QLabel(::openbc::i18n::t("common.replace_2"), this));
         layout->addWidget(replaceEdit_);
         layout->addWidget(replaceOne_);
         layout->addWidget(replaceAll_);
@@ -167,7 +168,7 @@ private:
             if (!editor) continue;
             if (editor->find(term, flags(backward))) {
                 editor->setFocus();
-                status_->setText("Found");
+                status_->setText(::openbc::i18n::t("common.found"));
                 return;
             }
             // Wrap around: retry from the top/bottom of this editor once.
@@ -176,11 +177,11 @@ private:
             editor->setTextCursor(cursor);
             if (editor->find(term, flags(backward))) {
                 editor->setFocus();
-                status_->setText("Wrapped");
+                status_->setText(::openbc::i18n::t("common.wrapped"));
                 return;
             }
         }
-        status_->setText("Not found");
+        status_->setText(::openbc::i18n::t("common.not_found"));
     }
 
     void replaceCurrent() {
@@ -214,7 +215,7 @@ private:
                 ++total;
             }
         }
-        status_->setText(QString("Replaced %1").arg(total));
+        status_->setText(::openbc::i18n::t("common.replaced", total));
     }
 
     void hideBar() {

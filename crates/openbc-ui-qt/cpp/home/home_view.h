@@ -36,6 +36,7 @@
 #include "style/qt_style.h"
 #include "remote/remote_connections_dialog.h"
 #include "remote/remote_vfs_bridge.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -494,7 +495,7 @@ private:
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
 
-        auto* header = new QLabel("Sessions", sidebar);
+        auto* header = new QLabel(::openbc::i18n::t("common.sessions"), sidebar);
         header->setObjectName("homeSessionsHeader");
         layout->addWidget(header);
 
@@ -522,11 +523,11 @@ private:
         addButton_ = new QToolButton(bar);
         addButton_->setObjectName("homeBarButton");
         addButton_->setText("+");
-        addButton_->setToolTip("New saved session folder / save selected session");
+        addButton_->setToolTip(::openbc::i18n::t("home.new_saved_session_folder_save_selected"));
         removeButton_ = new QToolButton(bar);
         removeButton_->setObjectName("homeBarButton");
         removeButton_->setText(QString::fromUtf8("\xE2\x88\x92"));
-        removeButton_->setToolTip("Remove selected");
+        removeButton_->setToolTip(::openbc::i18n::t("home.remove_selected"));
         search_ = new QLineEdit(bar);
         search_->setObjectName("homeSearch");
         search_->setClearButtonEnabled(true);
@@ -582,10 +583,10 @@ private:
 
         auto* buttons = new QHBoxLayout;
         buttons->setSpacing(8);
-        open_ = new QPushButton("Open", info_);
+        open_ = new QPushButton(::openbc::i18n::t("home.open"), info_);
         open_->setObjectName("homeOpen");
         open_->setDefault(true);
-        edit_ = new QPushButton("Edit", info_);
+        edit_ = new QPushButton(::openbc::i18n::t("home.edit"), info_);
         edit_->setObjectName("homeEdit");
         buttons->addWidget(open_);
         buttons->addWidget(edit_);
@@ -600,7 +601,7 @@ private:
         auto* centerLayout = new QVBoxLayout(center);
         centerLayout->setContentsMargins(0, 0, 0, 0);
         centerLayout->setSpacing(0);
-        auto* hint = new QLabel("Drag folders or files onto session icon\nor click a session icon to begin:", center);
+        auto* hint = new QLabel(::openbc::i18n::t("home.drag_folders_or_files_onto_session"), center);
         hint->setObjectName("homeHint");
         hint->setAlignment(Qt::AlignHCenter);
         centerLayout->addWidget(hint);
@@ -643,7 +644,7 @@ private:
         bar->setFixedHeight(kFooterBarHeight);
         auto* barRow = new QHBoxLayout(bar);
         barRow->setContentsMargins(18, 0, 8, 0);
-        auto* barTitle = new QLabel("KNOWLEDGE BASE  \u00b7  SUPPORT FORUMS  \u00b7  SCREENCASTS", bar);
+        auto* barTitle = new QLabel(::openbc::i18n::t("home.knowledge_base_support_forums_screencasts"), bar);
         barTitle->setObjectName("homeFooterTitle");
         footerToggle_ = new QToolButton(bar);
         footerToggle_->setObjectName("homeFooterIcon");
@@ -686,14 +687,14 @@ private:
         row->addLayout(kb);
 
         auto* forums = column("SUPPORT FORUMS");
-        auto* forumsText = new QLabel("Visit our <b><u>online forums</u></b> for<br>technical support.", footerBody_);
+        auto* forumsText = new QLabel(::openbc::i18n::t("home.visit_our_b_u_online_forums"), footerBody_);
         forumsText->setObjectName("homeFooterText");
         forums->addWidget(forumsText);
         forums->addStretch();
         row->addLayout(forums);
 
         auto* casts = column("SCREENCASTS");
-        auto* castsText = new QLabel("Watch our <b><u>online videos</u></b> for tips<br>on getting the most out of OpenBC.", footerBody_);
+        auto* castsText = new QLabel(::openbc::i18n::t("home.watch_our_b_u_online_videos"), footerBody_);
         castsText->setObjectName("homeFooterText");
         casts->addWidget(castsText);
         casts->addStretch();
@@ -713,7 +714,7 @@ private:
         footerBody_->setVisible(expanded);
         footer_->setFixedHeight(kFooterBarHeight + (expanded ? kFooterBodyHeight : 0) + 1);
         footerToggle_->setArrowType(expanded ? Qt::DownArrow : Qt::UpArrow);
-        footerToggle_->setToolTip(expanded ? "Minimize" : "Show knowledge base, forums and screencasts");
+        footerToggle_->setToolTip(expanded ? ::openbc::i18n::t("home.minimize") : ::openbc::i18n::t("home.show_knowledge_base_forums_and_screencasts"));
     }
 
     // ----- launching ------------------------------------------------------
@@ -765,7 +766,7 @@ private:
         rightLabel_->setVisible(!editing);
         leftEdit_->setVisible(editing);
         rightEdit_->setVisible(editing);
-        edit_->setText(editing ? "Done" : "Edit");
+        edit_->setText(editing ? ::openbc::i18n::t("home.done") : ::openbc::i18n::t("home.edit"));
     }
 
     // ----- sidebar bar buttons / filter -----------------------------------
@@ -778,7 +779,7 @@ private:
         QString parentNode = "Personal";
         if (item && item->data(0, Qt::UserRole + 4).toBool()) parentNode = item->data(0, Qt::UserRole + 2).toString();
         bool ok = false;
-        const QString name = QInputDialog::getText(this, "New saved session folder", "Name",
+        const QString name = QInputDialog::getText(this, ::openbc::i18n::t("home.new_saved_session_folder"), ::openbc::i18n::t("common.name"),
                                                    QLineEdit::Normal, QString(), &ok);
         if (ok && SessionHistory::createNode(parentNode, name)) refreshHistory();
     }
@@ -945,7 +946,7 @@ private:
             SessionHistory::updateSaved(selected_.savedNode, selected_.savedIndex, selected_, selected_.label);
         } else {
             bool ok = false;
-            const QString node = QInputDialog::getText(this, "Save session", "Named node", QLineEdit::Normal,
+            const QString node = QInputDialog::getText(this, ::openbc::i18n::t("home.save_session"), ::openbc::i18n::t("home.named_node"), QLineEdit::Normal,
                                                        "Personal", &ok);
             if (ok && !node.trimmed().isEmpty()) SessionHistory::save(selected_, node, selected_.label);
         }
@@ -959,7 +960,7 @@ private:
         history_->setCurrentItem(item);
         if (item->data(0, Qt::UserRole + 7).toBool()) {  // "New" root
             QMenu menu(history_);
-            QAction* remote = menu.addAction("Manage remote connections...");
+            QAction* remote = menu.addAction(::openbc::i18n::t("home.manage_remote_connections"));
             if (menu.exec(history_->viewport()->mapToGlobal(position)) == remote) manageRemoteConnections();
             return;
         }
@@ -973,9 +974,9 @@ private:
         }
         if (!item->data(0, Qt::UserRole + 3).toBool()) return;  // only real session rows below
         QMenu menu(history_);
-        QAction* rename = menu.addAction("Rename session");
-        QAction* save = menu.addAction("Save to named node");
-        QAction* remove = menu.addAction("Remove from history");
+        QAction* rename = menu.addAction(::openbc::i18n::t("home.rename_session"));
+        QAction* save = menu.addAction(::openbc::i18n::t("home.save_to_named_node"));
+        QAction* remove = menu.addAction(::openbc::i18n::t("home.remove_from_history"));
         QAction* chosen = menu.exec(history_->viewport()->mapToGlobal(position));
         if (chosen == rename) {
             history_->editItem(item, 0);
@@ -989,13 +990,13 @@ private:
 
     void showNodeMenu(QTreeWidgetItem* item, const QString& node, const QPoint& position) {
         QMenu menu(history_);
-        QAction* create = menu.addAction("New saved session folder");
-        QAction* rename = menu.addAction("Rename");
-        QAction* remove = menu.addAction("Remove named node");
+        QAction* create = menu.addAction(::openbc::i18n::t("home.new_saved_session_folder"));
+        QAction* rename = menu.addAction(::openbc::i18n::t("common.rename"));
+        QAction* remove = menu.addAction(::openbc::i18n::t("home.remove_named_node"));
         QAction* chosen = menu.exec(history_->viewport()->mapToGlobal(position));
         if (chosen == create) {
             bool ok = false;
-            const QString name = QInputDialog::getText(this, "New saved session folder", "Name",
+            const QString name = QInputDialog::getText(this, ::openbc::i18n::t("home.new_saved_session_folder"), ::openbc::i18n::t("common.name"),
                                                        QLineEdit::Normal, QString(), &ok);
             if (ok && SessionHistory::createNode(node, name)) refreshHistory();
         } else if (chosen == rename) {

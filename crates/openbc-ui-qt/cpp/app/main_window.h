@@ -72,6 +72,7 @@
 #include "app/single_instance.h"
 #include "app/app_info.h"
 #include "app/about_dialog.h"
+#include "i18n/i18n.h"
 namespace openbc::app {
 
 class PersistedMainWindow : public QMainWindow {
@@ -173,6 +174,8 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     application.setStyleSheet(openbc::ui::applicationStyleSheet(openbc::ui::Theme::Dark));
     QDir().mkpath(SessionHistory::rootPath());
     QSettings preferences(SessionHistory::rootPath() + "/preferences.ini", QSettings::IniFormat);
+    ::openbc::i18n::Catalog::instance().init(
+        SessionHistory::rootPath(), preferences.value("general/language", "auto").toString());
 
     PersistedMainWindow window(preferences);
     window.setWindowIcon(QApplication::windowIcon());
@@ -196,14 +199,14 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         glWarmup->lower();
     }
 
-    auto* sessionMenu = window.menuBar()->addMenu("&Session");
-    auto* actionsMenu = window.menuBar()->addMenu("&Actions");
-    auto* editMenu = window.menuBar()->addMenu("&Edit");
-    auto* searchMenu = window.menuBar()->addMenu("&Search");
-    auto* viewMenu = window.menuBar()->addMenu("&View");
-    auto* toolsMenu = window.menuBar()->addMenu("&Tools");
-    auto* helpMenu = window.menuBar()->addMenu("&Help");
-    auto* aboutAction = helpMenu->addAction("About");
+    auto* sessionMenu = window.menuBar()->addMenu(::openbc::i18n::t("menu.session"));
+    auto* actionsMenu = window.menuBar()->addMenu(::openbc::i18n::t("menu.actions"));
+    auto* editMenu = window.menuBar()->addMenu(::openbc::i18n::t("menu.edit"));
+    auto* searchMenu = window.menuBar()->addMenu(::openbc::i18n::t("menu.search"));
+    auto* viewMenu = window.menuBar()->addMenu(::openbc::i18n::t("menu.view"));
+    auto* toolsMenu = window.menuBar()->addMenu(::openbc::i18n::t("menu.tools"));
+    auto* helpMenu = window.menuBar()->addMenu(::openbc::i18n::t("menu.help"));
+    auto* aboutAction = helpMenu->addAction(::openbc::i18n::t("menu.help.about"));
     QObject::connect(aboutAction, &QAction::triggered, &window, [&]() { showAboutDialog(&window); });
     // auto* downloadLog = helpMenu->addAction("Download Log...");
     // auto* downloadInstrumentation = helpMenu->addAction("Download Instrumentation Report...");
@@ -247,7 +250,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
 
     auto* home = new HomeView;
     home->enableUpdateNotices(&preferences);  // bottom-right "update available" / once-per-install "what's new"
-    const int homeIndex = tabs->addTab(home, "Home");
+    const int homeIndex = tabs->addTab(home, ::openbc::i18n::t("tab.home"));
     tabs->setTabToolTip(homeIndex, "OpenBC home and session history");
 
     auto currentSession = [&]() { return dynamic_cast<FolderCompareViewer*>(tabs->currentWidget()); };
@@ -259,13 +262,13 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
             reinterpret_cast<const std::uint8_t*>(labelBytes.constData()), labelBytes.size());
     };
     // Tools > Options > Appearance: theme, colours, fonts (everything lives in cpp/options/).
-    auto* darkThemeAction = new QAction("Dark Theme", &window);
+    auto* darkThemeAction = new QAction(::openbc::i18n::t("app.dark_theme"), &window);
     AppearanceController appearance(application, optionsStore, darkThemeAction, &window);
     appearance.install();
 
     // Tools > Options... lives in every tab's Tools menu (rebuildMenus re-adds it
     // after the tab's own tools, since it clears that menu on each tab switch).
-    auto* optionsAction = new QAction("&Options...", &window);
+    auto* optionsAction = new QAction(::openbc::i18n::t("app.options"), &window);
     QObject::connect(optionsAction, &QAction::triggered, &window,
                      [&]() { OptionsDialog::edit(optionsStore, &window); });
 
@@ -352,25 +355,25 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     auto updateWindowTitle = [&]() {
         FolderCompareViewer* session = currentSession();
         if (session) {
-            window.setWindowTitle(session->title() + " - Folder Compare - OpenBC");
+            window.setWindowTitle(::openbc::i18n::t("window.title.folder", session->title()));
         } else if (auto* textView = dynamic_cast<TextCompareViewer*>(tabs->currentWidget())) {
-            window.setWindowTitle(textView->title() + " - Text Compare - OpenBC");
+            window.setWindowTitle(::openbc::i18n::t("window.title.text", textView->title()));
         } else if (auto* virtualView = dynamic_cast<VirtualTextCompareViewer*>(tabs->currentWidget())) {
-            window.setWindowTitle(virtualView->title() + " - Text Compare - OpenBC");
+            window.setWindowTitle(::openbc::i18n::t("window.title.text", virtualView->title()));
         } else if (auto* pictureView = dynamic_cast<PictureCompareViewer*>(tabs->currentWidget())) {
-            window.setWindowTitle(pictureView->title() + " - Picture Compare - OpenBC");
+            window.setWindowTitle(::openbc::i18n::t("app.picture_compare_openbc", pictureView->title()));
         } else if (auto* model3dView = dynamic_cast<Model3dCompareViewer*>(tabs->currentWidget())) {
-            window.setWindowTitle(model3dView->title() + " - 3D Model Compare - OpenBC");
+            window.setWindowTitle(::openbc::i18n::t("app.3d_model_compare_openbc", model3dView->title()));
         } else if (auto* tableView = dynamic_cast<TableCompareViewer*>(tabs->currentWidget())) {
-            window.setWindowTitle(tableView->title() + " - Table Compare - OpenBC");
+            window.setWindowTitle(::openbc::i18n::t("app.table_compare_openbc", tableView->title()));
         } else if (auto* registryView = dynamic_cast<RegistryCompareViewer*>(tabs->currentWidget())) {
-            window.setWindowTitle(registryView->title() + " - Registry Compare - OpenBC");
+            window.setWindowTitle(::openbc::i18n::t("app.registry_compare_openbc", registryView->title()));
         } else if (auto* hexView = dynamic_cast<HexCompareViewer*>(tabs->currentWidget())) {
-            window.setWindowTitle(hexView->title() + " - Hex Compare - OpenBC");
+            window.setWindowTitle(::openbc::i18n::t("app.hex_compare_openbc", hexView->title()));
         } else if (auto* mediaView = dynamic_cast<MediaCompareViewer*>(tabs->currentWidget())) {
-            window.setWindowTitle(mediaView->title() + " - Media Compare - OpenBC");
+            window.setWindowTitle(::openbc::i18n::t("app.media_compare_openbc", mediaView->title()));
         } else {
-            window.setWindowTitle("OpenBC - Folder Compare");
+            window.setWindowTitle(::openbc::i18n::t("app.openbc_folder_compare"));
         }
     };
 
@@ -391,7 +394,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         auto* close = new QToolButton;
         close->setObjectName("tabClose");
         close->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Close));
-        close->setToolTip("Close tab (Ctrl+W)");
+        close->setToolTip(::openbc::i18n::t("app.close_tab_ctrl_w"));
         close->setFocusPolicy(Qt::NoFocus);
         close->setAutoRaise(true);
         tabs->tabBar()->setTabButton(index, QTabBar::RightSide, close);
@@ -693,22 +696,22 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     };
 
     // Session menu: these manage the tabs themselves.
-    auto* newTab = sessionMenu->addAction("New Folder Compare");
+    auto* newTab = sessionMenu->addAction(::openbc::i18n::t("app.new_folder_compare"));
     newTab->setShortcut(QKeySequence("Ctrl+T"));
-    auto* duplicate = sessionMenu->addAction("Duplicate Tab");
-    auto* openComparison = sessionMenu->addAction("Open comparison");
+    auto* duplicate = sessionMenu->addAction(::openbc::i18n::t("app.duplicate_tab"));
+    auto* openComparison = sessionMenu->addAction(::openbc::i18n::t("app.open_comparison"));
     sessionMenu->addSeparator();
-    auto* closeCurrent = sessionMenu->addAction("Close Tab");
+    auto* closeCurrent = sessionMenu->addAction(::openbc::i18n::t("app.close_tab"));
     closeCurrent->setShortcut(QKeySequence("Ctrl+W"));
-    auto* closeOthersAction = sessionMenu->addAction("Close Other Tabs");
+    auto* closeOthersAction = sessionMenu->addAction(::openbc::i18n::t("app.close_other_tabs"));
     sessionMenu->addSeparator();
-    auto* exitAction = sessionMenu->addAction("Exit");
+    auto* exitAction = sessionMenu->addAction(::openbc::i18n::t("app.exit"));
     exitAction->setShortcut(QKeySequence("Ctrl+Q"));
 
     QObject::connect(newTab, &QAction::triggered, [&]() { addSession(QString(), QString(), false); });
     QObject::connect(duplicate, &QAction::triggered, [&]() { duplicateTab(tabs->currentIndex()); });
     QObject::connect(openComparison, &QAction::triggered, [&]() {
-        if (auto* session = currentSession()) session->log("Open comparison requested");
+        if (auto* session = currentSession()) session->log(::openbc::i18n::t("app.open_comparison_requested"));
     });
     QObject::connect(closeCurrent, &QAction::triggered, [&]() { closeTab(tabs->currentIndex()); });
     QObject::connect(closeOthersAction, &QAction::triggered, [&]() { closeOthers(tabs->currentIndex()); });
@@ -944,7 +947,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     auto* plus = new QToolButton(tabs);
     plus->setObjectName("newTab");
     plus->setIcon(openbc::ui::icons::glyph(openbc::ui::icons::Glyph::Plus));
-    plus->setToolTip("New folder compare (Ctrl+T)");
+    plus->setToolTip(::openbc::i18n::t("app.new_folder_compare_ctrl_t"));
     plus->setAutoRaise(true);
     tabs->setCornerWidget(plus, Qt::TopRightCorner);
     QObject::connect(plus, &QToolButton::clicked, [&]() { addSession(QString(), QString(), false); });
@@ -963,8 +966,8 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         return QString();
     };
     auto* instrumentationButton = new QToolButton(&window);
-    instrumentationButton->setText("Instrumentation");
-    instrumentationButton->setToolTip("Open the current tab's instrumentation report");
+    instrumentationButton->setText(::openbc::i18n::t("app.instrumentation"));
+    instrumentationButton->setToolTip(::openbc::i18n::t("app.open_the_current_tab_s_instrumentation"));
     instrumentationButton->setAutoRaise(true);
     window.statusBar()->addPermanentWidget(instrumentationButton);
     QObject::connect(instrumentationButton, &QToolButton::clicked, [&]() {
@@ -982,7 +985,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
 
         auto* dialog = new QDialog(&window);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->setWindowTitle("Instrumentation - " + tabs->tabText(tabs->currentIndex()));
+        dialog->setWindowTitle(::openbc::i18n::t("app.instrumentation_2", tabs->tabText(tabs->currentIndex())));
         dialog->resize(820, 520);
         auto* layout = new QVBoxLayout(dialog);
         auto* reportView = new QPlainTextEdit(dialog);
@@ -1001,10 +1004,10 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
             return;
         }
         QMenu menu;
-        QAction* dup = menu.addAction("Duplicate Tab");
+        QAction* dup = menu.addAction(::openbc::i18n::t("app.duplicate_tab"));
         menu.addSeparator();
-        QAction* close = menu.addAction("Close Tab");
-        QAction* others = menu.addAction("Close Other Tabs");
+        QAction* close = menu.addAction(::openbc::i18n::t("app.close_tab"));
+        QAction* others = menu.addAction(::openbc::i18n::t("app.close_other_tabs"));
         others->setEnabled(tabs->count() > 1);
         QAction* chosen = menu.exec(tabs->tabBar()->mapToGlobal(pos));
         if (chosen == dup) {
@@ -1101,8 +1104,8 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         const bool selectLeft = request.contextAction.startsWith("select-left-");
         const QFileInfo selected(request.contextPath);
         if ((folderAction && !selected.isDir()) || (!folderAction && !selected.isFile())) {
-            window.statusBar()->showMessage(folderAction ? "Select a folder for this action"
-                                                         : "Select a file for this action", 10000);
+            window.statusBar()->showMessage(folderAction ? ::openbc::i18n::t("app.select_a_folder_for_this_action")
+                                                         : ::openbc::i18n::t("app.select_a_file_for_this_action"), 10000);
             return;
         }
         const ContextMenuState::Kind kind =
@@ -1113,15 +1116,12 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
             const QString leftName = selected.fileName().isEmpty()
                                          ? QDir::toNativeSeparators(request.contextPath)
                                          : selected.fileName();
-            window.statusBar()->showMessage("Left " + kindName + ": " +
-                                                QDir::toNativeSeparators(request.contextPath) +
-                                                " - now choose \"openbc: Compare To " + leftName +
-                                                "\" on the other item",
+            window.statusBar()->showMessage(::openbc::i18n::t("app.left_now_choose_openbc_compare_to", kindName, QDir::toNativeSeparators(request.contextPath), leftName),
                                             15000);
             return;   // no window raise, no tab: the user is still in the file manager
         }
         if (!contextLeft.matches(kind)) {
-            window.statusBar()->showMessage("Select a left " + kindName + " first", 10000);
+            window.statusBar()->showMessage(::openbc::i18n::t("app.select_a_left_first", kindName), 10000);
             focusWindow();
             return;
         }

@@ -1,3 +1,4 @@
+#include "i18n/i18n.h"
     // path_selector.h
     // ---------------------------------------------------------------------------
     // PathSelector: the "combo box + Browse [+ Up]" path-entry row, pulled out
@@ -87,14 +88,14 @@
             if (enableRemote) {
                 remote_ = new QToolButton(this);
                 remote_->setIcon(style()->standardIcon(QStyle::SP_DriveNetIcon));
-                remote_->setToolTip("Browse local files, or connect to a remote host (SFTP/FTP/FTPS/SMB/network drive)...");
+                remote_->setToolTip(::openbc::i18n::t("common.browse_local_files_or_connect_to"));
                 layout->addWidget(remote_);
             }
 
             if (showUp && mode_ == Mode::Folder) {
                 up_ = new QToolButton(this);
                 up_->setIcon(icons::glyph(icons::Glyph::FolderUp));
-                up_->setToolTip("Go to parent folder");
+                up_->setToolTip(::openbc::i18n::t("common.go_to_parent_folder"));
                 layout->addWidget(up_);
             }
 
@@ -150,10 +151,10 @@
         // have to click the button itself to reuse the logic.
         QString pickPath() {
             if (mode_ == Mode::Folder) {
-                return QFileDialog::getExistingDirectory(this, "Select " + side_ + " folder", text());
+                return QFileDialog::getExistingDirectory(this, ::openbc::i18n::t("common.select_folder", side_), text());
             }
             const QString filter = fileFilterProvider ? fileFilterProvider() : fileFilter_;
-            return QFileDialog::getOpenFileName(this, "Choose " + side_ + " file", text(), filter);
+            return QFileDialog::getOpenFileName(this, ::openbc::i18n::t("common.choose_file", side_), text(), filter);
         }
 
         // Opens RemotePathBrowserDialog (This computer / a saved remote

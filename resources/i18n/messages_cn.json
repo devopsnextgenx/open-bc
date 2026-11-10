@@ -1,0 +1,13 @@
+{
+    "about.title": "关于 OpenBC",
+    "common.cancel": "取消",
+    "common.close": "关闭",
+    "common.ok": "确定",
+    "menu.session": "会话(&S)",
+    "menu.edit": "编辑(&E)",
+    "menu.view": "视图(&V)",
+    "menu.tools": "工具(&T)",
+    "menu.help": "帮助(&H)",
+    "menu.help.about": "关于",
+    "tab.home": "主页"
+}

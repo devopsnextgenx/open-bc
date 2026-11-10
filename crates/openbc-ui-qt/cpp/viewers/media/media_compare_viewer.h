@@ -84,6 +84,7 @@
 #include "common/file_change_controller.h"
 #include "common/compare_font.h"
 #include "style/qt_style.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -212,7 +213,7 @@ private:
         rightPane_->reset();
         const QByteArray left = openbc_remote::localCopy(leftPath_).toUtf8(), right = openbc_remote::localCopy(rightPath_).toUtf8();
         session_ = openbc_media_session_create(left.constData(), right.constData(), BackendChannel::callback(), channel_.user());
-        summary_->setText("Reading media headers...");
+        summary_->setText(::openbc::i18n::t("media.reading_media_headers"));
         if (onTitleChanged) onTitleChanged();
     }
 
@@ -230,7 +231,7 @@ private:
         errors_->hide();
         sideEditable_[0] = sideEditable_[1] = false;
         for (std::uint8_t s = 0; s < 2; ++s) pane(s)->setCoverEditable(false);
-        summary_->setText("Choose a file for the left and/or right side above");
+        summary_->setText(::openbc::i18n::t("media.choose_a_file_for_the_left"));
         updateSaveActions();
         if (onTitleChanged) onTitleChanged();
     }
@@ -274,16 +275,16 @@ private:
         playLeftAction_->setEnabled(!leftPath_.isEmpty());
         playRightAction_->setEnabled(!rightPath_.isEmpty());
         playBothAction_->setEnabled(!leftPath_.isEmpty() && !rightPath_.isEmpty());
-        playLeftAction_->setToolTip("Play / pause the left file (uses the system's media decoders)");
-        playRightAction_->setToolTip("Play / pause the right file (uses the system's media decoders)");
-        playBothAction_->setToolTip("Restart and play both files together (use the crossfade slider to switch between them)");
+        playLeftAction_->setToolTip(::openbc::i18n::t("media.play_pause_the_left_file_uses"));
+        playRightAction_->setToolTip(::openbc::i18n::t("media.play_pause_the_right_file_uses"));
+        playBothAction_->setToolTip(::openbc::i18n::t("media.restart_and_play_both_files_together"));
 #else
         playLeftAction_->setEnabled(false);
         playRightAction_->setEnabled(false);
         playBothAction_->setEnabled(false);
-        playLeftAction_->setToolTip("Playback requires Qt Multimedia");
-        playRightAction_->setToolTip("Playback requires Qt Multimedia");
-        playBothAction_->setToolTip("Playback requires Qt Multimedia");
+        playLeftAction_->setToolTip(::openbc::i18n::t("media.playback_requires_qt_multimedia"));
+        playRightAction_->setToolTip(::openbc::i18n::t("media.playback_requires_qt_multimedia"));
+        playBothAction_->setToolTip(::openbc::i18n::t("media.playback_requires_qt_multimedia"));
 #endif
     }
 
@@ -347,7 +348,7 @@ private:
         const std::uint8_t side = static_cast<std::uint8_t>(activeSide_);
         const QString name = side == 0 ? "left" : "right";
         if (!dirty(side)) {
-            summary_->setText("Nothing to save on the " + name + " side.");
+            summary_->setText(::openbc::i18n::t("common.nothing_to_save_on_the_side", name));
             return;
         }
         saveSide(side);
@@ -415,7 +416,7 @@ private:
                 audioVisualizer_->show();
                 return;
             }
-            audioStatus_->setText("Audio visualization unavailable: " + error);
+            audioStatus_->setText(::openbc::i18n::t("media.audio_visualization_unavailable", error));
         } else {
             std::size_t length = 0;
             const auto* error = openbc_media_audio_error(mediaView, &length);
@@ -425,7 +426,7 @@ private:
                 audioStatus_->hide();
                 return;
             }
-            audioStatus_->setText("Audio visualization unavailable: " + message);
+            audioStatus_->setText(::openbc::i18n::t("media.audio_visualization_unavailable", message));
         }
         audioVisualizer_->hide();
         audioStatus_->show();
@@ -484,14 +485,14 @@ private:
             saveBtn_[s]->setEnabled(session_ && d);
             saveBtn_[s]->setIcon(icons::saveIcon(d ? kDirtyBlue : kCleanInk));
             saveBtn_[s]->setProperty("dirty", d);
-            saveBtn_[s]->setToolTip(d ? "Unsaved changes on this side - click or Ctrl+S to write to disk"
-                                      : (s == 0 ? "Save left file (Ctrl+S while this side is active)"
-                                                : "Save right file (Ctrl+S while this side is active)"));
+            saveBtn_[s]->setToolTip(d ? ::openbc::i18n::t("common.unsaved_changes_on_this_side_click")
+                                      : (s == 0 ? ::openbc::i18n::t("common.save_left_file_ctrl_s_while")
+                                                : ::openbc::i18n::t("common.save_right_file_ctrl_s_while")));
             saveBtn_[s]->style()->unpolish(saveBtn_[s]);
             saveBtn_[s]->style()->polish(saveBtn_[s]);
         }
         const int pending = changeCount(0) + changeCount(1);
-        pendingLabel_->setText(pending ? QString("%1 unsaved change(s)").arg(pending) : QString());
+        pendingLabel_->setText(pending ? ::openbc::i18n::t("media.unsaved_change_s", pending) : QString());
     }
 
     // Writes a cell + row styling from the (pending-aware) cells.
@@ -575,14 +576,14 @@ private:
         previewed_[side] = false;
         savingSide_ = side;
         saveDone_ = std::move(done);
-        summary_->setText("Saving " + QFileInfo(side == 0 ? leftPath_ : rightPath_).fileName() + "...");
+        summary_->setText(::openbc::i18n::t("common.saving_2", QFileInfo(side == 0 ? leftPath_ : rightPath_).fileName()));
         const std::uint8_t accepted = openbc_media_save(
             session_, side, groupPtrs.size(), groupPtrs.data(), keyPtrs.data(), valuePtrs.data(),
             static_cast<std::uint8_t>(coverMode_[side]), reinterpret_cast<const std::uint8_t*>(cover.constData()),
             static_cast<std::size_t>(cover.size()));
         if (!accepted) {
             savingSide_ = -1;
-            summary_->setText("Could not start saving (session busy or closed)");
+            summary_->setText(::openbc::i18n::t("media.could_not_start_saving_session_busy"));
             finishSave(false, "Could not start saving (session busy or closed).");
         }
     }
@@ -670,8 +671,8 @@ private:
         populating_ = false;
 
         plain_ = lines.join('\n');
-        summary_->setText(rows == 0 ? QString("No metadata") : compared == 0 ? QString("Metadata") : QString("%1 of %2 properties differ").arg(differing).arg(compared));
-        if (anyEditable) summary_->setText(summary_->text() + "  -  double-click a Left/Right value to edit");
+        summary_->setText(rows == 0 ? ::openbc::i18n::t("media.no_metadata") : compared == 0 ? ::openbc::i18n::t("common.metadata") : ::openbc::i18n::t("common.of_properties_differ", differing, compared));
+        if (anyEditable) summary_->setText(::openbc::i18n::t("media.double_click_a_left_right_value", summary_->text()));
 
         // Show the first video frame as a thumbnail (once per side per load, not on every filter toggle).
         for (std::uint8_t s = 0; s < 2; ++s) {
@@ -703,7 +704,7 @@ private:
         leftPane_->setVolume(master * (both ? gl : 1.0));
         rightPane_->setVolume(master * (both ? gr : 1.0));
         masterLabel_->setText(QString("%1%").arg(master_->value()));
-        crossfadeLabel_->setText(QString("L %1%  R %2%%3").arg(qRound(gl * 100)).arg(qRound(gr * 100)).arg(both ? "" : "  (when both play)"));
+        crossfadeLabel_->setText(::openbc::i18n::t("media.l_r", qRound(gl * 100), qRound(gr * 100), both ? "" : " (when both play)"));
     }
 
     // ---- UI ---------------------------------------------------------------------------
@@ -716,28 +717,28 @@ private:
         bar->setFloatable(false);
         bar->setIconSize(QSize(20, 20));
         bar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-        homeAction_ = bar->addAction(icons::glyph(Glyph::Home), "Home");
-        sessionsAction_ = bar->addAction(icons::glyph(Glyph::Sessions), "Sessions");
+        homeAction_ = bar->addAction(icons::glyph(Glyph::Home), ::openbc::i18n::t("tab.home"));
+        sessionsAction_ = bar->addAction(icons::glyph(Glyph::Sessions), ::openbc::i18n::t("common.sessions"));
         bar->addSeparator();
-        playLeftAction_ = bar->addAction(icons::glyph(Glyph::Play), "Play Left");
-        playRightAction_ = bar->addAction(icons::glyph(Glyph::Play), "Play Right");
-        playBothAction_ = bar->addAction(icons::glyph(Glyph::Play), "Play Both");
+        playLeftAction_ = bar->addAction(icons::glyph(Glyph::Play), ::openbc::i18n::t("media.play_left"));
+        playRightAction_ = bar->addAction(icons::glyph(Glyph::Play), ::openbc::i18n::t("media.play_right"));
+        playBothAction_ = bar->addAction(icons::glyph(Glyph::Play), ::openbc::i18n::t("media.play_both"));
         updatePlaybackActions();
         bar->addSeparator();
-        saveLeftAction_ = bar->addAction(icons::glyph(Glyph::Save), "Save Left");
-        saveRightAction_ = bar->addAction(icons::glyph(Glyph::Save), "Save Right");
-        saveLeftAction_->setToolTip("Write the edited tags / cover of the left file");
-        saveRightAction_->setToolTip("Write the edited tags / cover of the right file");
+        saveLeftAction_ = bar->addAction(icons::glyph(Glyph::Save), ::openbc::i18n::t("common.save_left"));
+        saveRightAction_ = bar->addAction(icons::glyph(Glyph::Save), ::openbc::i18n::t("common.save_right"));
+        saveLeftAction_->setToolTip(::openbc::i18n::t("media.write_the_edited_tags_cover_of"));
+        saveRightAction_->setToolTip(::openbc::i18n::t("media.write_the_edited_tags_cover_of_2"));
         saveLeftAction_->setEnabled(false);
         saveRightAction_->setEnabled(false);
         // Ctrl+S saves the active side; scoped to this tab (and its children) like text compare's save action.
-        saveAction_ = new QAction(icons::glyph(Glyph::Save), "Save", this);
+        saveAction_ = new QAction(icons::glyph(Glyph::Save), ::openbc::i18n::t("common.save"), this);
         saveAction_->setShortcut(QKeySequence::Save);
         saveAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-        saveAction_->setToolTip("Save the active side (the side of the current row's column)");
+        saveAction_->setToolTip(::openbc::i18n::t("media.save_the_active_side_the_side"));
         addAction(saveAction_);
         bar->addSeparator();
-        reloadAction_ = bar->addAction(icons::glyph(Glyph::Refresh), "Reload");
+        reloadAction_ = bar->addAction(icons::glyph(Glyph::Refresh), ::openbc::i18n::t("common.reload"));
         reloadAction_->setEnabled(!leftPath_.isEmpty() || !rightPath_.isEmpty());
         return bar;
     }
@@ -761,30 +762,30 @@ private:
         muteButton_ = new QToolButton(this);
         muteButton_->setCheckable(true);
         muteButton_->setIcon(icons::glyph(Glyph::VolumeOn));
-        muteButton_->setToolTip("Mute both");
+        muteButton_->setToolTip(::openbc::i18n::t("media.mute_both"));
         master_ = new QSlider(Qt::Horizontal, this);
         master_->setRange(0, 100);
         master_->setValue(100);
         master_->setMaximumWidth(180);
-        master_->setToolTip("Master volume (applies to both sides)");
+        master_->setToolTip(::openbc::i18n::t("media.master_volume_applies_to_both_sides"));
         masterLabel_ = new QLabel("100%", this);
         masterLabel_->setMinimumWidth(36);
 
-        auto* leftLabel = new QLabel("Left", this);
-        auto* rightLabel = new QLabel("Right", this);
+        auto* leftLabel = new QLabel(::openbc::i18n::t("common.left"), this);
+        auto* rightLabel = new QLabel(::openbc::i18n::t("common.right"), this);
         crossfade_ = new QSlider(Qt::Horizontal, this);
         crossfade_->setRange(0, 1000);
         crossfade_->setValue(500);
         crossfade_->setTickPosition(QSlider::TicksBelow);
         crossfade_->setTickInterval(250);
-        crossfade_->setToolTip("A/B crossfade while both files play: drag left for Left only, right for Right only");
+        crossfade_->setToolTip(::openbc::i18n::t("media.a_b_crossfade_while_both_files"));
         crossfadeLabel_ = new QLabel(this);
         centerButton_ = new QToolButton(this);
         centerButton_->setText("=");
-        centerButton_->setToolTip("Centre the crossfade (both at equal level)");
-        linkSeek_ = new QCheckBox("Link seek", this);
+        centerButton_->setToolTip(::openbc::i18n::t("media.centre_the_crossfade_both_at_equal"));
+        linkSeek_ = new QCheckBox(::openbc::i18n::t("media.link_seek"), this);
         linkSeek_->setChecked(true);
-        linkSeek_->setToolTip("Dragging one position slider moves the other side to the same time");
+        linkSeek_->setToolTip(::openbc::i18n::t("media.dragging_one_position_slider_moves_the"));
 
         mix->addWidget(muteButton_);
         mix->addWidget(master_);
@@ -854,8 +855,8 @@ private:
             saveBtn_[side]->setIconSize(QSize(15, 15));
             saveBtn_[side]->setCursor(Qt::PointingHandCursor);
             saveBtn_[side]->setEnabled(false);
-            saveBtn_[side]->setToolTip(side == 0 ? "Save left file (Ctrl+S while this side is active)"
-                                                 : "Save right file (Ctrl+S while this side is active)");
+            saveBtn_[side]->setToolTip(side == 0 ? ::openbc::i18n::t("common.save_left_file_ctrl_s_while")
+                                                 : ::openbc::i18n::t("common.save_right_file_ctrl_s_while"));
             QObject::connect(saveBtn_[side], &QToolButton::clicked, this, [this, side]() { commitEditors(); saveSide(side); });
         }
         paths->addWidget(leftSelector_, 1);
@@ -908,12 +909,12 @@ private:
 
         auto* header = new QHBoxLayout;
         header->setContentsMargins(6, 2, 6, 2);
-        summary_ = new QLabel("Metadata", this);
+        summary_ = new QLabel(::openbc::i18n::t("common.metadata"), this);
         pendingLabel_ = new QLabel(this);
         pendingLabel_->setStyleSheet("color:#4e9cff;");  // blue = needs saving, like the save buttons
-        onlyDifferences_ = new QCheckBox("Differences only", this);
-        auto* copy = new QPushButton("Copy", this);
-        copy->setToolTip("Copy all rows to the clipboard (tab separated)");
+        onlyDifferences_ = new QCheckBox(::openbc::i18n::t("common.differences_only"), this);
+        auto* copy = new QPushButton(::openbc::i18n::t("common.copy"), this);
+        copy->setToolTip(::openbc::i18n::t("media.copy_all_rows_to_the_clipboard"));
         header->addWidget(summary_, 1);
         header->addWidget(pendingLabel_);
         header->addWidget(onlyDifferences_);
@@ -922,7 +923,7 @@ private:
 
         tree_ = new QTreeWidget(this);
         tree_->setColumnCount(3);
-        tree_->setHeaderLabels({"Property", "Left", "Right"});
+        tree_->setHeaderLabels({::openbc::i18n::t("common.property"), ::openbc::i18n::t("common.left"), ::openbc::i18n::t("common.right")});
         tree_->setUniformRowHeights(true);
         tree_->setAlternatingRowColors(true);
         tree_->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -951,7 +952,7 @@ private:
         split_->setStretchFactor(0, 3);  // window growth goes mostly to the video
         split_->setStretchFactor(1, 2);
         split_->handle(1)->setCursor(Qt::SplitVCursor);
-        split_->handle(1)->setToolTip("Drag to resize the players / metadata table");
+        split_->handle(1)->setToolTip(::openbc::i18n::t("media.drag_to_resize_the_players_metadata"));
         root->addWidget(split_, 1);
 
         // Audio-only files have nothing to enlarge: keep the top half compact and

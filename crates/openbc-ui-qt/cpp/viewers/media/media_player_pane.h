@@ -24,6 +24,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 #include <functional>
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -32,7 +33,7 @@ public:
     explicit MediaPlayerPane(const QString& path, QWidget* parent = nullptr) : QWidget(parent), path_(path) {
         auto* layout = new QVBoxLayout(this);
         layout->setContentsMargins(6, 2, 6, 2);
-        status_ = new QLabel("Playback unavailable: Qt Multimedia is not installed", this);
+        status_ = new QLabel(::openbc::i18n::t("media.playback_unavailable_qt_multimedia_is_not"), this);
         status_->setAlignment(Qt::AlignCenter);
         cover_ = new QLabel(this);
         cover_->setAlignment(Qt::AlignCenter);
@@ -132,21 +133,21 @@ public:
 
         playButton_ = new QToolButton(this);
         playButton_->setIcon(icons::glyph(Glyph::Play));
-        playButton_->setToolTip("Play");
+        playButton_->setToolTip(::openbc::i18n::t("media.play"));
         pauseButton_ = new QToolButton(this);
         pauseButton_->setIcon(icons::glyph(Glyph::Pause));
-        pauseButton_->setToolTip("Pause");
+        pauseButton_->setToolTip(::openbc::i18n::t("media.pause"));
         stopButton_ = new QToolButton(this);
         stopButton_->setIcon(icons::glyph(Glyph::Stop));
-        stopButton_->setToolTip("Stop (back to start)");
+        stopButton_->setToolTip(::openbc::i18n::t("media.stop_back_to_start"));
 
         coverButton_ = new QToolButton(this);
         coverButton_->setIcon(icons::glyph(Glyph::Cover));
-        coverButton_->setToolTip("Cover art: replace or remove (saved with the Save button)");
+        coverButton_->setToolTip(::openbc::i18n::t("media.cover_art_replace_or_remove_saved"));
         coverButton_->setPopupMode(QToolButton::InstantPopup);
         auto* coverMenu = new QMenu(coverButton_);
-        coverMenu->addAction("Replace cover...", this, [this]() { chooseCover(); });
-        coverMenu->addAction("Remove cover", this, [this]() {
+        coverMenu->addAction(::openbc::i18n::t("media.replace_cover"), this, [this]() { chooseCover(); });
+        coverMenu->addAction(::openbc::i18n::t("media.remove_cover"), this, [this]() {
             if (onCoverRemoved) onCoverRemoved();
         });
         coverButton_->setMenu(coverMenu);
@@ -160,7 +161,7 @@ public:
         error_->setWordWrap(true);
         error_->hide();
 
-        external_ = new QPushButton("Open in system player", this);
+        external_ = new QPushButton(::openbc::i18n::t("media.open_in_system_player"), this);
         external_->hide();
 
         auto* transport = new QHBoxLayout;
@@ -213,7 +214,7 @@ public:
         });
         connect(player_, &QMediaPlayer::errorOccurred, this, [this](QMediaPlayer::Error, const QString& message) {
             video_->hide();
-            error_->setText("Cannot play this file with the system decoders: " + message);
+            error_->setText(::openbc::i18n::t("media.cannot_play_this_file_with_the", message));
             error_->show();
             external_->show();
         });
@@ -308,18 +309,18 @@ private:
     }
 
     void chooseCover() {
-        const QString file = QFileDialog::getOpenFileName(this, "Choose cover image", QString(),
+        const QString file = QFileDialog::getOpenFileName(this, ::openbc::i18n::t("media.choose_cover_image"), QString(),
                                                           "Images (*.jpg *.jpeg *.png *.bmp *.gif *.webp);;All files (*.*)");
         if (file.isEmpty()) return;
         QFile f(file);
         if (!f.open(QIODevice::ReadOnly)) {
-            QMessageBox::warning(this, "Cover", "Cannot read " + file);
+            QMessageBox::warning(this, ::openbc::i18n::t("media.cover"), ::openbc::i18n::t("media.cannot_read", file));
             return;
         }
         const QByteArray bytes = f.readAll();
         QPixmap probe;
         if (!probe.loadFromData(bytes)) {
-            QMessageBox::warning(this, "Cover", "That file is not a readable image.");
+            QMessageBox::warning(this, ::openbc::i18n::t("media.cover"), ::openbc::i18n::t("media.that_file_is_not_a_readable"));
             return;
         }
         if (onCoverReplaced) onCoverReplaced(bytes);

@@ -10,12 +10,13 @@
 #include <QtGlobal>
 
 #include "app/app_info.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
 void showAboutDialog(QWidget* parent) {
     QDialog dialog(parent);
-    dialog.setWindowTitle(QStringLiteral("About OpenBC"));
+    dialog.setWindowTitle(::openbc::i18n::t("about.title"));
     dialog.setMinimumWidth(420);
 
     const QString link = QStringLiteral("<a style=\"color:#58a6ff\" href=\"%1\">%1</a>");

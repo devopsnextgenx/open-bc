@@ -48,6 +48,7 @@
 #include "style/qt_style.h"
 #include "remote/remote_profile.h"
 #include "remote/remote_profile_store.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -64,7 +65,7 @@ public:
     explicit RemoteConnectionsDialog(QWidget* parent = nullptr, bool pickerMode = false,
                                       RemoteBrowseBridge* bridge = nullptr)
         : QDialog(parent), pickerMode_(pickerMode), bridge_(bridge) {
-        setWindowTitle("Remote Connections");
+        setWindowTitle(::openbc::i18n::t("remote.remote_connections"));
         resize(760, 520);
 
         auto* root = new QVBoxLayout(this);
@@ -77,13 +78,13 @@ public:
         split->setSizes({260, 500});
 
         auto* bottomButtons = new QHBoxLayout;
-        testConnection_ = new QPushButton("Test connection", this);
-        save_ = new QPushButton("Save", this);
-        saveAs_ = new QPushButton("Save As...", this);
-        connect_ = new QPushButton("Connect", this);
+        testConnection_ = new QPushButton(::openbc::i18n::t("remote.test_connection"), this);
+        save_ = new QPushButton(::openbc::i18n::t("common.save"), this);
+        saveAs_ = new QPushButton(::openbc::i18n::t("remote.save_as"), this);
+        connect_ = new QPushButton(::openbc::i18n::t("remote.connect"), this);
         connect_->setVisible(pickerMode_);
         connect_->setDefault(pickerMode_);
-        auto* close = new QPushButton(pickerMode_ ? "Cancel" : "Close", this);
+        auto* close = new QPushButton(pickerMode_ ? ::openbc::i18n::t("common.cancel") : ::openbc::i18n::t("common.close"), this);
         bottomButtons->addWidget(testConnection_);
         bottomButtons->addStretch();
         bottomButtons->addWidget(save_);
@@ -98,7 +99,7 @@ public:
         connect(connect_, &QPushButton::clicked, this, [this]() {
             const RemoteProfile profile = collectForm();
             if (!profile.isValid()) {
-                QMessageBox::warning(this, "Remote Connections", "Fill in the required fields before connecting.");
+                QMessageBox::warning(this, ::openbc::i18n::t("remote.remote_connections"), ::openbc::i18n::t("remote.fill_in_the_required_fields_before"));
                 return;
             }
             if (onProfileChosen) onProfileChosen(profile);
@@ -142,8 +143,8 @@ private:
         add_->setText("+");
         add_->setPopupMode(QToolButton::InstantPopup);
         auto* addMenu = new QMenu(add_);
-        addMenu->addAction("New connection", this, [this]() { addProfile(); });
-        addMenu->addAction("New folder", this, [this]() { addFolder(); });
+        addMenu->addAction(::openbc::i18n::t("remote.new_connection"), this, [this]() { addProfile(); });
+        addMenu->addAction(::openbc::i18n::t("remote.new_folder"), this, [this]() { addFolder(); });
         add_->setMenu(addMenu);
         remove_ = new QToolButton(left);
         remove_->setText("-");
@@ -168,61 +169,61 @@ private:
         auto* login = new QWidget(tabs_);
         auto* form = new QFormLayout(login);
         nameEdit_ = new QLineEdit(login);
-        form->addRow("Name", nameEdit_);
+        form->addRow(::openbc::i18n::t("common.name"), nameEdit_);
 
         protocolCombo_ = new QComboBox(login);
         for (auto protocol : allRemoteProtocols()) protocolCombo_->addItem(protocolLabel(protocol), int(protocol));
-        form->addRow("Protocol", protocolCombo_);
+        form->addRow(::openbc::i18n::t("remote.protocol"), protocolCombo_);
 
-        hostLabel_ = new QLabel("Host", login);
+        hostLabel_ = new QLabel(::openbc::i18n::t("remote.host"), login);
         hostEdit_ = new QLineEdit(login);
-        hostEdit_->setPlaceholderText("host name or IP address");
+        hostEdit_->setPlaceholderText(::openbc::i18n::t("remote.host_name_or_ip_address"));
         form->addRow(hostLabel_, hostEdit_);
 
-        portLabel_ = new QLabel("Port", login);
+        portLabel_ = new QLabel(::openbc::i18n::t("remote.port"), login);
         portSpin_ = new QSpinBox(login);
         portSpin_->setRange(0, 65535);
         form->addRow(portLabel_, portSpin_);
 
-        userLabel_ = new QLabel("Username", login);
+        userLabel_ = new QLabel(::openbc::i18n::t("remote.username"), login);
         userEdit_ = new QLineEdit(login);
         form->addRow(userLabel_, userEdit_);
 
-        passLabel_ = new QLabel("Password", login);
+        passLabel_ = new QLabel(::openbc::i18n::t("remote.password"), login);
         auto* passRow = new QWidget(login);
         auto* passLayout = new QHBoxLayout(passRow);
         passLayout->setContentsMargins(0, 0, 0, 0);
         passEdit_ = new QLineEdit(passRow);
         passEdit_->setEchoMode(QLineEdit::Password);
-        savePasswordCheck_ = new QCheckBox("Save", passRow);
+        savePasswordCheck_ = new QCheckBox(::openbc::i18n::t("common.save"), passRow);
         savePasswordCheck_->setChecked(true);
         passLayout->addWidget(passEdit_, 1);
         passLayout->addWidget(savePasswordCheck_);
         form->addRow(passLabel_, passRow);
 
-        keyFileLabel_ = new QLabel("Private key file", login);
+        keyFileLabel_ = new QLabel(::openbc::i18n::t("remote.private_key_file"), login);
         auto [keyRow, keyEdit, keyBrowse] = makeFileRow(login, QFileDialog::AcceptOpen, false);
         keyFileEdit_ = keyEdit;
         form->addRow(keyFileLabel_, keyRow);
         Q_UNUSED(keyBrowse);
 
-        certFileLabel_ = new QLabel("SSL client certificate", login);
+        certFileLabel_ = new QLabel(::openbc::i18n::t("remote.ssl_client_certificate"), login);
         auto [certRow, certEdit, certBrowse] = makeFileRow(login, QFileDialog::AcceptOpen, false);
         certFileEdit_ = certEdit;
         form->addRow(certFileLabel_, certRow);
         Q_UNUSED(certBrowse);
 
-        shareLabel_ = new QLabel("Share name", login);
+        shareLabel_ = new QLabel(::openbc::i18n::t("remote.share_name"), login);
         shareEdit_ = new QLineEdit(login);
-        shareEdit_->setPlaceholderText("e.g. Shared");
+        shareEdit_->setPlaceholderText(::openbc::i18n::t("remote.e_g_shared"));
         form->addRow(shareLabel_, shareEdit_);
 
-        domainLabel_ = new QLabel("Domain", login);
+        domainLabel_ = new QLabel(::openbc::i18n::t("remote.domain"), login);
         domainEdit_ = new QLineEdit(login);
         domainEdit_->setPlaceholderText("optional");
         form->addRow(domainLabel_, domainEdit_);
 
-        mountPathLabel_ = new QLabel("Mount path", login);
+        mountPathLabel_ = new QLabel(::openbc::i18n::t("remote.mount_path"), login);
         auto [mountRow, mountEdit, mountBrowse] = makeFileRow(login, QFileDialog::AcceptOpen, true);
         mountPathEdit_ = mountEdit;
         form->addRow(mountPathLabel_, mountRow);
@@ -230,18 +231,18 @@ private:
 
         descriptionEdit_ = new QTextEdit(login);
         descriptionEdit_->setMaximumHeight(90);
-        form->addRow("Description", descriptionEdit_);
-        tabs_->addTab(login, "Login");
+        form->addRow(::openbc::i18n::t("remote.description"), descriptionEdit_);
+        tabs_->addTab(login, ::openbc::i18n::t("remote.login"));
 
         auto* advanced = new QWidget(tabs_);
         auto* advancedForm = new QFormLayout(advanced);
         remoteRootEdit_ = new QLineEdit(advanced);
         remoteRootEdit_->setPlaceholderText("/");
-        advancedForm->addRow("Initial remote folder", remoteRootEdit_);
-        passiveModeCheck_ = new QCheckBox("Use passive mode", advanced);
+        advancedForm->addRow(::openbc::i18n::t("remote.initial_remote_folder"), remoteRootEdit_);
+        passiveModeCheck_ = new QCheckBox(::openbc::i18n::t("remote.use_passive_mode"), advanced);
         passiveModeCheck_->setChecked(true);
         advancedForm->addRow(QString(), passiveModeCheck_);
-        tabs_->addTab(advanced, "Advanced");
+        tabs_->addTab(advanced, ::openbc::i18n::t("remote.advanced"));
 
         connect(protocolCombo_, &QComboBox::currentIndexChanged, this, [this](int) { updateFieldVisibility(); });
     }
@@ -258,8 +259,8 @@ private:
         layout->addWidget(edit, 1);
         layout->addWidget(browse);
         connect(browse, &QToolButton::clicked, this, [edit, folder, row]() {
-            const QString picked = folder ? QFileDialog::getExistingDirectory(row, "Select folder", edit->text())
-                                           : QFileDialog::getOpenFileName(row, "Select file", edit->text());
+            const QString picked = folder ? QFileDialog::getExistingDirectory(row, ::openbc::i18n::t("remote.select_folder"), edit->text())
+                                           : QFileDialog::getOpenFileName(row, ::openbc::i18n::t("remote.select_file"), edit->text());
             if (!picked.isEmpty()) edit->setText(picked);
         });
         return {row, edit, browse};
@@ -425,7 +426,7 @@ private:
 
     void addProfile() {
         bool ok = false;
-        const QString name = QInputDialog::getText(this, "New connection", "Connection name", QLineEdit::Normal,
+        const QString name = QInputDialog::getText(this, ::openbc::i18n::t("remote.new_connection"), ::openbc::i18n::t("remote.connection_name"), QLineEdit::Normal,
                                                     "New connection", &ok);
         if (!ok || name.trimmed().isEmpty()) return;
         RemoteProfile profile;
@@ -437,7 +438,7 @@ private:
 
     void addFolder() {
         bool ok = false;
-        const QString name = QInputDialog::getText(this, "New folder", "Folder name", QLineEdit::Normal, {}, &ok);
+        const QString name = QInputDialog::getText(this, ::openbc::i18n::t("remote.new_folder"), ::openbc::i18n::t("remote.folder_name"), QLineEdit::Normal, {}, &ok);
         if (ok && !name.trimmed().isEmpty() && RemoteProfileStore::createNode(currentGroupPath(), name)) refreshTree();
     }
 
@@ -465,8 +466,8 @@ private:
         auto* item = tree_->currentItem();
         if (!item) return;
         const bool isGroup = item->data(0, Qt::UserRole + 1).toBool();
-        const auto answer = QMessageBox::question(this, "Remove", isGroup ? "Remove this folder and everything in it?"
-                                                                           : "Remove this connection?");
+        const auto answer = QMessageBox::question(this, ::openbc::i18n::t("common.remove_2"), isGroup ? ::openbc::i18n::t("remote.remove_this_folder_and_everything_in")
+                                                                           : ::openbc::i18n::t("remote.remove_this_connection"));
         if (answer != QMessageBox::Yes) return;
         if (isGroup) {
             RemoteProfileStore::removeNode(item->data(0, Qt::UserRole).toString());
@@ -503,17 +504,17 @@ private:
         if (!item) return;
         tree_->setCurrentItem(item);
         QMenu menu(tree_);
-        menu.addAction("Rename", this, [this, item]() { tree_->editItem(item, 0); });
-        menu.addAction("Remove", this, [this]() { removeSelected(); });
-        if (item->data(0, Qt::UserRole + 1).toBool()) menu.addAction("New connection here", this, [this]() { addProfile(); });
+        menu.addAction(::openbc::i18n::t("common.rename"), this, [this, item]() { tree_->editItem(item, 0); });
+        menu.addAction(::openbc::i18n::t("common.remove_2"), this, [this]() { removeSelected(); });
+        if (item->data(0, Qt::UserRole + 1).toBool()) menu.addAction(::openbc::i18n::t("remote.new_connection_here"), this, [this]() { addProfile(); });
         menu.exec(tree_->viewport()->mapToGlobal(position));
     }
 
     void saveCurrent(bool asNew) {
         const RemoteProfile profile = collectForm();
         if (!profile.isValid()) {
-            QMessageBox::warning(this, "Remote Connections",
-                                 "Give the connection a name and fill in its address before saving.");
+            QMessageBox::warning(this, ::openbc::i18n::t("remote.remote_connections"),
+                                 ::openbc::i18n::t("remote.give_the_connection_a_name_and"));
             return;
         }
         const QString nodePath = currentGroupPath().isEmpty() ? "Personal" : currentGroupPath();
@@ -533,31 +534,29 @@ private:
     void testConnection() {
         const RemoteProfile profile = collectForm();
         if (!profile.isValid()) {
-            QMessageBox::warning(this, "Test connection", "Fill in the required fields first.");
+            QMessageBox::warning(this, ::openbc::i18n::t("remote.test_connection"), ::openbc::i18n::t("remote.fill_in_the_required_fields_first"));
             return;
         }
         if (!bridge_) {
-            QMessageBox::information(this, "Test connection",
-                                     "Connection details look complete for " + profile.displayAddress() +
-                                         ".\n\nRemote browsing isn't wired up in this build, so the connection "
-                                         "itself can't be tested here.");
+            QMessageBox::information(this, ::openbc::i18n::t("remote.test_connection"),
+                                     ::openbc::i18n::t("remote.connection_details_look_complete_for_remote", profile.displayAddress()));
             return;
         }
         testConnection_->setEnabled(false);
-        testConnection_->setText("Testing...");
+        testConnection_->setText(::openbc::i18n::t("remote.testing"));
         QPointer<RemoteConnectionsDialog> self(this);
         RemoteBrowseBridge* bridge = bridge_;
         bridge->connectProfile(profile, [self, bridge, profile](bool ok, const QString& error) {
             if (!self) return;
             self->testConnection_->setEnabled(true);
-            self->testConnection_->setText("Test connection");
+            self->testConnection_->setText(::openbc::i18n::t("remote.test_connection"));
             if (ok) {
                 bridge->disconnectProfile(profile);
-                QMessageBox::information(self, "Test connection",
-                                         "Connected successfully to " + profile.displayAddress() + ".");
+                QMessageBox::information(self, ::openbc::i18n::t("remote.test_connection"),
+                                         ::openbc::i18n::t("remote.connected_successfully_to", profile.displayAddress()));
             } else {
-                QMessageBox::warning(self, "Test connection",
-                                     "Couldn't connect to " + profile.displayAddress() + ":\n\n" + error);
+                QMessageBox::warning(self, ::openbc::i18n::t("remote.test_connection"),
+                                     ::openbc::i18n::t("remote.couldn_t_connect_to", profile.displayAddress(), error));
             }
         });
     }

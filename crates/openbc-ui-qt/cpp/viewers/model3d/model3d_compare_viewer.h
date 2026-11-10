@@ -69,6 +69,7 @@
 #include "common/remote_selector.h"
 #include "common/file_change_controller.h"
 #include "common/compare_font.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -209,7 +210,7 @@ public:
         QString leftLocal, rightLocal, resolveError;
         if (!openbc_remote::resolveLocalPath(left, &leftLocal, &resolveError) ||
             !openbc_remote::resolveLocalPath(right, &rightLocal, &resolveError)) {
-            QMessageBox::warning(this, "3D Compare", resolveError);
+            QMessageBox::warning(this, ::openbc::i18n::t("model3d.3d_compare"), resolveError);
             return;
         }
         const QByteArray l = leftLocal.toUtf8(), r = rightLocal.toUtf8();
@@ -256,7 +257,7 @@ private:
         QString leftLocal, rightLocal, error;
         if (!openbc_remote::resolveLocalPath(left, &leftLocal, &error, /*refresh=*/true) ||
             !openbc_remote::resolveLocalPath(right, &rightLocal, &error, /*refresh=*/true)) {
-            QMessageBox::warning(this, "3D Compare", error);
+            QMessageBox::warning(this, ::openbc::i18n::t("model3d.3d_compare"), error);
             return;
         }
         const QByteArray l = leftLocal.toUtf8(), r = rightLocal.toUtf8();
@@ -371,7 +372,7 @@ private:
         if (!handle_) return;
         const Openbc3dOptions native = nativeOptions();
         openbc_model3d_set_options(handle_, &native);   // non-blocking, latest wins; supersedes a running pass
-        if (loaded_ && !busy_) setStatus("Comparing...", false);
+        if (loaded_ && !busy_) setStatus(::openbc::i18n::t("common.comparing"), false);
         refreshViews();                                  // tolerance / range are shader uniforms: instant feedback
     }
 
@@ -380,7 +381,7 @@ private:
         switch (e.kind) {
             case OPENBC_3D_LOADING:
                 busy_ = true; timer_.start(); timerArmed_ = true;
-                setStatus("Loading...", false);
+                setStatus(::openbc::i18n::t("common.loading"), false);
                 break;
             case OPENBC_3D_LOADED: applyLoaded(e); break;
             case OPENBC_3D_RESULT: applyResult(e); break;
@@ -392,12 +393,12 @@ private:
                 (right ? rightInfo_ : leftInfo_) = ViewInfo();
                 scene_.slot[right ? kSlotB : kSlotA].reset();
                 loaded_ = false;
-                setStatus("Cannot open " + QFileInfo(e.path).fileName(), true);
+                setStatus(::openbc::i18n::t("common.cannot_open", QFileInfo(e.path).fileName()), true);
                 refreshPanel(); refreshViews();
                 break;
             }
             case OPENBC_3D_NOTICE: statusLabel_->setToolTip(e.message); setStatus(e.message, false); break;
-            case OPENBC_3D_FAILED: busy_ = false; setStatus("Compare failed: " + e.message, true); break;
+            case OPENBC_3D_FAILED: busy_ = false; setStatus(::openbc::i18n::t("common.compare_failed", e.message), true); break;
             default: break;
         }
     }
@@ -451,14 +452,11 @@ private:
         refreshPanel(); refreshViews();
 
         const bool bad = !regions_.empty();
-        setStatus(bad ? QString("%1 region%2 exceed%3 the tolerance").arg(regionsTotal_).arg(regionsTotal_ == 1 ? "" : "s").arg(regionsTotal_ == 1 ? "s" : "")
-                      : "Within tolerance", bad);
-        timeLabel_->setText(QString("%1 %2 ms").arg(e.backend == 1 ? "GPU" : "CPU").arg(int(e.devMs + e.analysisMs + e.changesMs + e.alignMs)));
-        timeLabel_->setToolTip(QString("align %1 ms, deviation %2 ms, analysis %3 ms, changes %4 ms%5%6")
-                                   .arg(int(e.alignMs)).arg(int(e.devMs)).arg(int(e.analysisMs)).arg(int(e.changesMs))
-                                   .arg(gpuName_.isEmpty() ? "\nGPU: not available (CPU backend)" : "\nGPU: " + gpuName_)
-                                   .arg(e.hasChanges ? QString("\nChanges grid cell: %1 mm").arg(e.cell, 0, 'g', 3) : QString()));
-        if (timerArmed_) { timerArmed_ = false; statsLabel_->setText(QString("Load + compare: %1 s").arg(timer_.elapsed() / 1000.0, 0, 'f', 2)); }
+        setStatus(bad ? ::openbc::i18n::t("model3d.region_exceed_the_tolerance", regionsTotal_, regionsTotal_ == 1 ? "" : "s", regionsTotal_ == 1 ? "s" : "")
+                      : ::openbc::i18n::t("model3d.within_tolerance"), bad);
+        timeLabel_->setText(::openbc::i18n::t("model3d.ms", e.backend == 1 ? "GPU" : "CPU", int(e.devMs + e.analysisMs + e.changesMs + e.alignMs)));
+        timeLabel_->setToolTip(::openbc::i18n::t("model3d.align_ms_deviation_ms_analysis_ms", int(e.alignMs), int(e.devMs), int(e.analysisMs), int(e.changesMs), gpuName_.isEmpty() ? "\nGPU: not available (CPU backend)" : "\nGPU: " + gpuName_, e.hasChanges ? QString("\nChanges grid cell: %1 mm").arg(e.cell, 0, 'g', 3) : QString()));
+        if (timerArmed_) { timerArmed_ = false; statsLabel_->setText(::openbc::i18n::t("model3d.load_compare_s", QString::number(timer_.elapsed() / 1000.0, 'f', 2))); }
         if (onTitleChanged) onTitleChanged();
     }
 
@@ -497,7 +495,7 @@ private:
         changesLegend_->setVisible(mode_ == ViewMode::Changes && hasChanges_);
         overlayBox_->setVisible(mode_ == ViewMode::Overlay);
         sideBox_->setVisible(mode_ == ViewMode::OneUp || mode_ == ViewMode::Heatmap);
-        sideLabel_->setText(mode_ == ViewMode::Heatmap ? "Deviation on" : "Show");
+        sideLabel_->setText(mode_ == ViewMode::Heatmap ? ::openbc::i18n::t("model3d.deviation_on") : ::openbc::i18n::t("model3d.show"));
         vpA_->setSplit(false);
         vpA_->setBadge(QString());
         vpB_->setBadge(QString());
@@ -505,7 +503,7 @@ private:
         switch (mode_) {
             case ViewMode::TwoUp:
                 vpA_->setLayers({solid(kSlotA)}); vpB_->setLayers({solid(kSlotB)});
-                vpA_->setBadge("A  " + baseName(leftSelector_->text())); vpB_->setBadge("B  " + baseName(rightSelector_->text()));
+                vpA_->setBadge(::openbc::i18n::t("model3d.a", baseName(leftSelector_->text()))); vpB_->setBadge(::openbc::i18n::t("model3d.b", baseName(rightSelector_->text())));
                 break;
             case ViewMode::OneUp:
                 vpA_->setLayers({solid(sideSel_ == 0 ? kSlotA : kSlotB)});
@@ -514,7 +512,7 @@ private:
             case ViewMode::Split:
                 vpA_->setLayers({solid(kSlotA)});
                 vpA_->setSplit(true, {solid(kSlotB)}, splitFrac_);
-                vpA_->setBadge("A | B");
+                vpA_->setBadge(::openbc::i18n::t("model3d.a_b"));
                 break;
             case ViewMode::Overlay: {
                 const float t = overlaySlider_->value() / 100.0f;
@@ -608,7 +606,7 @@ private:
     void syncControlsFromOptions() {
         for (int i = 0; i < 4; ++i) if (alignActions_[i]) { const QSignalBlocker b(alignActions_[i]); alignActions_[i]->setChecked(i == options_.alignment); }
         { const QSignalBlocker b(tolSlider_); tolSlider_->setValue(sliderFromTol(options_.tolerance)); }
-        tolLabel_->setText(QString("%1 mm").arg(options_.tolerance, 0, 'g', 3));
+        tolLabel_->setText(::openbc::i18n::t("model3d.mm", QString::number(options_.tolerance, 'g', 3)));
         QDoubleSpinBox* sp[3] = {offX_, offY_, offZ_};
         const float v[3] = {options_.offset.x(), options_.offset.y(), options_.offset.z()};
         for (int i = 0; i < 3; ++i) if (sp[i]) { const QSignalBlocker b(sp[i]); sp[i]->setValue(v[i]); }
@@ -680,7 +678,7 @@ private:
         sumMean_->setText(have ? mm(summary_.mean, 3) : "-");
         sumChanged_->setText(have ? QString::number(summary_.changed * 100.0, 'f', 1) + "%" : "-");
         sumTol_->setText(mm(options_.tolerance, options_.tolerance < 0.1 ? 3 : 2));
-        regionsTitle_->setText(QString("REGIONS (%1)").arg(regionsTotal_));
+        regionsTitle_->setText(::openbc::i18n::t("model3d.regions", regionsTotal_));
         { const QSignalBlocker blk(regionList_);
           regionList_->clear();
           for (const RegionInfo& r : regions_)
@@ -691,7 +689,7 @@ private:
 
     void updateRegionNav() {
         const int n = int(regionsTotal_);
-        regionNavLabel_->setText(n == 0 ? "no regions" : QString("%1 of %2 region%3").arg(std::max(selectedRegion_, 0) + 1).arg(n).arg(n == 1 ? "" : "s"));
+        regionNavLabel_->setText(n == 0 ? ::openbc::i18n::t("model3d.no_regions") : ::openbc::i18n::t("model3d.of_region", std::max(selectedRegion_, 0) + 1, n, n == 1 ? "" : "s"));
         actPrevRegion_->setEnabled(!regions_.empty()); actNextRegion_->setEnabled(!regions_.empty());
     }
 
@@ -746,26 +744,26 @@ private:
         }
         modeActions_[int(mode_)]->setChecked(true);
 
-        actWire_ = mk("Wireframe", "Wire", m3::wireframe(), "Show mesh triangles", true);
+        actWire_ = mk(::openbc::i18n::t("model3d.wireframe"), ::openbc::i18n::t("model3d.wire"), m3::wireframe(), ::openbc::i18n::t("model3d.show_mesh_triangles"), true);
         actWire_->setChecked(wire_);
         connect(actWire_, &QAction::toggled, this, [this](bool on) { wire_ = on; refreshViews(); });
 
-        actSwap_ = mk("Swap Sides", "Swap", icons::glyph(Glyph::Swap), "Swap A and B");
+        actSwap_ = mk(::openbc::i18n::t("common.swap_sides"), ::openbc::i18n::t("common.swap"), icons::glyph(Glyph::Swap), ::openbc::i18n::t("model3d.swap_a_and_b"));
         connect(actSwap_, &QAction::triggered, this, [this]() { swapSides(); });
-        actReload_ = mk("Reload", "Reload", icons::glyph(Glyph::Refresh), "Reload both models (F5)");
+        actReload_ = mk(::openbc::i18n::t("common.reload"), ::openbc::i18n::t("common.reload"), icons::glyph(Glyph::Refresh), ::openbc::i18n::t("model3d.reload_both_models_f5"));
         actReload_->setShortcut(QKeySequence("F5"));
         connect(actReload_, &QAction::triggered, this, [this]() { fitPending_ = false; if (handle_) openbc_model3d_reload(handle_); });
-        actFit_ = mk("Fit View", "Fit", m3::fitModel(), "Frame both models (double-click the view)");
+        actFit_ = mk(::openbc::i18n::t("model3d.fit_view"), ::openbc::i18n::t("model3d.fit"), m3::fitModel(), ::openbc::i18n::t("model3d.frame_both_models_double_click_the"));
         actFit_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
         connect(actFit_, &QAction::triggered, this, [this]() { fitView(); });
 
-        actPanel_ = mk("Details Panel", "Panel", m3::sidePanel(), "Show / hide summary, stats and regions", true);
+        actPanel_ = mk(::openbc::i18n::t("model3d.details_panel"), ::openbc::i18n::t("model3d.panel"), m3::sidePanel(), ::openbc::i18n::t("model3d.show_hide_summary_stats_and_regions"), true);
         actPanel_->setChecked(panelVisible_);
         connect(actPanel_, &QAction::toggled, this, [this](bool on) { panelVisible_ = on; if (panel_) panel_->setVisible(on); });
 
-        actPrevRegion_ = mk("Previous Region", "", m3::prev(), "Previous region (Shift+F3)");
+        actPrevRegion_ = mk(::openbc::i18n::t("model3d.previous_region"), "", m3::prev(), ::openbc::i18n::t("model3d.previous_region_shift_f3"));
         actPrevRegion_->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F3));
-        actNextRegion_ = mk("Next Region", "", m3::next(), "Next region (F3)");
+        actNextRegion_ = mk(::openbc::i18n::t("model3d.next_region"), "", m3::next(), ::openbc::i18n::t("model3d.next_region_f3"));
         actNextRegion_->setShortcut(QKeySequence(Qt::Key_F3));
         connect(actPrevRegion_, &QAction::triggered, this, [this]() { stepRegion(-1); });
         connect(actNextRegion_, &QAction::triggered, this, [this]() { stepRegion(+1); });
@@ -797,7 +795,7 @@ private:
         auto* offsetBox = new QWidget(menu);
         auto* ol = new QGridLayout(offsetBox);
         ol->setContentsMargins(12, 4, 12, 4);
-        ol->addWidget(new QLabel("Extra offset for B (mm) - the diff re-runs on change", offsetBox), 0, 0, 1, 6);
+        ol->addWidget(new QLabel(::openbc::i18n::t("model3d.extra_offset_for_b_mm_the"), offsetBox), 0, 0, 1, 6);
         QDoubleSpinBox** spins[3] = {&offX_, &offY_, &offZ_};
         const char* axes[3] = {"X", "Y", "Z"};
         for (int i = 0; i < 3; ++i) {
@@ -820,34 +818,34 @@ private:
             auto* cap = new QLabel(tip, holder); cap->setWordWrap(true); cap->setEnabled(false); cap->setMaximumWidth(300); hl->addWidget(cap);
             auto* w = new QWidgetAction(menu); w->setDefaultWidget(holder); menu->addAction(w);
         };
-        addCmd("Refine alignment (ICP)", m3::icp(), "Fits B onto A (rotation + translation) starting from the current alignment, then re-runs the diff.", 0);
-        addCmd("Align parts individually", m3::parts(), "Matches each disconnected part across the two files and aligns them one by one - re-arranged plates diff as if nothing moved.", 1);
-        addCmd("Reset refinement", m3::alignment(), "Drops ICP and per-part adjustments and returns to the selected mode + offset.", 2);
+        addCmd(::openbc::i18n::t("model3d.refine_alignment_icp"), m3::icp(), ::openbc::i18n::t("model3d.fits_b_onto_a_rotation_translation"), 0);
+        addCmd(::openbc::i18n::t("model3d.align_parts_individually"), m3::parts(), ::openbc::i18n::t("model3d.matches_each_disconnected_part_across_the"), 1);
+        addCmd(::openbc::i18n::t("model3d.reset_refinement"), m3::alignment(), ::openbc::i18n::t("model3d.drops_icp_and_per_part_adjustments"), 2);
         return menu;
     }
 
     QMenu* buildSettingsMenu() {
         auto* menu = new QMenu(this);
         menu->setToolTipsVisible(true);
-        actGpu_ = menu->addAction("Prefer GPU (when available and the files are large enough)");
+        actGpu_ = menu->addAction(::openbc::i18n::t("model3d.prefer_gpu_when_available_and_the"));
         actGpu_->setCheckable(true); actGpu_->setChecked(options_.preferGpu);
-        actGpu_->setToolTip("The GPU is used for files >= 4 MiB (never below 1 MiB); otherwise Rayon on the CPU");
+        actGpu_->setToolTip(::openbc::i18n::t("model3d.the_gpu_is_used_for_files"));
         connect(actGpu_, &QAction::toggled, this, [this](bool on) { options_.preferGpu = on; sendOptions(); });
-        actChangesVol_ = menu->addAction("Compute volumetric changes (Changes view)");
+        actChangesVol_ = menu->addAction(::openbc::i18n::t("model3d.compute_volumetric_changes_changes_view"));
         actChangesVol_->setCheckable(true); actChangesVol_->setChecked(options_.computeChanges);
         connect(actChangesVol_, &QAction::toggled, this, [this](bool on) { options_.computeChanges = on; sendOptions(); });
         menu->addSeparator();
-        auto* rangeMenu = menu->addMenu("Heat-map range");
+        auto* rangeMenu = menu->addMenu(::openbc::i18n::t("model3d.heat_map_range"));
         auto* group = new QActionGroup(this);
         for (int i = 0; i < 4; ++i) {
-            rangeActions_[i] = rangeMenu->addAction(QString::fromUtf8("\xC2\xB1") + QString::number(kRanges[i]) + " mm");
+            rangeActions_[i] = rangeMenu->addAction(::openbc::i18n::t("model3d.mm_2", QString::fromUtf8("\xC2\xB1"), QString::number(kRanges[i])));
             rangeActions_[i]->setCheckable(true); group->addAction(rangeActions_[i]);
             connect(rangeActions_[i], &QAction::triggered, this, [this, i]() { options_.range = kRanges[i]; sendOptions(); });
         }
         menu->addSeparator();
-        auto* grid = menu->addAction("Show grid"); grid->setCheckable(true); grid->setChecked(showGrid_);
+        auto* grid = menu->addAction(::openbc::i18n::t("model3d.show_grid")); grid->setCheckable(true); grid->setChecked(showGrid_);
         connect(grid, &QAction::toggled, this, [this](bool on) { showGrid_ = on; refreshViews(); });
-        auto* boxes = menu->addAction("Show region boxes"); boxes->setCheckable(true); boxes->setChecked(showBoxes_);
+        auto* boxes = menu->addAction(::openbc::i18n::t("model3d.show_region_boxes")); boxes->setCheckable(true); boxes->setChecked(showBoxes_);
         connect(boxes, &QAction::toggled, this, [this](bool on) { showBoxes_ = on; refreshViews(); });
         return menu;
     }
@@ -855,11 +853,10 @@ private:
     QMenu* buildMoreMenu() {
         auto* menu = new QMenu(this);
         menu->addAction(actFit_);
-        menu->addAction("Clear probe", this, [this]() { clearProbe(); });
+        menu->addAction(::openbc::i18n::t("model3d.clear_probe"), this, [this]() { clearProbe(); });
         menu->addSeparator();
-        menu->addAction("Copy summary", this, [this]() {
-            QApplication::clipboard()->setText(QString("%1 <-> %2\nMax deviation: %3\nMean deviation: %4\nSurface changed: %5\nTolerance: %6\nRegions: %7")
-                .arg(leftSelector_->text(), rightSelector_->text(), sumMax_->text(), sumMean_->text(), sumChanged_->text(), sumTol_->text()).arg(regionsTotal_));
+        menu->addAction(::openbc::i18n::t("model3d.copy_summary"), this, [this]() {
+            QApplication::clipboard()->setText(::openbc::i18n::t("model3d.max_deviation_mean_deviation_surface_changed", leftSelector_->text(), rightSelector_->text(), sumMax_->text(), sumMean_->text(), sumChanged_->text(), sumTol_->text(), regionsTotal_));
         });
         return menu;
     }
@@ -935,7 +932,7 @@ private:
         col->setContentsMargins(12, 10, 12, 10); col->setSpacing(6);
         auto heading = [&](const QString& t) { auto* l = new QLabel(t, body); QFont f = l->font(); f.setPointSizeF(f.pointSizeF() * 0.85); f.setLetterSpacing(QFont::AbsoluteSpacing, 0.8); l->setFont(f); l->setEnabled(false); return l; };
 
-        col->addWidget(heading("SUMMARY"));
+        col->addWidget(heading(::openbc::i18n::t("model3d.summary")));
         auto* sg = new QGridLayout; sg->setHorizontalSpacing(8); sg->setVerticalSpacing(3);
         const char* sn[4] = {"Max deviation", "Mean deviation", "Surface changed", "Tolerance \xCF\x84"};
         QLabel** sv[4] = {&sumMax_, &sumMean_, &sumChanged_, &sumTol_};
@@ -946,9 +943,9 @@ private:
         }
         col->addLayout(sg);
         col->addSpacing(6);
-        col->addWidget(heading("STATS"));
+        col->addWidget(heading(::openbc::i18n::t("model3d.stats")));
         auto* tg = new QGridLayout; tg->setHorizontalSpacing(10); tg->setVerticalSpacing(3);
-        tg->addWidget(new QLabel("A", body), 0, 1); tg->addWidget(new QLabel("B", body), 0, 2);
+        tg->addWidget(new QLabel(::openbc::i18n::t("model3d.a_2"), body), 0, 1); tg->addWidget(new QLabel(::openbc::i18n::t("model3d.b_2"), body), 0, 2);
         tg->addWidget(new QLabel(QString::fromUtf8("\xCE\x94"), body), 0, 3);
         const char* tn[7] = {"Triangles", "Vertices", "Area (mm\xC2\xB2)", "Volume (mm\xC2\xB3)", "Size", "Watertight", "Bounding box"};
         for (int r = 0; r < 7; ++r) {
@@ -962,7 +959,7 @@ private:
         }
         col->addLayout(tg);
         col->addSpacing(6);
-        regionsTitle_ = heading("REGIONS (0)");
+        regionsTitle_ = heading(::openbc::i18n::t("model3d.regions_0"));
         col->addWidget(regionsTitle_);
         regionList_ = new QListWidget(body);
         regionList_->setMinimumHeight(120);
@@ -980,17 +977,17 @@ private:
         row->addWidget(new QLabel(QString::fromUtf8("\xCF\x84"), bar));
         tolSlider_ = new QSlider(Qt::Horizontal, bar);
         tolSlider_->setRange(0, 1000); tolSlider_->setFixedWidth(140);
-        tolSlider_->setToolTip("Tolerance: deviations below this count as unchanged");
+        tolSlider_->setToolTip(::openbc::i18n::t("model3d.tolerance_deviations_below_this_count_as"));
         connect(tolSlider_, &QSlider::valueChanged, this, [this](int v) {
             options_.tolerance = float(tolFromSlider(v));
-            tolLabel_->setText(QString("%1 mm").arg(options_.tolerance, 0, 'g', 3));
+            tolLabel_->setText(::openbc::i18n::t("model3d.mm", QString::number(options_.tolerance, 'g', 3)));
             sendOptions();
         });
         tolLabel_ = new QLabel(bar); tolLabel_->setMinimumWidth(64);
         row->addWidget(tolSlider_); row->addWidget(tolLabel_);
 
         row->addWidget(vline(bar));
-        sectionCheck_ = new QCheckBox("Section", bar);
+        sectionCheck_ = new QCheckBox(::openbc::i18n::t("model3d.section"), bar);
         sectionCheck_->setIcon(m3::section());
         sectionAxis_ = new QComboBox(bar); sectionAxis_->addItems({"X", "Y", "Z"}); sectionAxis_->setCurrentIndex(2); sectionAxis_->setVisible(false);
         sectionSlider_ = new QSlider(Qt::Horizontal, bar); sectionSlider_->setRange(0, 1000); sectionSlider_->setValue(500);
@@ -1004,33 +1001,33 @@ private:
         // Overlay: A <-> B mix
         overlayBox_ = new QWidget(bar);
         auto* ol = new QHBoxLayout(overlayBox_); ol->setContentsMargins(0, 0, 0, 0);
-        ol->addWidget(vline(overlayBox_)); ol->addWidget(new QLabel("A", overlayBox_));
+        ol->addWidget(vline(overlayBox_)); ol->addWidget(new QLabel(::openbc::i18n::t("model3d.a_2"), overlayBox_));
         overlaySlider_ = new QSlider(Qt::Horizontal, overlayBox_); overlaySlider_->setRange(0, 100); overlaySlider_->setValue(50); overlaySlider_->setFixedWidth(120);
         connect(overlaySlider_, &QSlider::valueChanged, this, [this](int) { refreshViews(); });
-        ol->addWidget(overlaySlider_); ol->addWidget(new QLabel("B", overlayBox_));
+        ol->addWidget(overlaySlider_); ol->addWidget(new QLabel(::openbc::i18n::t("model3d.b_2"), overlayBox_));
         row->addWidget(overlayBox_);
 
         // 1-Up: which model / Heatmap: which model carries the colours
         sideBox_ = new QWidget(bar);
         auto* sl = new QHBoxLayout(sideBox_); sl->setContentsMargins(0, 0, 0, 0);
         sl->addWidget(vline(sideBox_));
-        sideLabel_ = new QLabel("Show", sideBox_); sl->addWidget(sideLabel_);
+        sideLabel_ = new QLabel(::openbc::i18n::t("model3d.show"), sideBox_); sl->addWidget(sideLabel_);
         auto* grp = new QButtonGroup(sideBox_);
         for (int i = 0; i < 2; ++i) {
-            auto* b = new QToolButton(sideBox_); b->setText(i == 0 ? "A" : "B"); b->setCheckable(true); b->setChecked(i == 0);
+            auto* b = new QToolButton(sideBox_); b->setText(i == 0 ? ::openbc::i18n::t("model3d.a_2") : ::openbc::i18n::t("model3d.b_2")); b->setCheckable(true); b->setChecked(i == 0);
             grp->addButton(b, i); sl->addWidget(b);
         }
         connect(grp, &QButtonGroup::idClicked, this, [this](int id) { sideSel_ = id; refreshViews(); });
         row->addWidget(sideBox_);
 
         row->addStretch(1);
-        statusLabel_ = new QLabel("Choose two 3D models to compare", bar);
+        statusLabel_ = new QLabel(::openbc::i18n::t("model3d.choose_two_3d_models_to_compare"), bar);
         statsLabel_ = new QLabel(bar);
         timeLabel_ = new QLabel(bar);
         row->addWidget(statusLabel_); row->addWidget(statsLabel_); row->addWidget(timeLabel_);
         row->addWidget(vline(bar));
         auto* prev = new QToolButton(bar); prev->setDefaultAction(actPrevRegion_); prev->setToolButtonStyle(Qt::ToolButtonIconOnly);
-        regionNavLabel_ = new QLabel("no regions", bar); regionNavLabel_->setMinimumWidth(96); regionNavLabel_->setAlignment(Qt::AlignCenter);
+        regionNavLabel_ = new QLabel(::openbc::i18n::t("model3d.no_regions"), bar); regionNavLabel_->setMinimumWidth(96); regionNavLabel_->setAlignment(Qt::AlignCenter);
         auto* next = new QToolButton(bar); next->setDefaultAction(actNextRegion_); next->setToolButtonStyle(Qt::ToolButtonIconOnly);
         row->addWidget(prev); row->addWidget(regionNavLabel_); row->addWidget(next);
         return bar;

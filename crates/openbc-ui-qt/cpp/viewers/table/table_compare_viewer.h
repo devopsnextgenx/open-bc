@@ -67,6 +67,7 @@
 #include "common/remote_selector.h"
 #include "common/unsaved_changes_dialog.h"
 #include "common/file_change_controller.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -236,7 +237,7 @@ private:
         const QByteArray left = openbc_remote::localCopy(leftPath_).toUtf8();
         const QByteArray right = openbc_remote::localCopy(rightPath_).toUtf8();
         session_ = openbc_table_session_create(left.constData(), right.constData(), BackendChannel::callback(), channel_.user());
-        status_->setText("Loading...");
+        status_->setText(::openbc::i18n::t("common.loading"));
         if (onTitleChanged) onTitleChanged();
     }
 
@@ -257,7 +258,7 @@ private:
     }
 
     void send(bool accepted) {
-        if (!accepted) status_->setText("Backend is busy; try again in a moment.");
+        if (!accepted) status_->setText(::openbc::i18n::t("common.backend_is_busy_try_again_in"));
     }
 
     // Window-level filter: keeps the minimap's viewport box right when the grid is resized.
@@ -278,7 +279,7 @@ private:
             break;
         case OPENBC_EV_SAVED: {
             const QStringList parts = event.message.split('|');
-            status_->setText("Saved " + QFileInfo(parts.value(1)).fileName());
+            status_->setText(::openbc::i18n::t("common.saved", QFileInfo(parts.value(1)).fileName()));
             finishSave(true, {});
             break;
         }
@@ -322,11 +323,8 @@ private:
         const int groups = static_cast<int>(openbc_table_group_count(v));
         currentGroup_ = groups ? std::min(currentGroup_, groups - 1) : -1;
         gutter_->setCurrentGroup(currentGroup_);
-        status_->setText(groups == 0 ? QString("Tables match: no differences.")
-                                     : QString("%1 difference %2 across %3 rows.")
-                                           .arg(groups)
-                                           .arg(groups == 1 ? "section" : "sections")
-                                           .arg(rows));
+        status_->setText(groups == 0 ? ::openbc::i18n::t("table.tables_match_no_differences")
+                                     : ::openbc::i18n::t("table.difference_across_rows", groups, groups == 1 ? "section" : "sections", rows));
         const bool sameName = std::all_of(sides_, sides_ + 2, [](const SidePane& s) { return s.sheets->count() > 0; });
         (void)sameName;
         if (onTitleChanged) onTitleChanged();
@@ -382,14 +380,14 @@ private:
         const int count = changeCount(side);
         const QString changes = QString("%1 unsaved %2").arg(count).arg(count == 1 ? "change" : "changes");
         if (!errors_[side].isEmpty()) pane.info->setText("<span style='color:#e5534b'>" + errors_[side].toHtmlEscaped() + "</span>");
-        else if (!loaded_[side]) pane.info->setText(path.isEmpty() ? "No file" : "Not loaded");
+        else if (!loaded_[side]) pane.info->setText(path.isEmpty() ? ::openbc::i18n::t("table.no_file") : ::openbc::i18n::t("table.not_loaded"));
         else pane.info->setText(QString(editable_[side] ? "CSV" : "Spreadsheet (read-only)") + (dirty ? " - " + changes : QString()));
         pane.save->setObjectName("saveSideBtn");
         pane.save->setIcon(icons::saveIcon(dirty ? QColor(0x4e, 0x9c, 0xff) : QColor(0xdd, 0xe0, 0xee)));
         pane.save->setProperty("dirty", dirty);
-        pane.save->setToolTip(dirty ? (editable_[side] ? "Unsaved changes on this side - click or Ctrl+S to write to disk"
-                                                       : "Unsaved changes - click or Ctrl+S to export this sheet as CSV...")
-                                    : (editable_[side] ? "Save (Ctrl+S while this side is active)" : "Export this sheet as CSV..."));
+        pane.save->setToolTip(dirty ? (editable_[side] ? ::openbc::i18n::t("common.unsaved_changes_on_this_side_click")
+                                                       : ::openbc::i18n::t("table.unsaved_changes_click_or_ctrl_s"))
+                                    : (editable_[side] ? ::openbc::i18n::t("table.save_ctrl_s_while_this_side") : ::openbc::i18n::t("table.export_this_sheet_as_csv")));
         pane.save->setEnabled(loaded_[side] || !path.isEmpty());
         pane.save->style()->unpolish(pane.save);
         pane.save->style()->polish(pane.save);
@@ -483,7 +481,7 @@ private:
         if (askForPath || !editable_[side]) {
             const QString source = left ? leftPath_ : rightPath_;
             const QString suggested = QFileInfo(source).completeBaseName() + ".csv";
-            const QString chosen = QFileDialog::getSaveFileName(this, "Save sheet as CSV", suggested, "CSV files (*.csv)");
+            const QString chosen = QFileDialog::getSaveFileName(this, ::openbc::i18n::t("table.save_sheet_as_csv"), suggested, "CSV files (*.csv)");
             if (chosen.isEmpty()) {
                 if (done) done(false, "Save cancelled.");
                 return;
@@ -507,7 +505,7 @@ private:
                 });
                 return;
             }
-            status_->setText("Backend is busy; try again in a moment.");
+            status_->setText(::openbc::i18n::t("common.backend_is_busy_try_again_in"));
             if (done) done(false, "The backend is busy; try again in a moment.");
             return;
         }
@@ -526,10 +524,10 @@ private:
         const std::uint8_t side = static_cast<std::uint8_t>(activeSide_);
         const QString name = side == 0 ? "left" : "right";
         if (!dirty_[side]) {
-            status_->setText("Nothing to save on the " + name + " side.");
+            status_->setText(::openbc::i18n::t("common.nothing_to_save_on_the_side", name));
             return;
         }
-        status_->setText("Saving the " + name + " file...");
+        status_->setText(::openbc::i18n::t("common.saving_the_file", name));
         saveSide(side == 0, false);
     }
 
@@ -614,12 +612,12 @@ private:
             "Tables (*.csv *.tsv *.xlsx *.xlsm *.xlsb *.xls *.ods);;All files (*.*)",
             [this, side](QString p) { commitPath(side, p); });
         pane.sheets = new QComboBox(box);
-        pane.sheets->setToolTip("Sheet");
+        pane.sheets->setToolTip(::openbc::i18n::t("table.sheet"));
         pane.save = new QToolButton(box);
         pane.save->setAutoRaise(true);
         pane.save->setPopupMode(QToolButton::MenuButtonPopup);
         auto* menu = new QMenu(pane.save);
-        menu->addAction("Save As CSV...", this, [this, side]() { saveSide(side == 0, true); });
+        menu->addAction(::openbc::i18n::t("table.save_as_csv"), this, [this, side]() { saveSide(side == 0, true); });
         pane.save->setMenu(menu);
         header->addWidget(pane.path, 1);
         header->addWidget(pane.sheets);
@@ -674,8 +672,8 @@ private:
         toolbar_->setIconSize(QSize(20, 20));
         toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
 
-        homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), "Home");
-        sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), "Sessions");
+        homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), ::openbc::i18n::t("tab.home"));
+        sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), ::openbc::i18n::t("common.sessions"));
         toolbar_->addSeparator();
 
         auto* filterGroup = new QActionGroup(this);
@@ -692,29 +690,29 @@ private:
         contextAction_ = addFilter(Glyph::Context, "Context", diffgrid::RowFilter::Context, false);
         toolbar_->addSeparator();
 
-        copyRightAction_ = toolbar_->addAction(icons::glyph(Glyph::CopyLine), "Copy ->");
-        copyRightAction_->setToolTip("Copy the current difference left -> right");
+        copyRightAction_ = toolbar_->addAction(icons::glyph(Glyph::CopyLine), ::openbc::i18n::t("common.copy_2"));
+        copyRightAction_->setToolTip(::openbc::i18n::t("table.copy_the_current_difference_left_right"));
         copyLeftAction_ = toolbar_->addAction(icons::glyph(Glyph::CopyLine), "<- Copy");
-        copyLeftAction_->setToolTip("Copy the current difference right -> left");
-        nextAction_ = toolbar_->addAction(icons::glyph(Glyph::NextSection), "Next Section");
-        prevAction_ = toolbar_->addAction(icons::glyph(Glyph::PrevSection), "Prev Section");
+        copyLeftAction_->setToolTip(::openbc::i18n::t("table.copy_the_current_difference_right_left"));
+        nextAction_ = toolbar_->addAction(icons::glyph(Glyph::NextSection), ::openbc::i18n::t("common.next_section"));
+        prevAction_ = toolbar_->addAction(icons::glyph(Glyph::PrevSection), ::openbc::i18n::t("common.prev_section"));
         nextAction_->setShortcut(QKeySequence(Qt::Key_F3));
         prevAction_->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F3));
         toolbar_->addSeparator();
-        swapAction_ = toolbar_->addAction(icons::glyph(Glyph::Swap), "Swap");
-        reloadAction_ = toolbar_->addAction(icons::glyph(Glyph::Refresh), "Reload");
+        swapAction_ = toolbar_->addAction(icons::glyph(Glyph::Swap), ::openbc::i18n::t("common.swap"));
+        reloadAction_ = toolbar_->addAction(icons::glyph(Glyph::Refresh), ::openbc::i18n::t("common.reload"));
         toolbar_->addSeparator();
-        pixelMinimapAction_ = toolbar_->addAction(icons::glyph(Glyph::MinimapPixel), "Minimap");
+        pixelMinimapAction_ = toolbar_->addAction(icons::glyph(Glyph::MinimapPixel), ::openbc::i18n::t("common.minimap"));
         pixelMinimapAction_->setCheckable(true);
         pixelMinimapAction_->setChecked(true);
-        pixelMinimapAction_->setToolTip("Minimap: one pixel-thin line per differing row, instead of one bar per change block");
-        saveLeftAction_ = new QAction(icons::glyph(Glyph::Save), "Save Left", this);
-        saveRightAction_ = new QAction(icons::glyph(Glyph::Save), "Save Right", this);
+        pixelMinimapAction_->setToolTip(::openbc::i18n::t("common.minimap_one_pixel_thin_line_per"));
+        saveLeftAction_ = new QAction(icons::glyph(Glyph::Save), ::openbc::i18n::t("common.save_left"), this);
+        saveRightAction_ = new QAction(icons::glyph(Glyph::Save), ::openbc::i18n::t("common.save_right"), this);
         // Ctrl+S saves the active side; scoped to this tab (and its children) like text compare's save action.
-        saveAction_ = new QAction(icons::glyph(Glyph::Save), "Save", this);
+        saveAction_ = new QAction(icons::glyph(Glyph::Save), ::openbc::i18n::t("common.save"), this);
         saveAction_->setShortcut(QKeySequence::Save);
         saveAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-        saveAction_->setToolTip("Save the active side (the side whose grid has focus)");
+        saveAction_->setToolTip(::openbc::i18n::t("table.save_the_active_side_the_side"));
         addAction(saveAction_);
         root->addWidget(toolbar_);
 
@@ -722,18 +720,18 @@ private:
         auto* options = new QWidget(this);
         auto* optionsRow = new QHBoxLayout(options);
         optionsRow->setContentsMargins(6, 2, 6, 2);
-        ignoreCase_ = new QCheckBox("Ignore case", options);
-        trim_ = new QCheckBox("Trim cells", options);
+        ignoreCase_ = new QCheckBox(::openbc::i18n::t("table.ignore_case"), options);
+        trim_ = new QCheckBox(::openbc::i18n::t("table.trim_cells"), options);
         tolerance_ = new QDoubleSpinBox(options);
         tolerance_->setDecimals(6);
         tolerance_->setRange(0.0, 1e12);
-        tolerance_->setToolTip("Numeric cells closer than this are equal");
+        tolerance_->setToolTip(::openbc::i18n::t("table.numeric_cells_closer_than_this_are"));
         keysEdit_ = new QLineEdit(options);
-        keysEdit_->setPlaceholderText("Key columns, e.g. A,C (blank: align by row order)");
+        keysEdit_->setPlaceholderText(::openbc::i18n::t("table.key_columns_e_g_a_c"));
         keysEdit_->setClearButtonEnabled(true);
         optionsRow->addWidget(ignoreCase_);
         optionsRow->addWidget(trim_);
-        optionsRow->addWidget(new QLabel("Tolerance", options));
+        optionsRow->addWidget(new QLabel(::openbc::i18n::t("table.tolerance"), options));
         optionsRow->addWidget(tolerance_);
         optionsRow->addWidget(keysEdit_, 1);
         root->addWidget(options);

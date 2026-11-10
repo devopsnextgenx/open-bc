@@ -1,0 +1,19 @@
+{
+    "about.title": "À propos d'OpenBC",
+    "common.cancel": "Annuler",
+    "common.close": "Fermer",
+    "common.ok": "OK",
+    "menu.actions": "&Actions",
+    "menu.edit": "&Édition",
+    "menu.help": "&Aide",
+    "menu.help.about": "À propos",
+    "menu.search": "&Recherche",
+    "menu.session": "&Session",
+    "menu.tools": "&Outils",
+    "menu.view": "&Affichage",
+    "tab.home": "Accueil",
+    "tab.home.tooltip": "Accueil d'OpenBC et historique des sessions",
+    "text.bytes": "%1 octets",
+    "window.title.folder": "%1 - Comparaison de dossiers - OpenBC",
+    "window.title.text": "%1 - Comparaison de texte - OpenBC"
+}

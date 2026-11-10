@@ -114,6 +114,7 @@ add_executable(openbc
     ${OPENBC_SOURCES}
     ${OPENBC_HEADERS}
     resources/openbc.qrc
+    resources/i18n/i18n.qrc   # messages*.json, deployed to <prefs>/resources at startup (see cpp/i18n/i18n.h)
 )
 
 target_include_directories(openbc PRIVATE ${OPENBC_CPP_DIR})
@@ -280,4 +281,13 @@ if(NOT WIN32)
     install(PROGRAMS "${OPENBC_SCRIPTS_DIR}/dolphin/install-dolphin.sh"
             DESTINATION bin RENAME openbc-install-dolphin)
 endif()
+# Optional on-disk copy of the locale files (the embedded :/i18n copy is what the app deploys from).
+if(NOT WIN32)
+    install(DIRECTORY resources/i18n/ DESTINATION share/openbc/resources
+            FILES_MATCHING PATTERN "messages*.json")
+else()
+    install(DIRECTORY resources/i18n/ DESTINATION resources
+            FILES_MATCHING PATTERN "messages*.json")
+endif()
+
 include(CPack)

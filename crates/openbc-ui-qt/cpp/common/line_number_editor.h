@@ -36,6 +36,7 @@
 
 #include "common/diff_algorithms.h"
 #include "options/appearance_state.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -86,8 +87,8 @@ public:
             arrowArea_->setObjectName("diffArrowGutter");
             arrowArea_->setCursor(Qt::PointingHandCursor);
             arrowArea_->setToolTip(arrowSide_ == GutterSide::Right
-                                        ? "Copy this change to the right"
-                                        : "Copy this change to the left");
+                                        ? ::openbc::i18n::t("common.copy_this_change_to_the_right")
+                                        : ::openbc::i18n::t("common.copy_this_change_to_the_left"));
             arrowArea_->installEventFilter(this);
         }
         // The scrollbar can appear/disappear without the widget being

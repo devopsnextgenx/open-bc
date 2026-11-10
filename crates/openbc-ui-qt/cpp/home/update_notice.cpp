@@ -22,6 +22,7 @@
 #include <algorithm>
 
 #include "app/app_info.h"
+#include "i18n/i18n.h"
 
 namespace openbc::app {
 
@@ -73,7 +74,7 @@ UpdateNoticeCard::UpdateNoticeCard(QWidget* host) : QFrame(host), host_(host) {
     dismiss_ = new QToolButton(this);
     dismiss_->setText(QString::fromUtf8("\xC3\x97"));  // multiplication sign
     dismiss_->setAutoRaise(true);
-    dismiss_->setToolTip("Close (shown again next time OpenBC starts)");
+    dismiss_->setToolTip(::openbc::i18n::t("home.close_shown_again_next_time_openbc"));
     top->addLayout(titles, 1);
     top->addWidget(dismiss_, 0, Qt::AlignTop);
     column->addLayout(top);
@@ -88,9 +89,9 @@ UpdateNoticeCard::UpdateNoticeCard(QWidget* host) : QFrame(host), host_(host) {
 
     auto* buttons = new QHBoxLayout();
     buttons->setSpacing(8);
-    skip_ = new QPushButton("Don't notify for this release", this);
-    view_ = new QPushButton("View release", this);
-    close_ = new QPushButton("Close", this);
+    skip_ = new QPushButton(::openbc::i18n::t("home.don_t_notify_for_this_release"), this);
+    view_ = new QPushButton(::openbc::i18n::t("home.view_release"), this);
+    close_ = new QPushButton(::openbc::i18n::t("common.close"), this);
     close_->setDefault(true);
     for (auto* b : {skip_, view_, close_}) b->setFocusPolicy(Qt::NoFocus);  // never steals typing focus
     buttons->addWidget(skip_);
