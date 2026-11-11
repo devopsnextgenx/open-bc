@@ -176,10 +176,18 @@ pkg_deb() {
   # (Nautilus + Dolphin file-manager files come from CMake's install() rules too.)
 
   # refresh icon / desktop caches so the launcher icon shows up immediately after install
+  # and ensure the shared app log directory is writable by normal users.
   for hook in postinst postrm; do
     $DRY || cat > "$stage/DEBIAN/$hook" <<'HOOK'
 #!/bin/sh
 set -e
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ]; then
+  if [ ! -d /var/log/openbc ]; then
+    install -d -m 0777 /var/log/openbc
+  else
+    chmod 0777 /var/log/openbc
+  fi
+fi
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
 fi
@@ -239,6 +247,11 @@ OpenBC is a comparison tool with Rust backends and a Qt6 GUI.
 cmake --install $ROOT/$BUILD_DIR --prefix %{buildroot}/usr
 
 %post
+if [ ! -d /var/log/openbc ]; then
+  install -d -m 0777 /var/log/openbc
+else
+  chmod 0777 /var/log/openbc
+fi
 gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
 update-desktop-database -q %{_datadir}/applications >/dev/null 2>&1 || :
 

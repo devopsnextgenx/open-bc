@@ -16,7 +16,7 @@ finish-args:
   - --socket=fallback-x11
   - --device=dri          # 3D compare uses OpenGL
   - --share=network       # SFTP / FTP remote browsing
-  - --filesystem=host     # comparing arbitrary folders is the point of the app
+  - --filesystem=/var/log/openbc:rw
   - --socket=pulseaudio   # media compare playback
 modules:
   - name: cfr
