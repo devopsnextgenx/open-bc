@@ -156,6 +156,18 @@ target_link_libraries(openbc PRIVATE
     LibLZMA::LibLZMA
 )
 
+# The Rust static library also contains every cpp/**/*.cpp (build.rs compiles them so the
+# cargo-only `openbc-qt` binary links the same C++), while this executable compiles the same files
+# itself. The linker normally never opens an archive member whose symbols are already defined, but
+# it does when it needs a weak (inline / template) instance that only the archive's differently
+# compiled copy emitted. That drags in the whole object and every strong symbol in it is then
+# defined twice ("multiple definition of openbc::depcheck::..."). Both copies come from identical
+# sources and the executable's objects come first on the command line, so keep the first one.
+# (Apple's ld64 has no such option and treats archives differently, so it is excluded.)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
+    target_link_options(openbc PRIVATE LINKER:--allow-multiple-definition)
+endif()
+
 target_compile_definitions(openbc PRIVATE OPENBC_BUILD_EXECUTABLE)
 
 if(OPENBC_BUILD_TEXT_MEMORY_TEST)

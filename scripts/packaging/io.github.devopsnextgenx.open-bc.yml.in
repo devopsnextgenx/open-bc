@@ -76,8 +76,18 @@ modules:
       env:
         CARGO_HOME: /run/build/openbc/cargo
         CARGO_NET_OFFLINE: 'true'
+        # Binary Compare uses LIEF. Its build script normally downloads a prebuilt SDK from
+        # GitHub, which the offline Flatpak sandbox cannot do. With this variable it uses the
+        # unpacked SDK below (source 4) instead and never touches the network.
+        LIEF_RUST_PRECOMPILED: /run/build/openbc/lief-sdk
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
+      # libopenbc_ui_qt.a also holds every cpp/**/*.cpp, which the executable compiles itself too;
+      # ld can pull an archive copy in and then reports "multiple definition". Keep the first
+      # (the executable's). _RELEASE is used on purpose: setting CMAKE_EXE_LINKER_FLAGS itself
+      # would replace the hardening flags (relro/now) Flatpak passes through LDFLAGS.
+      # CMakeLists.txt carries the same option; this line is the belt-and-braces copy.
+      - -DCMAKE_EXE_LINKER_FLAGS_RELEASE=-Wl,--allow-multiple-definition
       - -DCPACK_PACKAGE_VERSION=@APP_VERSION@
       - -DFETCHCONTENT_FULLY_DISCONNECTED=ON
       - -DFETCHCONTENT_SOURCE_DIR_CORROSION=/run/build/openbc/corrosion-src
@@ -99,3 +109,20 @@ modules:
         tag: v0.6.1
         commit: @CORROSION_COMMIT@
         dest: corrosion-src
+
+      # 4. Prebuilt LIEF SDK for the `lief` crate (Binary Compare). The zip holds lib/libLIEF.a and
+      # lib/liblief-sys.a at its root, so nothing may be stripped. KEEP THE VERSION IN THE URL
+      # EQUAL TO THE `lief` / `lief-ffi` VERSION IN Cargo.lock; when that changes, update the
+      # URL and both sha256 values (sha256sum of the downloaded zip).
+      - type: archive
+        url: https://github.com/lief-project/LIEF/releases/download/1.0.0/LIEF-rs-x86_64-unknown-linux-gnu.zip
+        sha256: fefb7b28778850d1047ac43671d6503f0eb86f14db4ed23f9282b87c9c7e1f11
+        strip-components: 0
+        dest: lief-sdk
+        only-arches: [x86_64]
+      - type: archive
+        url: https://github.com/lief-project/LIEF/releases/download/1.0.0/LIEF-rs-aarch64-unknown-linux-gnu.zip
+        sha256: 29ae690374ccc7eed64e7780d72b606ab1f6eeac6195d673ae33c53732455e4a
+        strip-components: 0
+        dest: lief-sdk
+        only-arches: [aarch64]
