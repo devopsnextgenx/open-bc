@@ -40,16 +40,27 @@ inline const QSet<QString>& mediaCompareExtensions() {
     return set;
 }
 
+// Compiled binaries and shared libraries (PE / ELF / Mach-O) that open in Binary Compare.
+// Windows .exe/.dll, Linux .so/.elf/.ko, macOS .dylib. Kept off ".o"/".a"/".bin": object files
+// and raw images are better served by hex compare.
+inline const QSet<QString>& binaryCompareExtensions() {
+    static const QSet<QString> set{"exe", "dll", "sys", "ocx", "drv", "scr", "cpl", "efi",
+                                   "so",  "elf", "ko",  "dylib"};
+    return set;
+}
+
 inline QString compareExtensionOf(const QString& path) { return QFileInfo(path).suffix().toLower(); }
 inline bool isTableComparePath(const QString& path) { return tableCompareExtensions().contains(compareExtensionOf(path)); }
 inline bool isRegistryComparePath(const QString& path) { return registryCompareExtensions().contains(compareExtensionOf(path)); }
 inline bool isMediaComparePath(const QString& path) { return mediaCompareExtensions().contains(compareExtensionOf(path)); }
+inline bool isBinaryComparePath(const QString& path) { return binaryCompareExtensions().contains(compareExtensionOf(path)); }
 
 // Session-history kind for the new viewers, or an empty string for anything else.
 inline QString newViewerSessionKind(const QString& path) {
     if (isTableComparePath(path)) return "table-compare";
     if (isRegistryComparePath(path)) return "registry-compare";
     if (isMediaComparePath(path)) return "media-compare";
+    if (isBinaryComparePath(path)) return "version-compare";  // Binary Compare
     return {};
 }
 

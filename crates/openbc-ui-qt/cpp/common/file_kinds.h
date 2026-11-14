@@ -46,7 +46,7 @@ inline const QSet<QString>& mediaExtensionSet() {
 }
 
 inline const QSet<QString>& versionExtensionSet() {
-    static const QSet<QString> set = {"exe", "dll", "sys", "ocx", "drv", "scr", "cpl"};
+    static const QSet<QString> set = {"exe", "dll", "sys", "ocx", "drv", "scr", "cpl", "efi", "so", "elf", "ko", "dylib"};
     return set;
 }
 

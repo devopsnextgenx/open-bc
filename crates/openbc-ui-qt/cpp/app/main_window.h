@@ -51,6 +51,7 @@
 #include "viewers/table/table_compare_viewer.h"
 #include "viewers/registry/registry_compare_viewer.h"
 #include "viewers/hex/hex_compare_viewer.h"
+#include "viewers/binary/binary_compare_viewer.h"
 #include "viewers/media/media_compare_viewer.h"
 #include "viewers/folder/folder_compare_viewer.h"
 #include "viewers/text/text_compare_viewer.h"
@@ -306,6 +307,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         auto* tableView = dynamic_cast<TableCompareViewer*>(current);
         auto* registryView = dynamic_cast<RegistryCompareViewer*>(current);
         auto* hexView = dynamic_cast<HexCompareViewer*>(current);
+        auto* binaryView = dynamic_cast<BinaryCompareViewer*>(current);
         auto* mediaView = dynamic_cast<MediaCompareViewer*>(current);
         fill(actionsMenu, session   ? session->actionsMenuItems()
                           : textView ? textView->actionsMenuItems()
@@ -315,6 +317,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
                           : tableView ? tableView->actionsMenuItems()
                           : registryView ? registryView->actionsMenuItems()
                           : hexView ? hexView->actionsMenuItems()
+                          : binaryView ? binaryView->actionsMenuItems()
                           : mediaView ? mediaView->actionsMenuItems()
                                      : QList<QAction*>());
         fill(editMenu, session   ? session->editMenuItems()
@@ -333,6 +336,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
                          : tableView ? tableView->searchMenuItems()
                          : registryView ? registryView->searchMenuItems()
                          : hexView ? hexView->searchMenuItems()
+                         : binaryView ? binaryView->searchMenuItems()
                                     : QList<QAction*>());
         fill(viewMenu, session   ? session->viewMenuItems()
                        : textView ? textView->viewMenuItems()
@@ -370,6 +374,8 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
             window.setWindowTitle(::openbc::i18n::t("app.registry_compare_openbc", registryView->title()));
         } else if (auto* hexView = dynamic_cast<HexCompareViewer*>(tabs->currentWidget())) {
             window.setWindowTitle(::openbc::i18n::t("app.hex_compare_openbc", hexView->title()));
+        } else if (auto* binaryView = dynamic_cast<BinaryCompareViewer*>(tabs->currentWidget())) {
+            window.setWindowTitle(::openbc::i18n::t("app.binary_compare_openbc", binaryView->title()));
         } else if (auto* mediaView = dynamic_cast<MediaCompareViewer*>(tabs->currentWidget())) {
             window.setWindowTitle(::openbc::i18n::t("app.media_compare_openbc", mediaView->title()));
         } else {
@@ -385,6 +391,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     std::function<void(const QString&, const QString&)> addTableView;
     std::function<void(const QString&, const QString&)> addRegistryView;
     std::function<void(const QString&, const QString&)> addHexView;
+    std::function<void(const QString&, const QString&)> addBinaryView;
     std::function<void(const QString&, const QString&)> addMediaView;
     std::function<void(int)> closeTab;
     std::function<void(QWidget*)> installDropRouting;  // defined with the drop coordinator below
@@ -468,6 +475,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         session->onRegistryCompare = [&](const QString& l, const QString& r) { addRegistryView(l, r); };
         session->onMediaCompare = [&](const QString& l, const QString& r) { addMediaView(l, r); };
         session->onHexCompare = [&](const QString& l, const QString& r) { addHexView(l, r); };
+        session->onBinaryCompare = [&](const QString& l, const QString& r) { addBinaryView(l, r); };
         session->onNewFolderCompare = [&](const QString& leftPath, const QString& rightPath) {
             addSession(leftPath, rightPath, true);
         };
@@ -585,6 +593,9 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
     addHexView = [&](const QString& left, const QString& right) {
         addViewerTab(new HexCompareViewer(left, right), "hex-compare");
     };
+    addBinaryView = [&](const QString& left, const QString& right) {
+        addViewerTab(new BinaryCompareViewer(left, right), "version-compare");
+    };
     addMediaView = [&](const QString& left, const QString& right) {
         addViewerTab(new MediaCompareViewer(left, right), "media-compare");
     };
@@ -673,6 +684,10 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
             addHexView(v->leftText(), v->rightText());
             return;
         }
+        if (auto* v = dynamic_cast<BinaryCompareViewer*>(tabs->widget(index))) {
+            addBinaryView(v->leftText(), v->rightText());
+            return;
+        }
         if (auto* v = dynamic_cast<MediaCompareViewer*>(tabs->widget(index))) {
             addMediaView(v->leftText(), v->rightText());
             return;
@@ -748,6 +763,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         else if (auto* v = dynamic_cast<TableCompareViewer*>(w)) { ctx.tab = drop::TabKind::Table; left = v->leftText(); right = v->rightText(); dirty = v->hasUnsavedChanges(); }
         else if (auto* v = dynamic_cast<RegistryCompareViewer*>(w)) { ctx.tab = drop::TabKind::Registry; left = v->leftText(); right = v->rightText(); dirty = v->hasUnsavedChanges(); }
         else if (auto* v = dynamic_cast<HexCompareViewer*>(w)) { ctx.tab = drop::TabKind::Hex; left = v->leftText(); right = v->rightText(); }
+        else if (auto* v = dynamic_cast<BinaryCompareViewer*>(w)) { ctx.tab = drop::TabKind::Binary; left = v->leftText(); right = v->rightText(); }
         else if (auto* v = dynamic_cast<MediaCompareViewer*>(w)) { ctx.tab = drop::TabKind::Media; left = v->leftText(); right = v->rightText(); dirty = v->hasUnsavedChanges(); }
         ctx.leftSet = !left.isEmpty();
         ctx.rightSet = !right.isEmpty();
@@ -765,6 +781,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         else if (auto* v = dynamic_cast<TableCompareViewer*>(w)) v->applyDroppedPaths(left, right);
         else if (auto* v = dynamic_cast<RegistryCompareViewer*>(w)) v->applyDroppedPaths(left, right);
         else if (auto* v = dynamic_cast<HexCompareViewer*>(w)) v->applyDroppedPaths(left, right);
+        else if (auto* v = dynamic_cast<BinaryCompareViewer*>(w)) v->applyDroppedPaths(left, right);
         else if (auto* v = dynamic_cast<MediaCompareViewer*>(w)) v->applyDroppedPaths(left, right);
     };
     // Opens a new tab of `kind` (every add*View makes its tab current) and returns it.
@@ -777,6 +794,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         case drop::TabKind::Table: addTableView(left, right); break;
         case drop::TabKind::Registry: addRegistryView(left, right); break;
         case drop::TabKind::Hex: addHexView(left, right); break;
+        case drop::TabKind::Binary: addBinaryView(left, right); break;
         case drop::TabKind::Media: addMediaView(left, right); break;
         case drop::TabKind::Text:
             // Text files are read by the viewer itself (async, remote-aware), not here on the GUI thread.
@@ -875,6 +893,9 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         } else if (kind == "hex-compare") {
             const QStringList pair = askForPair("Hex Compare", "All files (*)", paths);
             if (pair.size() == 2) addHexView(pair[0], pair[1]);
+        } else if (kind == "version-compare") {
+            const QStringList pair = askForPair("Binary Compare", "Executables and libraries (*.exe *.dll *.sys *.ocx *.so *.dylib *.elf);;All files (*)", paths);
+            if (pair.size() == 2) addBinaryView(pair[0], pair[1]);
         } else if (kind == "media-compare") {
             const QStringList pair = askForPair(
                 "Media Compare",
@@ -911,6 +932,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
             if (kind == "table-compare") hit = matches(dynamic_cast<TableCompareViewer*>(w));
             else if (kind == "registry-compare") hit = matches(dynamic_cast<RegistryCompareViewer*>(w));
             else if (kind == "hex-compare") hit = matches(dynamic_cast<HexCompareViewer*>(w));
+            else if (kind == "version-compare") hit = matches(dynamic_cast<BinaryCompareViewer*>(w));
             else if (kind == "media-compare") hit = matches(dynamic_cast<MediaCompareViewer*>(w));
             else if (kind == "picture-compare") hit = matches(dynamic_cast<PictureCompareViewer*>(w));
             else if (kind == "folder-compare") hit = matches(dynamic_cast<FolderCompareViewer*>(w));
@@ -931,6 +953,8 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
             addRegistryView(entry.left, entry.right);
         } else if (entry.kind == "hex" || entry.kind == "hex-compare") {
             addHexView(entry.left, entry.right);
+        } else if (entry.kind == "version" || entry.kind == "version-compare") {
+            addBinaryView(entry.left, entry.right);
         } else if (entry.kind == "media" || entry.kind == "media-compare") {
             addMediaView(entry.left, entry.right);
         } else if (entry.kind == "picture") {

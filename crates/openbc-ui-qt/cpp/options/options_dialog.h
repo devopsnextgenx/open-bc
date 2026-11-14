@@ -66,10 +66,13 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <functional>
+#include <initializer_list>
+#include <memory>
 #include <utility>
 #include <vector>
 
 #include "options/app_options.h"
+#include "options/match_policy.h"
 #include "options/options_status.h"
 #include "options/options_icons.h"
 #include "options/text_font.h"
@@ -197,6 +200,7 @@ public:
             {"Backups", buildBackups()},
             {"File Operations", buildFileOperations()},
             {"Archive Types", buildArchiveTypes()},
+            {"Folder Compare", buildFolderCompare()},
             {"Folder Filters", buildFolderFilters()},
             {"Commands", buildCommands()},
             {"Open With", buildPlaceholder("Open With")},
@@ -1251,6 +1255,127 @@ private:
         connect(enabled, &QCheckBox::toggled, this, updateEnabledControls);
         updateEnabledControls();
         v->addStretch(1);
+        return page;
+    }
+
+    // ---- Folder Compare: file matching -------------------------------------
+    // Per-file-type choice between size/timestamp and a content hash (and which hash). The rules
+    // are evaluated by the backend (openbc-core hash_policy.rs); this page edits one text line.
+    QWidget* buildFolderCompare() {
+        QVBoxLayout* v;
+        auto* page = pageShell(&v);
+        v->addWidget(heading(::openbc::i18n::t("options.fc_heading")));
+        v->addWidget(note(::openbc::i18n::t("options.fc_note")));
+
+        auto* enabled = check(::openbc::i18n::t("options.fc_enable"), &draft_.matchByFileType);
+        v->addWidget(enabled);
+
+        // Working copy of the rules; every edit re-serializes it into the draft.
+        auto cfg = std::make_shared<matchpolicy::Config>(matchpolicy::effective(draft_.matchPolicyConfig));
+
+        auto* fallbackRow = new QHBoxLayout;
+        fallbackRow->addWidget(new QLabel(::openbc::i18n::t("options.fc_fallback")));
+        auto* fallback = new QComboBox;
+        for (const QString& id : matchpolicy::methodIds()) fallback->addItem(matchpolicy::methodLabel(id), id);
+        fallback->setCurrentIndex(std::max(0, fallback->findData(cfg->fallback)));
+        fallbackRow->addWidget(fallback);
+        fallbackRow->addStretch(1);
+        v->addLayout(fallbackRow);
+
+        auto* table = new QTableWidget(0, 3);
+        table->setHorizontalHeaderLabels({::openbc::i18n::t("options.fc_col_type"),
+                                          ::openbc::i18n::t("options.fc_col_ext"),
+                                          ::openbc::i18n::t("options.fc_col_method")});
+        table->horizontalHeader()->setStretchLastSection(false);
+        table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+        table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+        table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+        table->setColumnWidth(0, 130);
+        table->setSelectionBehavior(QAbstractItemView::SelectRows);
+        table->setSelectionMode(QAbstractItemView::SingleSelection);
+        table->verticalHeader()->setVisible(false);
+        v->addWidget(table, 1);
+
+        // Table -> cfg -> draft. Guarded so filling the table does not write back.
+        auto loading = std::make_shared<bool>(false);
+        const auto pushToDraft = [this, cfg, table, fallback, loading]() {
+            if (*loading) return;
+            cfg->fallback = fallback->currentData().toString();
+            cfg->rules.clear();
+            for (int row = 0; row < table->rowCount(); ++row) {
+                matchpolicy::Rule rule;
+                rule.name = table->item(row, 0) ? table->item(row, 0)->text().trimmed() : QString();
+                rule.extensions = matchpolicy::normalizeExtensions(
+                    (table->item(row, 1) ? table->item(row, 1)->text() : QString()).split(','));
+                if (auto* combo = qobject_cast<QComboBox*>(table->cellWidget(row, 2)))
+                    rule.method = combo->currentData().toString();
+                if (rule.name.isEmpty()) rule.name = QStringLiteral("custom");
+                cfg->rules.push_back(rule);
+            }
+            draft_.matchPolicyConfig = matchpolicy::serialize(*cfg);
+            markDirty();
+        };
+
+        const auto addRow = [table, pushToDraft](const matchpolicy::Rule& rule) {
+            const int row = table->rowCount();
+            table->insertRow(row);
+            table->setItem(row, 0, new QTableWidgetItem(rule.name));
+            table->setItem(row, 1, new QTableWidgetItem(rule.extensions.join(", ")));
+            auto* combo = new QComboBox;
+            for (const QString& id : matchpolicy::methodIds()) combo->addItem(matchpolicy::methodLabel(id), id);
+            combo->setCurrentIndex(std::max(0, combo->findData(rule.method)));
+            table->setCellWidget(row, 2, combo);
+            QObject::connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), table,
+                             [pushToDraft](int) { pushToDraft(); });
+        };
+
+        const auto fill = [table, cfg, fallback, addRow, loading]() {
+            *loading = true;
+            table->setRowCount(0);
+            fallback->setCurrentIndex(std::max(0, fallback->findData(cfg->fallback)));
+            for (const matchpolicy::Rule& rule : cfg->rules) addRow(rule);
+            *loading = false;
+        };
+        fill();
+
+        auto* buttons = new QHBoxLayout;
+        auto* add = new QPushButton(::openbc::i18n::t("options.fc_add"));
+        auto* remove = new QPushButton(::openbc::i18n::t("options.fc_remove"));
+        auto* reset = new QPushButton(::openbc::i18n::t("options.fc_reset"));
+        buttons->addWidget(add);
+        buttons->addWidget(remove);
+        buttons->addStretch(1);
+        buttons->addWidget(reset);
+        v->addLayout(buttons);
+        v->addWidget(note(::openbc::i18n::t("options.fc_hint")));
+
+        connect(table, &QTableWidget::itemChanged, this, [pushToDraft](QTableWidgetItem*) { pushToDraft(); });
+        connect(fallback, qOverload<int>(&QComboBox::currentIndexChanged), this, [pushToDraft](int) { pushToDraft(); });
+        connect(add, &QPushButton::clicked, this, [table, addRow, pushToDraft]() {
+            addRow({QStringLiteral("custom"), {}, QStringLiteral("md5")});
+            table->setCurrentCell(table->rowCount() - 1, 1);
+            table->editItem(table->item(table->rowCount() - 1, 1));
+            pushToDraft();
+        });
+        connect(remove, &QPushButton::clicked, this, [table, pushToDraft]() {
+            const int row = table->currentRow();
+            if (row >= 0) {
+                table->removeRow(row);
+                pushToDraft();
+            }
+        });
+        connect(reset, &QPushButton::clicked, this, [this, cfg, fill]() {
+            *cfg = matchpolicy::parse(matchpolicy::builtinLine());
+            fill();
+            draft_.matchPolicyConfig.clear();  // empty = built-in defaults
+            markDirty();
+        });
+        // The table is only meaningful while per-file-type matching is on.
+        const auto syncEnabled = [table, fallback, add, remove, reset](bool on) {
+            for (QWidget* w : std::initializer_list<QWidget*>{table, fallback, add, remove, reset}) w->setEnabled(on);
+        };
+        syncEnabled(draft_.matchByFileType);
+        connect(enabled, &QCheckBox::toggled, this, syncEnabled);
         return page;
     }
 

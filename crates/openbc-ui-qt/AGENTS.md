@@ -42,7 +42,7 @@ Rust symbol names (`openbc_*`) are the C++/Rust contract; moving a Rust file nev
 | C API header for the shim | `<kind>_compare_api.h` next to the viewer | `picture_compare_api.h` |
 | Session-history kind | `"<kind>-compare"` | `"table-compare"` |
 
-Kinds today: folder, text, picture, model3d, table, registry, hex, media.
+Kinds today: folder, text, picture, model3d, table, registry, hex, media, binary (session kind `version-compare`, class `BinaryCompareViewer`, `viewers/binary/`, `src/ffi/binary_compare.rs`).
 
 ## 3. Every compare viewer must
 
@@ -94,7 +94,7 @@ translation unit. The legacy viewers are still header-only and compiled as a sin
 
 ## 7. Command line
 
-`openbc [--compare folder|text|picture|3d|table|registry|hex|media] [LEFT [RIGHT]]`, `--dependency-check`,
+`openbc [--compare folder|text|picture|3d|table|registry|hex|binary-diff|media] [LEFT [RIGHT]]`, `--dependency-check`,
 `--version`, `--help`. Auto-detect lives in `cli_options.cpp` (`resolveLaunchKind`) and reuses `file_kinds.h`;
 add new kinds there, never in `main_window.h`.
 

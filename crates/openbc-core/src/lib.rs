@@ -9,6 +9,8 @@
 //! | [`image_compare`]  | Image options/verdicts and the reference per-pixel semantics    |
 //! | [`model3d`]        | 3D mesh, options, results and the loader extension point        |
 //! | [`hex_compare`]    | Byte-level difference runs                                      |
+//! | [`binary_compare`] | Binary model, version diff and result tree (no parsing)         |
+//! | [`hash_policy`]    | Per-file-type size/timestamp vs. hash-algorithm matching policy |
 //! | [`meta_compare`]   | Generic property-table comparison                               |
 //! | [`table_compare`]  | CSV / spreadsheet row alignment, cell diff and copy edits       |
 //! | [`registry_compare`] | Windows `.reg` parsing, diff, copy edits and writing          |
@@ -16,8 +18,12 @@
 //!
 //! Everything here is pure: no I/O, no threads. Compute backends live elsewhere.
 
+/// Binary (PE / ELF / Mach-O) version comparison: model, diff and result tree.
+pub mod binary_compare;
 /// Byte-level comparison primitives for hex compare.
 pub mod hex_compare;
+/// Per-file-type content matching policy (size/timestamp vs. hash algorithm).
+pub mod hash_policy;
 /// Image comparison domain types (options, verdicts, pixel probe).
 pub mod image_compare;
 /// Feature-gated Rust memory instrumentation for large-file performance tests.
@@ -41,6 +47,7 @@ mod encoding;
 mod folder;
 mod telemetry;
 
+pub use hash_policy::{FileTypeRule, HashAlgorithm, MatchMethod, MatchPolicy};
 pub use folder::{
     compare_directory_entries, compare_file_content, compare_metadata, ComparisonStatus,
     ContentDigest, DirectoryEntry, EntryMetadata, EntryPath, FolderComparison,

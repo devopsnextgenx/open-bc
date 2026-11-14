@@ -4,8 +4,9 @@ version = "0.1.0"
 edition.workspace = true
 
 [features]
-default = ["qt"]
+default = ["qt", "binary"]
 gpu = ["openbc-engine/gpu"]
+binary = ["openbc-engine/binary"]
 mem-stats = ["openbc-engine/mem-stats"]
 qt = ["dep:cxx", "dep:cxx-qt", "dep:cxx-qt-build"]
 
@@ -22,7 +23,7 @@ anyhow.workspace = true
 cxx = { version = "1.0", optional = true }
 cxx-qt = { workspace = true, optional = true }
 openbc-core = { path = "../openbc-core" }
-openbc-engine = { path = "../openbc-engine" }
+openbc-engine = { path = "../openbc-engine", default-features = false }
 openbc-observability = { path = "../openbc-observability" }
 openbc-vfs = { path = "../openbc-vfs", features = ["sftp", "ftp", "network"] }
 serde = { workspace = true, features = ["derive"] }

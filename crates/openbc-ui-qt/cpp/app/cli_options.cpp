@@ -26,9 +26,8 @@ QString kindForType(const QString& type) {
     if (t == "image" || t == "picture" || t == "pictures") return "picture-compare";
     if (t == "excel" || t == "csv" || t == "table" || t == "spreadsheet") return "table-compare";
     if (t == "reg" || t == "registry") return "registry-compare";
+    if (t == "binary-diff" || t == "bindiff" || t == "version" || t == "exe" || t == "dll" || t == "elf" || t == "pe" || t == "macho") return "version-compare";
     const QString canonical = canonicalSessionKind(t);
-    // The version viewer does not exist yet; binaries fall back to hex.
-    if (canonical == "version-compare") return "hex-compare";
     if (canonical == "folder-merge" || canonical == "folder-sync") return "folder-compare";
     if (canonical == "text-merge" || canonical == "text-edit") return "text-compare";
     return canonical;
@@ -53,7 +52,7 @@ QString cliHelpText() {
         "  --select-left-file PATH   remember a file as the left side\n"
         "  --compare-to-left-file PATH   compare a file to the remembered left file\n"
         "  --compare <type>      force a viewer instead of auto-detecting from the paths:\n"
-        "                        folder | text | picture | 3d | table | registry | hex | media\n"
+        "                        folder | text | picture | 3d | table | registry | hex | binary-diff | media\n"
         "  --dependency-check    verify required .dll/.so files and exit (0 = ok, 2 = missing)\n"
         "  --version             print the version and exit\n"
         "  -h, --help            show this help\n\n"
@@ -92,7 +91,7 @@ LaunchRequest parseLaunchArguments(const QStringList& arguments) {
             } else if (i + 1 < arguments.size()) {
                 r.compareType = arguments[++i];
             } else {
-                r.error = "--compare needs a type (folder, text, picture, 3d, table, registry, hex, media)";
+                r.error = "--compare needs a type (folder, text, picture, 3d, table, registry, hex, version, media)";
                 return r;
             }
             if (kindForType(r.compareType).isEmpty()) {
@@ -138,7 +137,6 @@ QString resolveLaunchKind(const LaunchRequest& request, QString* error) {
     ViewerKind chosen = ViewerKind::Text;
     if (a == b) chosen = a;  // differing kinds (e.g. .csv vs .txt) compare as plain text
     QString kind = sessionKindForViewer(chosen);
-    if (kind == "version-compare") kind = "hex-compare";
     return kind;
 }
 

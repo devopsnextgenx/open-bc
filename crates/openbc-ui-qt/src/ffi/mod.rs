@@ -6,6 +6,7 @@
 //! independent of this module layout.
 
 pub(crate) mod common;
+pub(crate) mod match_policy;
 #[cfg(feature = "mem-stats")]
 pub mod mem_stats;
 pub(crate) mod model3d_compare;
@@ -15,6 +16,7 @@ pub(crate) mod syntax_mappings;
 pub mod text_engine;
 pub(crate) mod vfs_bridge;
 
+pub mod binary_compare;
 pub mod hex_compare;
 pub mod media_compare;
 pub mod registry_compare;

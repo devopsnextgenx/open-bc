@@ -21,7 +21,7 @@ flowchart LR
 
 ## Crate responsibilities
 
-- `openbc-core`: dependency-light models, comparison policy, result types, and pure diff algorithms.
+- `openbc-core`: dependency-light models, comparison policy (including the per-file-type `hash_policy`), result types, the binary-compare model/diff/tree, and pure diff algorithms.
 - `openbc-vfs`: `AsyncVfs`, metadata, directory streams, and local/remote adapters. Adapters must expose lazy directory levels.
 - `openbc-compute`: execution policy and backends. It chooses CPU or GPU without leaking backend types to callers.
 - `openbc-engine`: bounded Tokio pipelines. It requests directory levels progressively, performs metadata comparison first, then schedules phase-two content work.
@@ -44,7 +44,7 @@ flowchart LR
 - GPU transfers are chunked and bounded. A future implementation should use pinned or staging buffers and avoid mapping a file larger than the configured memory budget.
 - Memory mapping is an optimization, not a correctness requirement. Do not map remote files or unbounded files; stream them through bounded buffers.
 - If no compatible adapter is available, initialization fails into the CPU backend without affecting scan correctness.
-- Hash algorithm selection belongs to core policy; backend implementations must return equivalent results for the same input.
+- Hash algorithm selection belongs to core policy (`MatchPolicy`, MD5 by default for folder compare); backend implementations must return equivalent results for the same input.
 
 ## Image compare
 
@@ -68,6 +68,19 @@ Memory is bounded: the event channel holds at most four events (each can carry a
 - `openbc-engine::media_compare` prepares three aligned, multiresolution peak pyramids for supported audio-file pairs: left, right, and absolute sample difference. Decoding and peak preparation run on Rayon alongside the metadata reads.
 - The Media Compare C ABI exposes peak buffers only for the lifetime of its result handle. `openbc-ui-qt::MediaCompareViewer` copies them into `AudioDiffVisualizer`, displayed above the metadata table; audio decode failures appear in the visualization area without failing metadata comparison.
 - The visualization playhead follows the active player. Clicking or dragging its timeline seeks the left player and also the right when Link seek is enabled.
+
+## Binary compare
+
+Binary compare (the `version-compare` session kind, shown as "Binary Compare") reads two versions of a PE / ELF / Mach-O file and never modifies either:
+
+- `openbc-core::binary_compare`: `BinaryModel` (metadata, sections and segments, exported / imported / local symbols, functions, strings), `diff_binaries` and the result tree (`build_tree`, `flatten`). Elements are classified Unchanged / Modified / Removed / Added by *identity* (name), never by address, so a relocated function is not a change. No parser lives here.
+- `openbc-compute::binary` (feature `binary`): LIEF extraction plus SHA-256 of the file, each section and each function's bytes, and a 64-bit SimHash that reports how similar two modified functions are. Runs on Rayon.
+- `openbc-engine::binary_compare`: one actor per tab. Both files are parsed in parallel on Rayon, each side failing independently with its own path-scoped error; toggling "show unchanged" rebuilds the tree from the cached diff without re-parsing. Without the feature the actor reports "built without binary compare support".
+- `openbc-ui-qt`: `ffi/binary_compare.rs` exposes the result as a pre-order row list; `BinaryCompareViewer` copies events onto the GUI thread (`BackendChannel`) and shows them in a virtualized `QAbstractItemModel` / `QTreeView`.
+
+## Folder compare file matching
+
+`openbc-core::hash_policy::MatchPolicy` decides, per file extension, whether two same-named files are compared by **size + timestamp** or by a **content hash** (MD5 default, SHA-1, SHA-256, SHA-512). Defaults: binaries, archives, media and unknown types by MD5; text and source code by size + timestamp. `openbc-engine::compare_folder_sides_with_policy` applies it after the cheap size check; the explicit "compare contents" / "ignore timestamps" toggles still override it. The user edits the policy in Tools > Options > Folder Compare; it is stored in `preferences.ini` and handed to the backend as one text line.
 
 ## Failure model
 

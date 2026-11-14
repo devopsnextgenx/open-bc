@@ -1,5 +1,19 @@
+/// Binary Compare links LIEF, whose crate (`lief-ffi`) declares its two native libraries
+/// (`lief-sys`, `LIEF`) without a link kind. rustc then treats them as dynamic: a Rust `staticlib`
+/// does not carry them, and the final C++ link fails with thousands of undefined
+/// `cxxbridge1$...` / LIEF references. Re-declaring them as bundled statics copies them into
+/// `libopenbc_ui_qt.a`. The names still appear in `native-static-libs`, so the top-level
+/// CMakeLists.txt removes them from the imported target's link interface.
+fn link_lief() {
+    if std::env::var_os("CARGO_FEATURE_BINARY").is_some() {
+        println!("cargo:rustc-link-lib=static:+bundle=lief-sys");
+        println!("cargo:rustc-link-lib=static:+bundle=LIEF");
+    }
+}
+
 #[cfg(feature = "qt")]
 fn main() {
+    link_lief();
     // The views are mostly header-only and pulled in through cpp/app/qt_app.cpp, so track the
     // whole cpp/ tree (headers included) or editing a .h file would not trigger a rebuild.
     println!("cargo:rerun-if-changed=src");
@@ -111,4 +125,6 @@ fn is_standalone_tool(path: &std::path::Path) -> bool {
 }
 
 #[cfg(not(feature = "qt"))]
-fn main() {}
+fn main() {
+    link_lief();
+}

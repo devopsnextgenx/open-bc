@@ -6,7 +6,7 @@
 //
 // OptionsStore: the single owner of the *committed* options.
 //
-// PERSISTENCE: Appearance, syntaxMappings, Archive Types, and Folder Filters are saved/loaded (preferences.ini);
+// PERSISTENCE: Appearance, syntaxMappings, Archive Types, Folder Filters and Folder Compare (file matching) are saved/loaded (preferences.ini);
 // other pages are still in-memory. The dialog edits a copy of AppOptions; OK/Apply hands it to
 // OptionsStore::commit(), which persists implemented fields and notifies listeners.
 // The persisted profile includes `syntaxMappings`: OptionsStore hands it to
@@ -25,6 +25,7 @@
 #include <QJsonObject>
 #include <QSettings>
 
+#include "options/match_policy.h"
 #include "options/text_editor_selection.h"
 #include <QList>
 #include <QMap>
@@ -191,6 +192,14 @@ struct AppOptions {
     QList<FolderFilterPreset> folderFilterPresets = defaultFolderFilterPresets();
     QString defaultFolderFilterPreset;
 
+    // ---- Folder Compare: file matching -------------------------------------
+    // true: each file type is compared by size/timestamp or by a hash (matchPolicyConfig);
+    // false: only the explicit toolbar toggles decide (older behaviour).
+    bool matchByFileType = true;
+    // One-line policy (options/match_policy.h). Empty = the built-in defaults (MD5 for binaries,
+    // archives and unknown types; size/timestamp for text and source code).
+    QString matchPolicyConfig;
+
     // ---- Commands ---------------------------------------------------------
     bool largeToolbarButtonsWithText = true;
     // Key: view name ("Home", "Folder Compare", ...).
@@ -249,6 +258,8 @@ public:
         SyntaxMappingStore::instance().setMappings(options_.syntaxMappings);
         options_.syntaxMappings = SyntaxMappingStore::instance().mappings();
         persist();
+        // Pushed to the backend here so the very next folder comparison uses it.
+        matchpolicy::apply(options_.matchByFileType, options_.matchPolicyConfig);
         for (const auto& listener : listeners_) listener(options_);
     }
 
@@ -350,6 +361,9 @@ public:
         options_.decompilerJarPath = p.value("ArchiveTypes/DecompilerJarPath").toString();
         options_.javaBinPath =
             p.value("ArchiveTypes/JavaBinPath", options_.javaBinPath).toString();
+        options_.matchByFileType = p.value("folderCompare/matchByFileType", options_.matchByFileType).toBool();
+        options_.matchPolicyConfig = p.value("folderCompare/matchPolicy").toString();
+        matchpolicy::apply(options_.matchByFileType, options_.matchPolicyConfig);
     }
 
     // Writes the saved profile to preferences.ini.
@@ -393,6 +407,8 @@ public:
         p.setValue("folderFilters/presets",
                    QString::fromUtf8(QJsonDocument(filterPresets).toJson(QJsonDocument::Compact)));
         p.setValue("folderFilters/defaultPreset", options_.defaultFolderFilterPreset);
+        p.setValue("folderCompare/matchByFileType", options_.matchByFileType);
+        p.setValue("folderCompare/matchPolicy", options_.matchPolicyConfig);
         p.remove("theme/dark");   // superseded by appearance/theme
         p.sync();
     }

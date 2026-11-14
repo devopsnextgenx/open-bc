@@ -19,5 +19,8 @@ lofty = "0.22"
 image = "0.25"
 
 [features]
+default = ["binary"]
+# Binary (PE/ELF/Mach-O) compare actor; needs openbc-compute's LIEF-backed `binary` feature.
+binary = ["openbc-compute/binary"]
 gpu = ["openbc-compute/gpu"]
 mem-stats = ["openbc-core/mem-stats"]

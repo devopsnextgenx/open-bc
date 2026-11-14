@@ -19,8 +19,7 @@
 //
 //  Target comparison type
 //   * folders                        -> Folder Compare.
-//   * one file / two files same kind -> that kind's viewer (Version -> Hex: there is
-//                                       no version viewer).
+//   * one file / two files same kind -> that kind's viewer (Version -> Binary Compare).
 //   * two files of different kinds   -> Hex Compare, the only viewer that accepts any
 //                                       pair, with a message saying so.
 //
@@ -53,7 +52,7 @@
 
 namespace openbc::app::drop {
 
-enum class TabKind { Home, Folder, Text, Picture, Model3d, Table, Registry, Hex, Media };
+enum class TabKind { Home, Folder, Text, Picture, Model3d, Table, Registry, Hex, Media, Binary };
 enum class Occupancy { Empty, Populated, Dirty };
 enum class Side { Left, Right };
 enum class Action { Reject, ApplyToTab, ReplaceEmptyTab, OpenNewTab };
@@ -95,11 +94,12 @@ inline const char* name(TabKind k) {
     case TabKind::Registry: return "Registry Compare";
     case TabKind::Hex: return "Hex Compare";
     case TabKind::Media: return "Media Compare";
+    case TabKind::Binary: return "Binary Compare";
     }
     return "Compare";
 }
 
-// Version has no viewer of its own; it is byte-level data, so it goes to Hex.
+// Version files (compiled binaries / shared libraries) have their own Binary Compare viewer.
 inline TabKind tabKindFor(ViewerKind k) {
     switch (k) {
     case ViewerKind::Text: return TabKind::Text;
@@ -108,7 +108,7 @@ inline TabKind tabKindFor(ViewerKind k) {
     case ViewerKind::Table: return TabKind::Table;
     case ViewerKind::Media: return TabKind::Media;
     case ViewerKind::Registry: return TabKind::Registry;
-    case ViewerKind::Version:
+    case ViewerKind::Version: return TabKind::Binary;
     case ViewerKind::Hex: return TabKind::Hex;
     }
     return TabKind::Text;

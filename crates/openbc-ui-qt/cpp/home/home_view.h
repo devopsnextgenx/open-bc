@@ -162,7 +162,7 @@ inline const QList<SessionTypeSpec>& sessionTypes() {
         {"model3d-compare", "3D Compare", false, true},
         {"registry-compare", "Registry Compare", false, true},
         {"table-compare", "Table Compare", false, true},
-        {"version-compare", "Version Compare", false, true},
+        {"version-compare", "Binary Compare", false, true},
     };
     return types;
 }

@@ -106,6 +106,26 @@ impl ComputeDispatcher {
         HashResult { digest, backend }
     }
 
+    /// Digest `bytes` with the chosen algorithm on the CPU pool.
+    ///
+    /// Unlike [`Self::hash_bytes`] (SHA-256, GPU-policy aware) this serves the per-file-type
+    /// folder-compare policy, where MD5 is the default.
+    pub fn hash_bytes_with(&self, algorithm: openbc_core::HashAlgorithm, bytes: &[u8]) -> Vec<u8> {
+        let started = Instant::now();
+        let digest = self.cpu_pool.install(|| crate::digest::digest_bytes(algorithm, bytes));
+        openbc_observability::record(
+            "openbc-compute",
+            "hash_bytes_with",
+            started.elapsed(),
+            Some((bytes.len(), 0)),
+            None,
+            None,
+            None,
+            Some(algorithm.id().to_owned()),
+        );
+        digest
+    }
+
     fn select_backend(&self, len: usize) -> BackendKind {
         let eligible = gpu_policy::gpu_eligible(len as u64, gpu_policy::GPU_DEFAULT_MIN_BYTES);
         if eligible && self.gpu_available() {

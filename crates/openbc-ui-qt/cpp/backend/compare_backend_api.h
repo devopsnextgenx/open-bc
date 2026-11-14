@@ -1,6 +1,7 @@
 // compare_backend_api.h
 // ---------------------------------------------------------------------------
-// C ABI of openbc-ui-qt for the Table / Registry / Hex / Media compare tabs
+// C ABI of openbc-ui-qt for the Table / Registry / Hex / Binary / Media compare tabs
+// and the folder match policy
 // (table_compare_ffi.rs, registry_compare_ffi.rs, hex_compare_ffi.rs,
 // media_compare_ffi.rs). Pure declarations: every file is loaded, parsed and
 // compared by openbc-engine / openbc-compute / openbc-core. Strings are
@@ -115,6 +116,42 @@ void openbc_hex_window_destroy(OpenBcHexWindow*);
 uint64_t openbc_hex_window_id(const OpenBcHexWindow*);
 uint64_t openbc_hex_window_offset(const OpenBcHexWindow*);
 const uint8_t* openbc_hex_window_bytes(const OpenBcHexWindow*, uint8_t side, size_t* len);
+
+// ----------------------------------------------------------------- binary
+// Binary Compare (PE / ELF / Mach-O, read-only). Rows are a pre-order tree list: rebuild the
+// hierarchy from `depth`. Strings are (pointer, length), valid while the summary lives.
+// Kind codes follow openbc_core::binary_compare::NodeKind, state codes ChangeState
+// (0 unchanged, 1 modified, 2 removed, 3 added, 255 none).
+struct OpenBcBinarySession;
+struct OpenBcBinarySummary;
+OpenBcBinarySession* openbc_binary_session_create(const char* left, const char* right,
+                                                  OpenBcEventCallback cb, void* user);
+void openbc_binary_session_destroy(OpenBcBinarySession*);
+uint8_t openbc_binary_reload(const OpenBcBinarySession*);
+uint8_t openbc_binary_show_unchanged(const OpenBcBinarySession*, uint8_t show);
+void openbc_binary_summary_destroy(OpenBcBinarySummary*);
+size_t openbc_binary_summary_row_count(const OpenBcBinarySummary*);
+uint32_t openbc_binary_summary_row_depth(const OpenBcBinarySummary*, size_t i);
+uint8_t openbc_binary_summary_row_kind(const OpenBcBinarySummary*, size_t i);
+uint8_t openbc_binary_summary_row_state(const OpenBcBinarySummary*, size_t i);
+uint8_t openbc_binary_summary_row_has_children(const OpenBcBinarySummary*, size_t i);
+const uint8_t* openbc_binary_summary_row_label(const OpenBcBinarySummary*, size_t i, size_t* len);
+const uint8_t* openbc_binary_summary_row_detail(const OpenBcBinarySummary*, size_t i, size_t* len);
+size_t openbc_binary_summary_total(const OpenBcBinarySummary*, uint8_t state);
+uint8_t openbc_binary_summary_file_state(const OpenBcBinarySummary*);  // 0 same, 1 differ, 255 unknown
+uint8_t openbc_binary_summary_changes_only(const OpenBcBinarySummary*);
+const uint8_t* openbc_binary_summary_error(const OpenBcBinarySummary*, uint8_t side, size_t* len);
+const uint8_t* openbc_binary_summary_label(const OpenBcBinarySummary*, uint8_t side, size_t* len);
+
+// ------------------------------------------------------- folder match policy
+// Per-file-type matching for Folder Compare (size/timestamp vs. hash algorithm). One text line,
+// documented in openbc-core hash_policy.rs. Strings returned here are freed with
+// openbc_match_policy_free.
+void openbc_match_policy_set(const char* config, uint8_t enabled);
+char* openbc_match_policy_builtin();
+char* openbc_match_policy_method_for(const char* file_name);
+uint8_t openbc_match_policy_enabled();  // 1 when a per-file-type policy is installed
+void openbc_match_policy_free(char*);
 
 // ------------------------------------------------------------------ media
 struct OpenBcMediaSession;

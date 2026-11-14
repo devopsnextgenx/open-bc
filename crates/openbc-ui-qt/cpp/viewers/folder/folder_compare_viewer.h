@@ -67,6 +67,7 @@
 #include "common/archive_support.h"
 #include "common/compare_extensions.h"
 #include "common/file_kinds.h"
+#include "options/match_policy.h"
 #include "common/path_selector.h"
 #include "common/file_change_controller.h"
 #include "common/java_class_support.h"
@@ -836,6 +837,8 @@ public:
   std::function<void(const QString &, const QString &)> onRegistryCompare;
   std::function<void(const QString &, const QString &)> onMediaCompare;
   std::function<void(const QString &, const QString &)> onHexCompare;
+  // Compiled binaries / shared libraries (.exe .dll .so .dylib ...): Binary Compare.
+  std::function<void(const QString &, const QString &)> onBinaryCompare;
   std::function<void(const QString &, const QString &)> onNewFolderCompare;
   std::function<void(const QString &, const QString &)> onComparisonRequested;
 
@@ -1095,9 +1098,15 @@ public:
     };
     if (!left.isEmpty() && !right.isEmpty()) {
       log(::openbc::i18n::t("folder.load_comparison", QDir::toNativeSeparators(left), QDir::toNativeSeparators(right)));
-      log(contentsAction_->isChecked()
-              ? ::openbc::i18n::t("folder.comparing_folder_contents_byte_for_byte")
-              : ::openbc::i18n::t("folder.comparing_folder_structure_size_and_timestamp"));
+      if (contentsAction_->isChecked()) {
+        log(::openbc::i18n::t("folder.comparing_folder_contents_byte_for_byte"));
+      } else if (!timestampsAction_->isChecked() && matchpolicy::enabled()) {
+        // Per-file-type matching (Tools > Options > Folder Compare): say what "default" means.
+        log(::openbc::i18n::t("folder.comparing_per_file_type",
+                              matchpolicy::methodLabel(matchpolicy::methodFor(QString()))));
+      } else {
+        log(::openbc::i18n::t("folder.comparing_folder_structure_size_and_timestamp"));
+      }
     } else {
       log(::openbc::i18n::t("folder.listing_folder", QString(left.isEmpty() ? "right" : "left"), QDir::toNativeSeparators(left.isEmpty() ? right : left)));
     }
@@ -1810,6 +1819,12 @@ private:
                            rightPath)) {
       openViewerComparePaths(leftPath, rightPath, "media",
                              &FolderCompareViewer::onMediaCompare);
+      return;
+    }
+    if (shouldOpenAsViewer(onBinaryCompare, isBinaryComparePath, leftPath,
+                           rightPath)) {
+      openViewerComparePaths(leftPath, rightPath, "binary",
+                             &FolderCompareViewer::onBinaryCompare);
       return;
     }
     if (onTextCompare) {
@@ -2657,6 +2672,13 @@ private:
         const QString rightPath = ctx.side == Side::Right ? ctx.path : chosen;
         openTextComparePaths(leftPath, rightPath);
       }
+    } else if (action == "Compare as Binary") {
+      const QString leftPath =
+          ctx.side == Side::Left ? ctx.path : ctx.otherPath;
+      const QString rightPath =
+          ctx.side == Side::Right ? ctx.path : ctx.otherPath;
+      openViewerComparePaths(leftPath, rightPath, "binary",
+                             &FolderCompareViewer::onBinaryCompare);
     } else if (action == "Compare as Hex") {
       const QString leftPath =
           ctx.side == Side::Left ? ctx.path : ctx.otherPath;
@@ -2869,6 +2891,8 @@ private:
     if (!ctx.isDir) {
       addNodeAction(&menu, ctx, "Compare To...", {}, "F7");
       addNodeAction(&menu, ctx, "Align With...", {}, "F6");
+      if (onBinaryCompare)
+        addNodeAction(&menu, ctx, "Compare as Binary");
       if (onHexCompare)
         addNodeAction(&menu, ctx, "Compare as Hex");
     }

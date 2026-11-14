@@ -13,6 +13,7 @@ Files in this folder
 | `appearance_controller.h`, `appearance_state.h` | Appearance behaviour (theme, colours) and the runtime table the style code reads |
 | `text_font.h` | Text Compare font + change notifier |
 | `syntax_mappings.h` | Syntax Highlighting rules store |
+| `match_policy.h` | Folder Compare file-matching policy: parse / serialize the one-line form, push it to the backend |
 | `../common/compare_font.h` | Shared DejaVu Sans Mono default for file-compare viewers |
 | `../common/java_class_support.*`, `../common/java_decompiler_adapter.*` | CFR-backed Java class decompilation and raw byte display |
 Rule: a new setting = field in `AppOptions` + control in `options_dialog.h` + load/persist in `OptionsStore` + behaviour in a controller here. Do not add settings logic to `main_window.h` or the viewers beyond reading the result.
@@ -42,6 +43,7 @@ To implement a page: (1) load/persist its fields in `OptionsStore`, (2) add a li
 | Appearance | Saved by `OptionsStore` (`appearance/*` in preferences.ini), applied by `AppearanceController` (`appearance_controller.h`). Theme + Preview (`OptionsStore::previewTheme`, reverted on Cancel; `View > Dark Theme` commits the same option). File Compare viewer default font: DejaVu Sans Mono (system fixed-width fallback); Text Compare's custom font remains configurable via `QFontComboBox` and is pushed to `LineNumberEditor::applyEditorFont`. Colors go through `appearance::state()` (`appearance_state.h`, read by `style/qt_style.h`): Folder Views (Default text/Folder info, Selection, Unknown/Same/Orphan/Older/Newer/Different, Log panel), File Views (Default text, Line numbers, Selection, Different/Left only/Right only/Unimportant), stripes, center gradient (`#folderGutter`), folder-icon coloring. **No consumer yet** (kept, no effect): Folder Views "Filtered out"/"Merge colors", File Views "Same", all Picture Compare colors. |
 | Archive Types | `javaDecompilerEnabled`, `decompilerJarPath`, `javaBinPath` (`ArchiveTypes/*` in preferences.ini); Java class decompilation reads the current values for each operation |
 | Folder Filters | Named include/exclude file and folder masks plus the default preset for new folder comparisons (`folderFilters/*` in preferences.ini) |
+| Folder Compare | Per-file-type matching: size/timestamp or a hash algorithm (MD5 default, SHA-1, SHA-256, SHA-512) per extension group, a fallback for unlisted types, and an on/off switch (`matchByFileType`, `matchPolicyConfig`; `folderCompare/*` in preferences.ini). Edited in `options_dialog.h` (`buildFolderCompare`), serialized by `match_policy.h`, evaluated by `openbc-core::hash_policy`, installed in the backend by `OptionsStore::load()/commit()` via `openbc_match_policy_set`. Empty `matchPolicyConfig` = built-in defaults. Toolbar "Compare contents" / "Ignore timestamps" still override it |
 
 ## In progress (UI only)
 | Page | Fields (AppOptions) | Where it should take effect |

@@ -52,7 +52,7 @@ static void testHome() {
         {ViewerKind::Picture, TabKind::Picture}, {ViewerKind::Text, TabKind::Text},
         {ViewerKind::Table, TabKind::Table},     {ViewerKind::Registry, TabKind::Registry},
         {ViewerKind::Hex, TabKind::Hex},         {ViewerKind::Media, TabKind::Media},
-        {ViewerKind::Model3d, TabKind::Model3d}, {ViewerKind::Version, TabKind::Hex}};
+        {ViewerKind::Model3d, TabKind::Model3d}, {ViewerKind::Version, TabKind::Binary}};
     for (const auto& c : cases) {
         Decision d = route(tab(TabKind::Home), {file("/a", c.first), file("/b", c.first)});
         CHECK(d.action == Action::OpenNewTab);
@@ -146,9 +146,9 @@ static void testCompatibleReuse() {
     d = route(tab(TabKind::Table, Occupancy::Dirty, true, true),
               {file("/a.csv", ViewerKind::Table), file("/b.csv", ViewerKind::Table)});
     CHECK(d.action == Action::ApplyToTab && d.confirmDiscard);
-    // Version files land on a Hex tab (reuse).
-    d = route(tab(TabKind::Hex), {file("/a.exe", ViewerKind::Version), file("/b.dll", ViewerKind::Version)});
-    CHECK(d.action == Action::ApplyToTab && d.target == TabKind::Hex);
+    // Version files land on a Binary Compare tab (reuse).
+    d = route(tab(TabKind::Binary), {file("/a.exe", ViewerKind::Version), file("/b.dll", ViewerKind::Version)});
+    CHECK(d.action == Action::ApplyToTab && d.target == TabKind::Binary);
 }
 
 static void testDeterminism() {

@@ -110,6 +110,7 @@ Examples:
 - GPU backends: `wgpu` feature
 - SSH/SFTP: `ssh` feature
 - Windows registry compare: `windows-registry` feature
+- Binary (PE/ELF/Mach-O) parsing through LIEF: `binary` feature. Without it the Binary Compare actor still exists and reports that the build has no support, so the C ABI never changes shape
 
 **Why?** Contributors on platforms that lack a given SDK should still be able to build and test the rest of the codebase. CI matrices can selectively enable features per platform.
 

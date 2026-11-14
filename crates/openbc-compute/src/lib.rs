@@ -5,6 +5,8 @@
 //! lib.rs ........ module map + root re-exports (this file holds no logic)
 //! gpu_policy .... the one GPU size policy (1 MiB floor, 4 MiB default) every domain uses
 //! dispatcher .... ComputeDispatcher: content hashing HAL (CPU pool + optional GPU marker)
+//! digest ........ MD5 / SHA-1 / SHA-256 / SHA-512 content digests (HashAlgorithm)
+//! binary ........ LIEF extraction of PE/ELF/Mach-O into openbc-core's BinaryModel (feature `binary`)
 //! hex ........... byte-range comparison for hex compare
 //! table ......... CSV/TSV + spreadsheet decoding and parallel row diffing
 //! audio_compare . decoded PCM, multi-resolution peaks and aligned sample deltas
@@ -19,6 +21,9 @@
 
 pub mod gpu_policy;
 pub mod audio_compare;
+#[cfg(feature = "binary")]
+pub mod binary;
+pub mod digest;
 pub mod hex;
 pub mod image;
 pub mod media;

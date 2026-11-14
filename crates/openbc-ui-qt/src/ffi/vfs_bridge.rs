@@ -702,16 +702,30 @@ fn compare_folder_inner(
 ) -> Result<String, String> {
     let (left_vfs, left_network_rooted) = session_handle(left_session_id)?;
     let (right_vfs, right_network_rooted) = session_handle(right_session_id)?;
-    let comparison = runtime()
-        .block_on(openbc_engine::compare_folder_sides_with_options(
+    let left_arg = left_present.then(|| listing_path(left_path, left_network_rooted));
+    let right_arg = right_present.then(|| listing_path(right_path, right_network_rooted));
+    // Per-file-type matching (Tools > Options > Folder Compare) when installed, otherwise the
+    // legacy explicit toggles only.
+    let comparison = match super::match_policy::current() {
+        Some(policy) => runtime().block_on(openbc_engine::compare_folder_sides_with_policy(
             left_vfs,
-            left_present.then(|| listing_path(left_path, left_network_rooted)),
+            left_arg,
             right_vfs,
-            right_present.then(|| listing_path(right_path, right_network_rooted)),
+            right_arg,
             check_content,
             ignore_timestamps,
-        ))
-        .map_err(|error| error.to_string())?;
+            &policy,
+        )),
+        None => runtime().block_on(openbc_engine::compare_folder_sides_with_options(
+            left_vfs,
+            left_arg,
+            right_vfs,
+            right_arg,
+            check_content,
+            ignore_timestamps,
+        )),
+    }
+    .map_err(|error| error.to_string())?;
     let entries: Vec<_> = comparison
         .entries
         .iter()

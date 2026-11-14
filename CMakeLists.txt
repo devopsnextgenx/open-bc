@@ -100,6 +100,17 @@ corrosion_import_crate(
     ${OPENBC_RUST_FEATURE_ARGS}
 )
 
+# Binary Compare (LIEF). openbc-ui-qt/build.rs bundles LIEF's two static libraries (lief-sys and
+# LIEF) into libopenbc_ui_qt.a, but rustc still lists them in `native-static-libs`, which Corrosion
+# turns into `-llief-sys -lLIEF`. They are not on any linker search path, so drop them from the
+# imported target's link interface (the symbols are already inside the archive).
+if(TARGET openbc_ui_qt-static)
+    get_target_property(_openbc_rust_libs openbc_ui_qt-static INTERFACE_LINK_LIBRARIES)
+    if(_openbc_rust_libs)
+        list(FILTER _openbc_rust_libs EXCLUDE REGEX "(^|[^A-Za-z0-9_])(-l)?(lief-sys|LIEF)([^A-Za-z0-9_-]|$)")
+        set_property(TARGET openbc_ui_qt-static PROPERTY INTERFACE_LINK_LIBRARIES "${_openbc_rust_libs}")
+    endif()
+endif()
 
 # All C++ lives under cpp/ (include root). Headers are globbed so moc (AUTOMOC) sees every
 # class and new files need no CMake edit; CONFIGURE_DEPENDS re-runs the glob on build.

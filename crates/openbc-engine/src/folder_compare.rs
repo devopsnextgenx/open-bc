@@ -5,12 +5,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use openbc_core::{
     compare_directory_entries, ComparisonStatus, DirectoryEntry, EntryPath, FolderComparison,
-    FolderMetadata,
+    FolderMetadata, MatchMethod, MatchPolicy,
 };
 use openbc_vfs::{read_folder_level, AsyncVfs};
 
 use crate::metrics::depth_of;
-use crate::scan::{compare_file_content_by_hash, ScanError};
+use crate::scan::{compare_file_content_by_hash, compare_file_content_with, ScanError};
 
 /// Same-size files whose timestamps differ are verified by content up to this size; a timestamp
 /// alone must not make identical files look different (typical right after a copy, which stamps
@@ -111,6 +111,79 @@ pub async fn compare_folder_sides_with_options(
         bytes: Some(comparison.left.size + comparison.right.size),
         depth: Some(depth),
         note: "Tokio orchestration",
+    );
+    Ok(comparison)
+}
+
+/// Like [`compare_folder_sides_with_options`], but the strategy per file comes from `policy`.
+///
+/// For each same-named, same-sized file pair:
+///
+/// * `check_content` (explicit "compare contents"): always hash, with the algorithm the policy
+///   names for that file type (`MatchPolicy::hash_for`);
+/// * `ignore_timestamps` (explicit): equal on size alone;
+/// * otherwise the policy decides: `Hash(a)` compares `a`-digests and ignores timestamps (a rebuild
+///   or a copy changes the timestamp, not the bytes); `SizeTimestamp` compares timestamps only and
+///   reads no file bytes.
+///
+/// Size differences are always `Different`, before any byte is read.
+pub async fn compare_folder_sides_with_policy(
+    left_vfs: Arc<dyn AsyncVfs>,
+    left_path: Option<EntryPath>,
+    right_vfs: Arc<dyn AsyncVfs>,
+    right_path: Option<EntryPath>,
+    check_content: bool,
+    ignore_timestamps: bool,
+    policy: &MatchPolicy,
+) -> Result<FolderComparison, ScanError> {
+    let started = Instant::now();
+    let (left_metadata, left_entries) = read_side(left_vfs.as_ref(), left_path.as_ref()).await?;
+    let (right_metadata, right_entries) = read_side(right_vfs.as_ref(), right_path.as_ref()).await?;
+    let mut entries = compare_directory_entries(&left_entries, &right_entries);
+    for entry in &mut entries {
+        let (Some(left), Some(right)) = (&entry.left, &entry.right) else {
+            continue;
+        };
+        if left.metadata.is_dir || right.metadata.is_dir {
+            continue;
+        }
+        if left.metadata.size != right.metadata.size {
+            entry.status = ComparisonStatus::Different;
+            continue;
+        }
+        let name = left.path.0.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let hash_with = if check_content {
+            Some(policy.hash_for(&name))
+        } else if ignore_timestamps {
+            None
+        } else {
+            match policy.method_for(&name) {
+                MatchMethod::Hash(algorithm) => Some(algorithm),
+                MatchMethod::SizeTimestamp => None,
+            }
+        };
+        entry.status = if let Some(algorithm) = hash_with {
+            match compare_file_content_with(left_vfs.as_ref(), &left.path, right_vfs.as_ref(), &right.path, algorithm).await {
+                Ok(true) => ComparisonStatus::Equal,
+                Ok(false) => ComparisonStatus::Different,
+                Err(error) => ComparisonStatus::Error(error.to_string()),
+            }
+        } else if ignore_timestamps || modified_times_match(left.metadata.modified, right.metadata.modified) {
+            ComparisonStatus::Equal
+        } else {
+            newer_status(left.metadata.modified, right.metadata.modified)
+        };
+    }
+    let comparison = FolderComparison { left: left_metadata, right: right_metadata, entries };
+    openbc_observability::log("openbc-engine", "compare_folder_level", "INFO", "folder comparison complete (match policy)");
+    let depth = left_path.as_ref().map_or(0, depth_of).max(right_path.as_ref().map_or(0, depth_of));
+    record_op!(
+        "folder_compare",
+        started,
+        io: None,
+        bytes: Some(comparison.left.size + comparison.right.size),
+        depth: Some(depth),
+        note: "Tokio orchestration (match policy)",
     );
     Ok(comparison)
 }

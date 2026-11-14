@@ -113,19 +113,41 @@ pub async fn compare_file_content_by_hash(
     right_vfs: &dyn AsyncVfs,
     right_path: &EntryPath,
 ) -> Result<bool, ScanError> {
+    compare_file_content_with(
+        left_vfs,
+        left_path,
+        right_vfs,
+        right_path,
+        openbc_core::HashAlgorithm::Sha256,
+    )
+    .await
+}
+
+/// Compare two files by the digest of `algorithm` (see `openbc_core::MatchPolicy`).
+pub async fn compare_file_content_with(
+    left_vfs: &dyn AsyncVfs,
+    left_path: &EntryPath,
+    right_vfs: &dyn AsyncVfs,
+    right_path: &EntryPath,
+    algorithm: openbc_core::HashAlgorithm,
+) -> Result<bool, ScanError> {
     // One file in memory at a time: read + hash the left side and free it before the right side
     // is read (both at once doubled the peak, up to 2 x the in-memory limit). Remote providers
     // serialize on one connection anyway, so nothing is lost by not downloading in parallel.
-    let left_digest = digest_of(left_vfs, left_path).await?;
-    let right_digest = digest_of(right_vfs, right_path).await?;
+    let left_digest = digest_of(left_vfs, left_path, algorithm).await?;
+    let right_digest = digest_of(right_vfs, right_path, algorithm).await?;
     Ok(left_digest == right_digest)
 }
 
 /// Reads one file (bounded by [`read_small_file`]), hashes it on the compute pool and frees the
 /// bytes there; only the digest comes back.
-async fn digest_of(vfs: &dyn AsyncVfs, path: &EntryPath) -> Result<Vec<u8>, ScanError> {
+async fn digest_of(
+    vfs: &dyn AsyncVfs,
+    path: &EntryPath,
+    algorithm: openbc_core::HashAlgorithm,
+) -> Result<Vec<u8>, ScanError> {
     let bytes = read_small_file(vfs, path).await?;
-    Ok(tokio::task::spawn_blocking(move || shared_dispatcher().hash_bytes(&bytes).digest.to_vec()).await?)
+    Ok(tokio::task::spawn_blocking(move || shared_dispatcher().hash_bytes_with(algorithm, &bytes)).await?)
 }
 
 fn shared_dispatcher() -> &'static ComputeDispatcher {
