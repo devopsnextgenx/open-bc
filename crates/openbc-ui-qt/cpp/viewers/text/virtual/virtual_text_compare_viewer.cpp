@@ -120,8 +120,7 @@ void VirtualTextCompareViewer::buildUi() {
     toolbar_->setObjectName(QStringLiteral("textCompareToolbar"));
     toolbar_->setMovable(false);
     toolbar_->setFloatable(false);
-    toolbar_->setIconSize(QSize(20, 20));
-    toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    ::openbc::ui::toolbar::apply(toolbar_);  // look = Tools > Options > Appearance
     root->addWidget(toolbar_);
 
     auto* header = new QHBoxLayout;
@@ -884,7 +883,7 @@ void VirtualTextCompareViewer::applyRules(const QString& text) {
     };
     taskRunner_->onFailed = [this](const QString& message) {
         progress_->hide();
-        rulesStatus_->setStyleSheet(QStringLiteral("color: #e53935;"));
+        rulesStatus_->setStyleSheet(::openbc::ui::theme::textStyle(::openbc::ui::theme::Token::error));
         rulesStatus_->setText(message == QLatin1String("cancelled") ? ::openbc::i18n::t("text.cancelled") : message);
         status_->setText(::openbc::i18n::t("text.rules_not_applied").arg(message));
     };

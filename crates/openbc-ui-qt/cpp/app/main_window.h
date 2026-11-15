@@ -171,6 +171,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         QStringLiteral("io.github.devopsnextgenx.open-bc"), QIcon(QStringLiteral(":/icons/openbc.png"))));
 
     QApplication::setStyle(QStyleFactory::create("Fusion"));
+    openbc::ui::theme::applyApplicationFont(application);   // one UI font + size for both themes (style/theme.h)
     application.setPalette(openbc::ui::darkPalette());
     application.setStyleSheet(openbc::ui::applicationStyleSheet(openbc::ui::Theme::Dark));
     QDir().mkpath(SessionHistory::rootPath());

@@ -7,6 +7,7 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include "style/theme.h"
 #include <QEvent>
 #include <QHelpEvent>
 #include <QMouseEvent>
@@ -48,10 +49,10 @@ protected:
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
         p.fillRect(rect(), palette().color(QPalette::Window));
-        p.setPen(QColor(0x3a, 0x3a, 0x3a));
+        p.setPen(::openbc::ui::theme::get(::openbc::ui::theme::Token::navBorder));
         p.drawLine(0, 0, 0, height());
         const auto button = [&](const QRect& r, bool up, bool hot) {
-            if (hot) p.fillRect(r.adjusted(1, 1, -1, -1), QColor(0x44, 0x47, 0x5a));
+            if (hot) p.fillRect(r.adjusted(1, 1, -1, -1), ::openbc::ui::theme::get(::openbc::ui::theme::Token::navHot));
             p.setRenderHint(QPainter::Antialiasing, true);
             const qreal cx = r.center().x() + 0.5, cy = r.center().y() + 0.5;
             QPainterPath path;
@@ -59,8 +60,8 @@ protected:
             else    { path.moveTo(cx - 5, cy - 3); path.lineTo(cx + 5, cy - 3); path.lineTo(cx, cy + 4); }
             path.closeSubpath();
             p.setPen(Qt::NoPen);
-            p.setBrush(!isEnabled() ? QColor(0x70, 0x70, 0x70)
-                                    : hot ? QColor(0xf2, 0xc0, 0x4a) : QColor(0xd8, 0xd8, 0xd8));
+            p.setBrush(!isEnabled() ? ::openbc::ui::theme::get(::openbc::ui::theme::Token::navArrowOff)
+                                    : hot ? ::openbc::ui::theme::get(::openbc::ui::theme::Token::gold) : ::openbc::ui::theme::get(::openbc::ui::theme::Token::navArrow));
             p.drawPath(path);
             p.setRenderHint(QPainter::Antialiasing, false);
         };

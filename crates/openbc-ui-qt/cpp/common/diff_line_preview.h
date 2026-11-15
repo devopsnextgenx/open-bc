@@ -11,6 +11,7 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include "style/theme.h"
 #include <QEvent>
 #include <QFontMetrics>
 #include <QFrame>
@@ -217,8 +218,8 @@ private:
         const QColor bg = background_.alpha() ? background_ : palette().color(QPalette::Base);
         edit_->setStyleSheet(
             QStringLiteral("QLineEdit { background: %1; color: %2; border: 0px; margin: 0px; padding: 0px;"
-                           " min-height: 0px; selection-background-color: #44475a; }")
-                .arg(bg.name(), palette().color(QPalette::Text).name()));
+                           " min-height: 0px; selection-background-color: %3; }")
+                .arg(bg.name(), palette().color(QPalette::Text).name(), palette().color(QPalette::Highlight).name()));
     }
 
     void finishEdit(bool commit) {
@@ -316,8 +317,8 @@ public:
         }
         row_ = row;
         const QColor background = !row.changed         ? QColor(Qt::transparent)
-                                  : row.whitespaceOnly ? QColor(0x2d, 0x5a, 0x87)
-                                                       : QColor(0x7a, 0x2d, 0x2d);
+                                  : row.whitespaceOnly ? ::openbc::ui::theme::get(::openbc::ui::theme::Token::previewWhitespace)
+                                                       : ::openbc::ui::theme::get(::openbc::ui::theme::Token::previewChanged);
         const QColor numberText =
             openbc::ui::appearance::text("File Views/Line numbers", QGuiApplication::palette().color(QPalette::Text));
         const auto show = [&](PreviewArrow* arrow, QLabel* number, PreviewText* text, int lineNumber,

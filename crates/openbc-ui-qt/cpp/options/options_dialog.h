@@ -616,10 +616,33 @@ private:
         v->addWidget(note(::openbc::i18n::t("common.colors_that_no_view_uses_yet")));
 
         addTextFontControls(v);
+        addToolbarControls(v);
         v->addWidget(check(::openbc::i18n::t("common.color_folders_to_reflect_content"), &draft_.colorFoldersToReflectContent));
         v->addWidget(check(::openbc::i18n::t("common.use_gradient_for_center_background"), &draft_.useGradientForCenterBackground));
         v->addWidget(note(::openbc::i18n::t("common.additional_color_schemes_will_be_available")));
         return page;
+    }
+
+    // Toolbars of all compare viewers: labels under icons and icon size (style/toolbar_style.h).
+    // Smaller screens: turn labels off and pick Small icons.
+    void addToolbarControls(QVBoxLayout* v) {
+        v->addWidget(heading(::openbc::i18n::t("options.toolbar_heading")));
+        v->addWidget(check(::openbc::i18n::t("options.toolbar_show_labels"), &draft_.toolbarShowLabels));
+        auto* row = new QHBoxLayout;
+        row->addWidget(new QLabel(::openbc::i18n::t("options.toolbar_icon_size")));
+        auto* size = new QComboBox;
+        size->addItem(::openbc::i18n::t("options.toolbar_icon_small"));
+        size->addItem(::openbc::i18n::t("options.toolbar_icon_large"));
+        size->setCurrentIndex(draft_.toolbarIconSize == openbc::ui::toolbar::IconSize::Small ? 0 : 1);
+        connect(size, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int i) {
+            draft_.toolbarIconSize = i == 0 ? openbc::ui::toolbar::IconSize::Small
+                                            : openbc::ui::toolbar::IconSize::Large;
+            markDirty();
+        });
+        row->addWidget(size);
+        row->addStretch(1);
+        v->addLayout(row);
+        v->addWidget(note(::openbc::i18n::t("options.toolbar_hint")));
     }
 
     // Font of the Text Compare editors: Beyond Compare's default (else the system fixed-width font),
@@ -732,7 +755,7 @@ private:
         auto editColors = [this, tab, currentKey](std::function<void(ItemColors&)> change) {
             const QString item = currentKey();
             if (item.isEmpty()) return;
-            ItemColors colors = draft_.colorsFor(tab, item);
+            ItemColors colors = draft_.colors.value(tab + "/" + item);   // overrides only (invalid = theme default)
             change(colors);
             draft_.colors[tab + "/" + item] = colors;
             markDirty();
@@ -1293,7 +1316,7 @@ private:
                         testResult->setStyleSheet("color: palette(text);");
                     } else {
                         testResult->setText(error);
-                        testResult->setStyleSheet("color: #e06c75;");
+                        testResult->setStyleSheet(::openbc::ui::theme::textStyle(::openbc::ui::theme::Token::error));
                     }
                 });
         connect(enabled, &QCheckBox::toggled, this, [this](bool checked) {
@@ -1711,7 +1734,7 @@ private:
         remove->setEnabled(false);
         restore->setEnabled(false);
         v->addWidget(rule());
-        v->addWidget(check(::openbc::i18n::t("common.large_buttons_with_text_labels_all"), &draft_.largeToolbarButtonsWithText));
+        v->addWidget(note(::openbc::i18n::t("options.toolbar_moved")));   // labels / icon size: Appearance > Toolbars
 
         // Rows keep the binding's index in UserRole so sorting/filtering never
         // loses track of which CommandBinding a row edits.

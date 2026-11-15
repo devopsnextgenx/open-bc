@@ -715,8 +715,7 @@ private:
         bar->setObjectName("textCompareToolbar");
         bar->setMovable(false);
         bar->setFloatable(false);
-        bar->setIconSize(QSize(20, 20));
-        bar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        ::openbc::ui::toolbar::apply(bar);  // look = Tools > Options > Appearance
         homeAction_ = bar->addAction(icons::glyph(Glyph::Home), ::openbc::i18n::t("tab.home"));
         sessionsAction_ = bar->addAction(icons::glyph(Glyph::Sessions), ::openbc::i18n::t("common.sessions"));
         bar->addSeparator();
@@ -851,7 +850,7 @@ private:
         for (std::uint8_t side = 0; side < 2; ++side) {
             saveBtn_[side] = new QToolButton(this);
             saveBtn_[side]->setObjectName("saveSideBtn");  // qt_style.h paints it blue while property dirty=true
-            saveBtn_[side]->setIcon(icons::saveIcon(QColor(0xdd, 0xe0, 0xee)));
+            saveBtn_[side]->setIcon(icons::saveIcon(::openbc::ui::color::ink()));
             saveBtn_[side]->setIconSize(QSize(15, 15));
             saveBtn_[side]->setCursor(Qt::PointingHandCursor);
             saveBtn_[side]->setEnabled(false);
@@ -889,14 +888,14 @@ private:
         bottomLayout->setSpacing(0);
 
         errors_ = new QLabel(this);
-        errors_->setStyleSheet("color:#e5534b;");
+        errors_->setStyleSheet(::openbc::ui::theme::textStyle(::openbc::ui::theme::Token::error));
         errors_->setWordWrap(true);
         errors_->setContentsMargins(6, 0, 6, 0);
         errors_->hide();
         bottomLayout->addWidget(errors_);
 
         audioStatus_ = new QLabel(this);
-        audioStatus_->setStyleSheet("color:#e5a84b;");
+        audioStatus_->setStyleSheet(::openbc::ui::theme::textStyle(::openbc::ui::theme::Token::warning));
         audioStatus_->setWordWrap(true);
         audioStatus_->setContentsMargins(6, 2, 6, 2);
         audioStatus_->hide();
@@ -911,7 +910,7 @@ private:
         header->setContentsMargins(6, 2, 6, 2);
         summary_ = new QLabel(::openbc::i18n::t("common.metadata"), this);
         pendingLabel_ = new QLabel(this);
-        pendingLabel_->setStyleSheet("color:#4e9cff;");  // blue = needs saving, like the save buttons
+        pendingLabel_->setStyleSheet(::openbc::ui::theme::textStyle(::openbc::ui::theme::Token::info));  // blue = needs saving, like the save buttons
         onlyDifferences_ = new QCheckBox(::openbc::i18n::t("common.differences_only"), this);
         auto* copy = new QPushButton(::openbc::i18n::t("common.copy"), this);
         copy->setToolTip(::openbc::i18n::t("media.copy_all_rows_to_the_clipboard"));
@@ -942,11 +941,9 @@ private:
         split_ = new QSplitter(Qt::Vertical, this);
         split_->setChildrenCollapsible(false);
         split_->setHandleWidth(8);
-        // Widget-level style beats the app-wide "QSplitter::handle:vertical" rule in qt_style.h
-        // (#2d2d2d, 4px), which is nearly invisible on the dark theme.
-        split_->setStyleSheet(
-            "QSplitter::handle:vertical { background:#5a5a5a; margin:3px 0; border-radius:1px; }"
-            "QSplitter::handle:vertical:hover, QSplitter::handle:vertical:pressed { background:#4a9eff; }");
+        // Styled by the app-wide "QSplitter#mediaSplit" rule in qt_style.h (theme tokens), so the
+        // handle stays visible in both themes.
+        split_->setObjectName("mediaSplit");
         split_->addWidget(top_);
         split_->addWidget(bottom);
         split_->setStretchFactor(0, 3);  // window growth goes mostly to the video

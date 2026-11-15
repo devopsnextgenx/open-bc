@@ -389,7 +389,7 @@ private:
                 busy_ = false;
                 const bool right = e.side == 1;
                 (right ? rightInfoLabel_ : leftInfoLabel_)->setText(e.message);
-                (right ? rightInfoLabel_ : leftInfoLabel_)->setStyleSheet("color:#e5534b;");
+                (right ? rightInfoLabel_ : leftInfoLabel_)->setStyleSheet(::openbc::ui::theme::textStyle(::openbc::ui::theme::Token::error));
                 (right ? rightInfo_ : leftInfo_) = ViewInfo();
                 scene_.slot[right ? kSlotB : kSlotA].reset();
                 loaded_ = false;
@@ -705,7 +705,7 @@ private:
     // ===== actions =========================================================================
     void setStatus(const QString& text, bool emphasise) {
         statusLabel_->setText(text);
-        statusLabel_->setStyleSheet(emphasise ? "color:#e5534b; font-weight:600;" : QString());
+        statusLabel_->setStyleSheet(emphasise ? ::openbc::ui::theme::textStyle(::openbc::ui::theme::Token::error) + " font-weight:600;" : QString());
     }
 
     void swapSides() {
@@ -772,7 +772,7 @@ private:
     QToolButton* menuButton(const QString& caption, const QIcon& icon, const QString& tip, QMenu* menu) {
         auto* b = new QToolButton(toolbar_);
         b->setText(caption); b->setIcon(icon); b->setToolTip(tip);
-        b->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        ::openbc::ui::toolbar::styleButton(b);   // follows Tools > Options > Appearance
         b->setPopupMode(QToolButton::InstantPopup);
         b->setMenu(menu);
         return b;
@@ -866,8 +866,7 @@ private:
         toolbar_ = new QToolBar(this);
         toolbar_->setObjectName("textCompareToolbar");
         toolbar_->setMovable(false); toolbar_->setFloatable(false);
-        toolbar_->setIconSize(QSize(20, 20));
-        toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        ::openbc::ui::toolbar::apply(toolbar_);  // look = Tools > Options > Appearance
         for (QAction* a : modeActions_) toolbar_->addAction(a);
         toolbar_->addSeparator();
         toolbar_->addAction(actWire_);

@@ -157,7 +157,7 @@ public:
         time_ = new QLabel("0:00 / 0:00", this);
 
         error_ = new QLabel(this);
-        error_->setStyleSheet("color:#e5534b;");
+        error_->setStyleSheet(::openbc::ui::theme::textStyle(::openbc::ui::theme::Token::error));
         error_->setWordWrap(true);
         error_->hide();
 

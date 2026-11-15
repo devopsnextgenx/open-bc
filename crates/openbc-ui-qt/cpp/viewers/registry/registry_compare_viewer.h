@@ -211,9 +211,9 @@ public:
         p->setRenderHint(QPainter::Antialiasing);
         const QRect r = option.rect.adjusted(3, 2, -3, -2);
         p->setPen(Qt::NoPen);
-        p->setBrush(QColor(0x33, 0x33, 0x3d));
+        p->setBrush(::openbc::ui::theme::get(::openbc::ui::theme::Token::gridCell));
         p->drawRoundedRect(r, 3, 3);
-        p->setBrush(QColor(0xe8, 0xea, 0xf4));
+        p->setBrush(::openbc::ui::theme::get(::openbc::ui::theme::Token::gridArrow));
         const QPointF c = r.center();
         const qreal q = r.width() / 4.0, s = 4.0;
         p->drawPolygon(QPolygonF({QPointF(c.x() - q + s, c.y() - s), QPointF(c.x() - q - s, c.y()), QPointF(c.x() - q + s, c.y() + s)}));
@@ -431,11 +431,11 @@ private:
     void refreshSaveUi(std::uint8_t side, const QString& error = QString()) {
         const bool dirty = dirty_[side];
         const int count = changeCount(side);
-        labels_[side]->setText(!error.isEmpty() ? "<span style='color:#e5534b'>" + error.toHtmlEscaped() + "</span>"
+        labels_[side]->setText(!error.isEmpty() ? "<span style='color:" + ::openbc::ui::theme::get(::openbc::ui::theme::Token::error).name() + "'>" + error.toHtmlEscaped() + "</span>"
                                : dirty        ? ::openbc::i18n::t("common.unsaved", count, count == 1 ? "change" : "changes")
                                               : QString());
         saves_[side]->setObjectName("saveSideBtn");
-        saves_[side]->setIcon(icons::saveIcon(dirty ? QColor(0x4e, 0x9c, 0xff) : QColor(0xdd, 0xe0, 0xee)));
+        saves_[side]->setIcon(icons::saveIcon(dirty ? ::openbc::ui::theme::get(::openbc::ui::theme::Token::info) : ::openbc::ui::color::ink()));
         saves_[side]->setProperty("dirty", dirty);
         saves_[side]->setToolTip(dirty ? ::openbc::i18n::t("common.unsaved_changes_on_this_side_click")
                                        : (side == 0 ? ::openbc::i18n::t("common.save_left_file_ctrl_s_while")
@@ -507,8 +507,7 @@ private:
         toolbar_->setObjectName("textCompareToolbar");
         toolbar_->setMovable(false);
         toolbar_->setFloatable(false);
-        toolbar_->setIconSize(QSize(20, 20));
-        toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        ::openbc::ui::toolbar::apply(toolbar_);  // look = Tools > Options > Appearance
         homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), ::openbc::i18n::t("tab.home"));
         sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), ::openbc::i18n::t("common.sessions"));
         toolbar_->addSeparator();

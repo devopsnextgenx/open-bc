@@ -1,4 +1,5 @@
 // about_dialog.cpp - see about_dialog.h
+#include "style/theme.h"
 #include "app/about_dialog.h"
 
 #include <QDialog>
@@ -19,7 +20,7 @@ void showAboutDialog(QWidget* parent) {
     dialog.setWindowTitle(::openbc::i18n::t("about.title"));
     dialog.setMinimumWidth(420);
 
-    const QString link = QStringLiteral("<a style=\"color:#58a6ff\" href=\"%1\">%1</a>");
+    const QString link = QStringLiteral("<a style=\"color:%1\" href=\"%2\">%2</a>").arg(::openbc::ui::theme::get(::openbc::ui::theme::Token::link).name(), QStringLiteral("%1"));
     const QString html =
         QStringLiteral(
             "<h2 style=\"margin:0\">OpenBC</h2>"

@@ -68,6 +68,8 @@ private:
 
     void applyTheme(ThemeChoice choice) {
         const bool dark = isDark(choice);
+        openbc::ui::theme::setCurrent(dark ? openbc::ui::Theme::Dark : openbc::ui::Theme::Light);   // before palette/sheet/icons
+        ++openbc::ui::appearance::state().revision;   // icon caches (folder / marker icons) rebuild
         application_.setPalette(dark ? openbc::ui::darkPalette() : openbc::ui::lightPalette());
         application_.setStyleSheet(openbc::ui::applicationStyleSheet(dark ? openbc::ui::Theme::Dark
                                                                            : openbc::ui::Theme::Light));
@@ -84,12 +86,10 @@ private:
         auto& state = ui::appearance::state();
         state.colors.clear();
         for (auto it = o.colors.constBegin(); it != o.colors.constEnd(); ++it) {
-            const int slash = it.key().indexOf('/');
-            const ItemColors def = AppOptions::defaultColors(it.key().left(slash), it.key().mid(slash + 1));
-            ui::appearance::Entry entry;   // only what differs from the default counts as a user choice
-            if (it.value().text != def.text) entry.text = it.value().text;
-            if (it.value().background != def.background) entry.background = it.value().background;
-            if (it.value().folderInfo != def.folderInfo) entry.info = it.value().folderInfo;
+            ui::appearance::Entry entry;   // AppOptions::colors holds overrides only (invalid = follow theme)
+            entry.text = it.value().text;
+            entry.background = it.value().background;
+            entry.info = it.value().folderInfo;
             if (entry.text.isValid() || entry.background.isValid() || entry.info.isValid())
                 state.colors.insert(it.key(), entry);
         }
@@ -97,7 +97,10 @@ private:
         state.gradientCenter = o.useGradientForCenterBackground;
         state.colorFolders = o.colorFoldersToReflectContent;
         ++state.revision;
+        ui::toolbar::prefs().showLabels = o.toolbarShowLabels;
+        ui::toolbar::prefs().iconSize = o.toolbarIconSize;
         applyTheme(o.theme);
+        ui::toolbar::refreshAll();   // open tabs pick up labels / icon size at once
         TextFont::instance().configure(o.useSystemFont, o.customFont);   // also repaints text diffs
     }
 

@@ -379,11 +379,11 @@ private:
         const bool dirty = dirty_[side];
         const int count = changeCount(side);
         const QString changes = QString("%1 unsaved %2").arg(count).arg(count == 1 ? "change" : "changes");
-        if (!errors_[side].isEmpty()) pane.info->setText("<span style='color:#e5534b'>" + errors_[side].toHtmlEscaped() + "</span>");
+        if (!errors_[side].isEmpty()) pane.info->setText("<span style='color:" + ::openbc::ui::theme::get(::openbc::ui::theme::Token::error).name() + "'>" + errors_[side].toHtmlEscaped() + "</span>");
         else if (!loaded_[side]) pane.info->setText(path.isEmpty() ? ::openbc::i18n::t("table.no_file") : ::openbc::i18n::t("table.not_loaded"));
         else pane.info->setText(QString(editable_[side] ? "CSV" : "Spreadsheet (read-only)") + (dirty ? " - " + changes : QString()));
         pane.save->setObjectName("saveSideBtn");
-        pane.save->setIcon(icons::saveIcon(dirty ? QColor(0x4e, 0x9c, 0xff) : QColor(0xdd, 0xe0, 0xee)));
+        pane.save->setIcon(icons::saveIcon(dirty ? ::openbc::ui::theme::get(::openbc::ui::theme::Token::info) : ::openbc::ui::color::ink()));
         pane.save->setProperty("dirty", dirty);
         pane.save->setToolTip(dirty ? (editable_[side] ? ::openbc::i18n::t("common.unsaved_changes_on_this_side_click")
                                                        : ::openbc::i18n::t("table.unsaved_changes_click_or_ctrl_s"))
@@ -669,8 +669,7 @@ private:
         toolbar_->setObjectName("textCompareToolbar");
         toolbar_->setMovable(false);
         toolbar_->setFloatable(false);
-        toolbar_->setIconSize(QSize(20, 20));
-        toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        ::openbc::ui::toolbar::apply(toolbar_);  // look = Tools > Options > Appearance
 
         homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), ::openbc::i18n::t("tab.home"));
         sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), ::openbc::i18n::t("common.sessions"));

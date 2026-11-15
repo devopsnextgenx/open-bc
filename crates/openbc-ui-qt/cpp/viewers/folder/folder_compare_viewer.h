@@ -1445,82 +1445,97 @@ private:
     constexpr int kNewerR = bit(PairClass::RightNewer);
     constexpr int kOrphans = kOrphanL | kOrphanR;
 
-    allAction_ = new QAction(icons::glyph(Glyph::ShowAll), QStringLiteral("All"), this);
+    allAction_ = new QAction(icons::glyph(Glyph::ShowAll), ::openbc::i18n::t("folder.filter_all"), this);
     allAction_->setCheckable(true);
-    allAction_->setToolTip(QStringLiteral("Show all items (identical, different and orphans)"));
+    allAction_->setToolTip(::openbc::i18n::t("folder.filter_all_tip"));
     sameAction_ = new QAction(icons::dashIcon(color::same(), color::same()),
-                              QStringLiteral("Same"), this);
+                              ::openbc::i18n::t("folder.filter_same"), this);
     sameAction_->setCheckable(true);
-    sameAction_->setToolTip(QStringLiteral("Show only items that are the same on both sides"));
-    diffsAction_ = new QAction(icons::glyph(Glyph::ShowDiffs), QStringLiteral("Diffs"), this);
+    sameAction_->setToolTip(::openbc::i18n::t("folder.filter_same_tip"));
+    diffsAction_ = new QAction(icons::glyph(Glyph::ShowDiffs), ::openbc::i18n::t("folder.filter_diffs"), this);
     diffsAction_->setCheckable(true);
-    diffsAction_->setToolTip(QStringLiteral(
-        "Show differences only (hide identical items). Use the arrow for more variants."));
+    diffsAction_->setToolTip(::openbc::i18n::t("folder.filter_diffs_tip"));
 
     struct Preset {
-      const char *text;
+      const char *text;   // i18n keys (folder.diff_*), see messages.json
       const char *tip;
       int mask;
-      QColor left;
-      QColor right;
+      QColor (*left)();    // colour providers, re-evaluated when the theme changes
+      QColor (*right)();
       bool useGlyph;
     };
     const Preset presets[kDiffPresetCount] = {
-        {"Show Differences", "Hide identical items", kAllMask & ~kSame, QColor(), QColor(), true},
-        {"Show No Orphans", "Hide items that exist on one side only", kAllMask & ~kOrphans,
-         color::newer(), color::older(), false},
-        {"Show Differences but No Orphans", "Hide identical items and orphans",
-         kAllMask & ~kSame & ~kOrphans, color::different(), color::different(), false},
-        {"Show Orphans", "Show only items that exist on one side", kOrphans, color::orphan(),
-         color::orphan(), false},
-        {"Show Left Newer", "Show only items that are newer on the left", kNewerL,
-         color::newer(), color::older(), false},
-        {"Show Right Newer", "Show only items that are newer on the right", kNewerR,
-         color::older(), color::newer(), false},
-        {"Show Left Newer and Left Orphans", "Show items newer on the left or only on the left",
-         kNewerL | kOrphanL, color::newer(), color::orphan(), false},
-        {"Show Right Newer and Right Orphans",
-         "Show items newer on the right or only on the right", kNewerR | kOrphanR,
-         color::orphan(), color::newer(), false},
-        {"Show Left Orphans", "Show only items that exist on the left", kOrphanL,
-         color::orphan(), QColor(), false},
-        {"Show Right Orphans", "Show only items that exist on the right", kOrphanR, QColor(),
-         color::orphan(), false},
+        {"folder.diff_show_differences", "folder.diff_show_differences_tip", kAllMask & ~kSame, nullptr, nullptr, true},
+        {"folder.diff_show_no_orphans", "folder.diff_show_no_orphans_tip", kAllMask & ~kOrphans,
+         color::newer, color::older, false},
+        {"folder.diff_show_differences_no_orphans", "folder.diff_show_differences_no_orphans_tip",
+         kAllMask & ~kSame & ~kOrphans, color::different, color::different, false},
+        {"folder.diff_show_orphans", "folder.diff_show_orphans_tip", kOrphans, color::orphan,
+         color::orphan, false},
+        {"folder.diff_show_left_newer", "folder.diff_show_left_newer_tip", kNewerL,
+         color::newer, color::older, false},
+        {"folder.diff_show_right_newer", "folder.diff_show_right_newer_tip", kNewerR,
+         color::older, color::newer, false},
+        {"folder.diff_show_left_newer_left_orphans", "folder.diff_show_left_newer_left_orphans_tip",
+         kNewerL | kOrphanL, color::newer, color::orphan, false},
+        {"folder.diff_show_right_newer_right_orphans",
+         "folder.diff_show_right_newer_right_orphans_tip", kNewerR | kOrphanR,
+         color::orphan, color::newer, false},
+        {"folder.diff_show_left_orphans", "folder.diff_show_left_orphans_tip", kOrphanL,
+         color::orphan, nullptr, false},
+        {"folder.diff_show_right_orphans", "folder.diff_show_right_orphans_tip", kOrphanR, nullptr,
+         color::orphan, false},
     };
     for (int i = 0; i < kDiffPresetCount; ++i) {
       const Preset &p = presets[i];
       auto *action = new QAction(
-          p.useGlyph ? icons::glyph(Glyph::ShowDiffs) : icons::dashIcon(p.left, p.right),
-          QString::fromLatin1(p.text), this);
-      action->setToolTip(QString::fromLatin1(p.tip));
+          p.useGlyph ? icons::glyph(Glyph::ShowDiffs) : icons::dashIcon(p.left ? p.left() : QColor(), p.right ? p.right() : QColor()),
+          ::openbc::i18n::t(p.text), this);
+      action->setToolTip(::openbc::i18n::t(p.tip));
       action->setCheckable(true);
       diffPresetActions_[i] = action;
       diffPresetMasks_[i] = p.mask;
+      diffPresetColors_[i] = {p.left, p.right};
+      diffPresetGlyph_[i] = p.useGlyph;
     }
 
     minorAction_ = new QAction(icons::glyph(Glyph::Minor), ::openbc::i18n::t("text.minor"), this);
     minorAction_->setCheckable(true);
-    minorAction_->setToolTip(QStringLiteral(
-        "Hide minor differences: files that differ only by modification time (same size)"));
+    minorAction_->setToolTip(::openbc::i18n::t("folder.minor_tip"));
     rulesAction_ = new QAction(icons::glyph(Glyph::Rules), ::openbc::i18n::t("text.rules"), this);
-    rulesAction_->setToolTip(QStringLiteral(
-        "File matching rules: which file types are compared by size/timestamp and which by "
-        "content hash (Tools > Options > Folder Compare)"));
+    rulesAction_->setToolTip(::openbc::i18n::t("folder.rules_tip"));
 
     namespace mi = icons::menuicons;
-    copyAction_ = new QAction(mi::copyArrow(true), QStringLiteral("Copy"), this);
-    copyAction_->setToolTip(QStringLiteral(
-        "Copy the selected items to the other side (Ctrl+R / Ctrl+L). Use the arrow for more."));
-    copyToRightAction_ = new QAction(mi::copyArrow(true), QStringLiteral("Copy to Right..."), this);
-    copyToLeftAction_ = new QAction(mi::copyArrow(false), QStringLiteral("Copy to Left..."), this);
-    moveToRightAction_ = new QAction(mi::moveArrow(true), QStringLiteral("Move to Right..."), this);
-    moveToLeftAction_ = new QAction(mi::moveArrow(false), QStringLiteral("Move to Left..."), this);
+    copyAction_ = new QAction(mi::copyArrow(true), ::openbc::i18n::t("folder.copy"), this);
+    copyAction_->setToolTip(::openbc::i18n::t("folder.copy_tip"));
+    copyToRightAction_ = new QAction(mi::copyArrow(true), ::openbc::i18n::t("folder.copy_to_right"), this);
+    copyToLeftAction_ = new QAction(mi::copyArrow(false), ::openbc::i18n::t("folder.copy_to_left"), this);
+    moveToRightAction_ = new QAction(mi::moveArrow(true), ::openbc::i18n::t("folder.move_to_right"), this);
+    moveToLeftAction_ = new QAction(mi::moveArrow(false), ::openbc::i18n::t("folder.move_to_left"), this);
     copyToFolderAction_ =
-        new QAction(mi::copyToFolder(), QStringLiteral("Copy to Folder..."), this);
+        new QAction(mi::copyToFolder(), ::openbc::i18n::t("folder.copy_to_folder"), this);
     moveToFolderAction_ =
-        new QAction(mi::moveToFolder(), QStringLiteral("Move to Folder..."), this);
+        new QAction(mi::moveToFolder(), ::openbc::i18n::t("folder.move_to_folder"), this);
   }
 
+  // The dash icons capture colours when built, so rebuild them when the theme (palette) changes.
+  void refreshThemeIcons() {
+    if (!sameAction_) return;
+    sameAction_->setIcon(icons::dashIcon(color::same(), color::same()));
+    for (int i = 0; i < kDiffPresetCount; ++i) {
+      if (!diffPresetActions_[i] || diffPresetGlyph_[i]) continue;
+      const auto &fn = diffPresetColors_[i];
+      diffPresetActions_[i]->setIcon(icons::dashIcon(fn.first ? fn.first() : QColor(), fn.second ? fn.second() : QColor()));
+    }
+  }
+
+protected:
+  void changeEvent(QEvent *event) override {
+    QWidget::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange) refreshThemeIcons();
+  }
+
+private:
   int viewMask() const {
     int mask = 0;
     for (int i = 0; i < kPairClassCount; ++i)
@@ -1564,8 +1579,7 @@ private:
     button->setDefaultAction(defaultAction);
     button->setMenu(menu);
     button->setPopupMode(QToolButton::MenuButtonPopup);
-    button->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    button->setIconSize(toolbar_->iconSize());   // 20x20, same as the other actions
+    ::openbc::ui::toolbar::styleButton(button);   // labels + icon size follow the toolbar preference
     button->setAutoRaise(true);
 
     // Arrow strip: wider and the same height as a normal toolbar button.
@@ -1636,17 +1650,17 @@ private:
 
     connect(copyAction_, &QAct::triggered, this, [this]() { copyDefault(); });
     connect(copyToRightAction_, &QAct::triggered, this,
-            [this]() { transferSelected(QStringLiteral("Copy to Right..."), leftTree_); });
+            [this]() { transferSelected(::openbc::i18n::t("folder.copy_to_right"), leftTree_); });
     connect(copyToLeftAction_, &QAct::triggered, this,
-            [this]() { transferSelected(QStringLiteral("Copy to Left..."), rightTree_); });
+            [this]() { transferSelected(::openbc::i18n::t("folder.copy_to_left"), rightTree_); });
     connect(moveToRightAction_, &QAct::triggered, this,
-            [this]() { transferSelected(QStringLiteral("Move to Right..."), leftTree_); });
+            [this]() { transferSelected(::openbc::i18n::t("folder.move_to_right"), leftTree_); });
     connect(moveToLeftAction_, &QAct::triggered, this,
-            [this]() { transferSelected(QStringLiteral("Move to Left..."), rightTree_); });
+            [this]() { transferSelected(::openbc::i18n::t("folder.move_to_left"), rightTree_); });
     connect(copyToFolderAction_, &QAct::triggered, this,
-            [this]() { transferSelected(QStringLiteral("Copy to Folder..."), selectedTree()); });
+            [this]() { transferSelected(::openbc::i18n::t("folder.copy_to_folder"), selectedTree()); });
     connect(moveToFolderAction_, &QAct::triggered, this,
-            [this]() { transferSelected(QStringLiteral("Move to Folder..."), selectedTree()); });
+            [this]() { transferSelected(::openbc::i18n::t("folder.move_to_folder"), selectedTree()); });
     for (CompareTree *tree : {leftTree_, rightTree_})
       connect(tree, &QTreeWidget::itemSelectionChanged, this, [this]() { updateCopyEnabled(); });
     updateCopyEnabled();
@@ -1697,8 +1711,8 @@ private:
     CompareTree *tree = selectedTree();
     if (!tree)
       return;
-    transferSelected(tree == leftTree_ ? QStringLiteral("Copy to Right...")
-                                       : QStringLiteral("Copy to Left..."),
+    transferSelected(tree == leftTree_ ? ::openbc::i18n::t("folder.copy_to_right")
+                                       : ::openbc::i18n::t("folder.copy_to_left"),
                      tree);
   }
 
@@ -1835,10 +1849,7 @@ private:
 
     // Toolbar directly under the tab strip: everything here acts on THIS tab.
     toolbar_ = new QToolBar(this);
-    toolbar_->setMovable(false);
-    toolbar_->setFloatable(false);
-    toolbar_->setIconSize(QSize(20, 20));
-    toolbar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    ::openbc::ui::toolbar::apply(toolbar_);   // same look as every other compare viewer; labels/size: Options > Appearance
     toolbar_->addAction(compareAction_);
     toolbar_->addAction(refreshAction_);
     toolbar_->addAction(swapAction_);
@@ -3880,6 +3891,8 @@ private:
   QAction *moveToRightAction_ = nullptr;
   QAction *moveToLeftAction_ = nullptr;
   QAction *copyToFolderAction_ = nullptr;
+  std::pair<QColor (*)(), QColor (*)()> diffPresetColors_[kDiffPresetCount] = {};
+  bool diffPresetGlyph_[kDiffPresetCount] = {};
   QAction *moveToFolderAction_ = nullptr;
   QAction *diffPresetActions_[kDiffPresetCount] = {};
   int diffPresetMasks_[kDiffPresetCount] = {};

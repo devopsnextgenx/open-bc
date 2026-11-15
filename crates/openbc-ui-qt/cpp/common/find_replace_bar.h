@@ -33,11 +33,8 @@ public:
 
     explicit FindReplaceBar(QWidget* parent = nullptr) : QWidget(parent) {
         setObjectName("findReplaceBar");
-        setStyleSheet(
-            "#findReplaceBar { background:#2b2b2b; border-top:1px solid #505050; }"
-            "#findReplaceBar QLineEdit { background:#1e1e1e; color:#f8f8f2; border:1px solid "
-            "#505050; border-radius:3px; padding:2px 6px; }"
-            "#findReplaceBar QLabel { color:#c7cbe0; }");
+        // Colours: "#findReplaceBar" rules in the app style sheet (style/qt_style.h), theme tokens.
+        setAttribute(Qt::WA_StyledBackground, true);
         auto* layout = new QHBoxLayout(this);
         layout->setContentsMargins(8, 4, 8, 4);
         layout->setSpacing(6);

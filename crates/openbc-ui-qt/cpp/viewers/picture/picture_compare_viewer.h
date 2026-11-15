@@ -707,7 +707,7 @@ private:
       const bool right = e.side == 1;
       (right ? rightInfoLabel_ : leftInfoLabel_)->setText(e.message);
       (right ? rightInfoLabel_ : leftInfoLabel_)
-          ->setStyleSheet("color:#e5534b;");
+          ->setStyleSheet(::openbc::ui::theme::textStyle(::openbc::ui::theme::Token::error));
       (right ? rightPane_ : leftPane_)->setImage(QImage());
       (right ? rightInfo_ : leftInfo_) = ViewInfo();
       refreshMetadata(false);
@@ -972,7 +972,7 @@ private:
 
   void setStatus(const QString &text, bool emphasise) {
     statusLabel_->setText(text);
-    statusLabel_->setStyleSheet(emphasise ? "color:#e5534b; font-weight:600;"
+    statusLabel_->setStyleSheet(emphasise ? ::openbc::ui::theme::textStyle(::openbc::ui::theme::Token::error) + " font-weight:600;"
                                           : QString());
   }
 
@@ -1171,8 +1171,7 @@ private:
     toolbar_->setObjectName("textCompareToolbar");
     toolbar_->setMovable(false);
     toolbar_->setFloatable(false);
-    toolbar_->setIconSize(QSize(20, 20));
-    toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    ::openbc::ui::toolbar::apply(toolbar_);  // look = Tools > Options > Appearance
 
     toolbar_->addAction(actTol_);
     toolbar_->addAction(actRange_);
@@ -1317,7 +1316,7 @@ private:
     fitButton_->setCheckable(true); // lit while the view is in fit mode
     fitButton_->setChecked(view_.fit);
     fitButton_->setMinimumSize(32, 26);
-    fitButton_->setStyleSheet("QToolButton:checked { border-color: #0a64c8; }");
+    fitButton_->setObjectName("fitButton");   // checked border comes from the app style sheet (theme tokens)
     connect(fitButton_, &QToolButton::clicked, this,
             [this]() { fitToWindow(); });
     zoomRow->addWidget(zoomSlider_, 1);

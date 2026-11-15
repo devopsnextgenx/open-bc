@@ -94,7 +94,7 @@ public:
 
         error_ = new QLabel(this);
         error_->setWordWrap(true);
-        error_->setStyleSheet("color:#e5534b;");
+        error_->setStyleSheet(::openbc::ui::theme::textStyle(::openbc::ui::theme::Token::error));
         error_->hide();
         root->addWidget(error_);
 

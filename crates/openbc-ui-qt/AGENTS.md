@@ -52,7 +52,10 @@ Kinds today: folder, text, picture, model3d, table, registry, hex, media, binary
 2. **Row-based diffs** show `DifferenceOverview` (`common/minimap.h`) on the left edge. **Text editors** use
    `LineNumberEditor`. Viewers with neither (picture, 3D, media) have nothing to add.
 3. **Icons** only through `openbc::ui::icons::glyph(Glyph::X)` / helpers in `style/qt_style.h`. Add a new
-   `Glyph` there instead of using `QStyle::standardIcon` or image files. Colours come from `openbc::ui::color`.
+   `Glyph` there instead of using `QStyle::standardIcon` or image files. Colours come from `openbc::ui::color` /
+   theme tokens (`style/theme.h`), never hex literals - see `theme.md`.
+3a. **Toolbar**: `openbc::ui::toolbar::apply(toolbar_)` (`style/toolbar_style.h`); no own `setIconSize` / `setToolButtonStyle`.
+   Labels and icon size are a user option (Options > Appearance > Toolbars).
 4. **Tab plumbing** (close button, title, tooltip, history) goes through `main_window.h`
    (`addViewerTab`, `attachCloseButton`). Do not build a second close button by hand.
 5. **Esc closes the tab.** The application shortcut in `main_window.h` handles it for every viewer except Home and
@@ -123,3 +126,8 @@ C++ face in `cpp/viewers/text/engine/text_model.h`) + two editors over the same 
 engine. New code in this area is `.h` + `.cpp` where it owns a QWidget, and stays `Q_OBJECT`-free (callbacks).
 Which editor opens is decided in `addTextView` by `options/text_editor_selection.h` + `viewers/text/text_editor_choice.h`.
 Full design, limitations, benchmarks and test commands: `docs/TEXT_COMPARE_ENGINE.md`.
+
+## 13. Theme (Dark + Light), fonts, toolbar look
+All colours and font sizes live in `cpp/style/theme.h` (one row per token with a dark and a light value); the style sheet
+is a template with `@token@` placeholders. Read **`theme.md`** (crate root) before adding any colour, font size or
+toolbar. Test: `cpp/tools/theme_test/build_and_run.sh`.

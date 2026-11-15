@@ -138,6 +138,9 @@ struct AppOptions {
     bool colorFoldersToReflectContent = true;
     bool useGradientForCenterBackground = true;
     bool useStripes = true;
+    // Toolbars of every compare viewer (style/toolbar_style.h): labels under icons on/off, icon size.
+    bool toolbarShowLabels = true;
+    openbc::ui::toolbar::IconSize toolbarIconSize = openbc::ui::toolbar::IconSize::Large;
     // Key: "<tab>/<item>", e.g. "Folder Views/Same". Missing key = default.
     QMap<QString, ItemColors> colors;
 
@@ -228,22 +231,33 @@ struct AppOptions {
 
     // Defaults for the Appearance color editor, matching the folder-compare
     // palette in qt_style.h so "reset" shows what the app really uses today.
-    static ItemColors defaultColors(const QString& tab, const QString& item) {
-        namespace c = openbc::ui::color;
-        ItemColors out{c::text(), c::windowBg(), c::dimText()};
+    // Default colours of one item in `which` (default: the active theme). Straight from the theme
+    // tokens (style/theme.h), never from the user's saved overrides.
+    static ItemColors defaultColors(const QString& tab, const QString& item,
+                                    openbc::ui::Theme which = openbc::ui::theme::current()) {
+        using openbc::ui::theme::Token;
+        const auto c = [which](Token t) { return openbc::ui::theme::colorFor(t, which); };
+        ItemColors out{c(Token::text), c(Token::window), c(Token::folderInfo)};
         if (tab != QLatin1String("Folder Views")) return out;
-        if (item == "Same") out.text = c::same();
-        else if (item == "Orphan") out.text = c::orphan();
-        else if (item == "Older") out.text = c::older();
-        else if (item == "Newer") out.text = c::newer();
-        else if (item == "Different") out.text = c::different();
-        else if (item == "Selection") out.background = c::selection();
+        if (item == "Same") out.text = c(Token::same);
+        else if (item == "Orphan") out.text = c(Token::orphan);
+        else if (item == "Older") out.text = c(Token::older);
+        else if (item == "Newer") out.text = c(Token::newer);
+        else if (item == "Different") out.text = c(Token::different);
+        else if (item == "Selection") out.background = c(Token::select);
         return out;
     }
 
+    // `colors` holds OVERRIDES only: an invalid QColor field means "not overridden, follow the theme".
+    // (Storing all three fields used to freeze dark-theme defaults into the light theme.)
     ItemColors colorsFor(const QString& tab, const QString& item) const {
+        ItemColors out = defaultColors(tab, item);
         const auto it = colors.constFind(tab + "/" + item);
-        return it != colors.constEnd() ? it.value() : defaultColors(tab, item);
+        if (it == colors.constEnd()) return out;
+        if (it->text.isValid()) out.text = it->text;
+        if (it->background.isValid()) out.background = it->background;
+        if (it->folderInfo.isValid()) out.folderInfo = it->folderInfo;
+        return out;
     }
 };
 
@@ -305,6 +319,10 @@ public:
         options_.useGradientForCenterBackground =
             p.value("appearance/gradientCenter", options_.useGradientForCenterBackground).toBool();
         options_.useStripes = p.value("appearance/stripes", options_.useStripes).toBool();
+        options_.toolbarShowLabels = p.value("appearance/toolbarLabels", options_.toolbarShowLabels).toBool();
+        options_.toolbarIconSize = p.value("appearance/toolbarIconSize", 1).toInt() == 0
+                                       ? openbc::ui::toolbar::IconSize::Small
+                                       : openbc::ui::toolbar::IconSize::Large;
         const QJsonObject colors =
             QJsonDocument::fromJson(p.value("appearance/colors").toString().toUtf8()).object();
         for (auto it = colors.begin(); it != colors.end(); ++it) {
@@ -313,7 +331,15 @@ public:
             c.text = QColor(o.value("text").toString());
             c.background = QColor(o.value("background").toString());
             c.folderInfo = QColor(o.value("info").toString());
-            if (c.text.isValid() && c.background.isValid() && c.folderInfo.isValid())
+            // Older versions saved all three fields, i.e. the DARK defaults for the ones the user never
+            // touched. Drop those so they follow the theme again.
+            const int slash = it.key().indexOf('/');
+            const ItemColors dark = AppOptions::defaultColors(it.key().left(slash), it.key().mid(slash + 1),
+                                                  openbc::ui::Theme::Dark);
+            if (c.text == dark.text) c.text = QColor();
+            if (c.background == dark.background) c.background = QColor();
+            if (c.folderInfo == dark.folderInfo) c.folderInfo = QColor();
+            if (c.text.isValid() || c.background.isValid() || c.folderInfo.isValid())
                 options_.colors.insert(it.key(), c);
         }
         const QJsonArray filterPresets =
@@ -391,14 +417,18 @@ public:
         p.setValue("appearance/colorFolders", options_.colorFoldersToReflectContent);
         p.setValue("appearance/gradientCenter", options_.useGradientForCenterBackground);
         p.setValue("appearance/stripes", options_.useStripes);
+        p.setValue("appearance/toolbarLabels", options_.toolbarShowLabels);
+        p.setValue("appearance/toolbarIconSize",
+                   options_.toolbarIconSize == openbc::ui::toolbar::IconSize::Small ? 0 : 1);
         p.setValue("ArchiveTypes/JavaDecompilerEnabled", options_.javaDecompilerEnabled);
         p.setValue("ArchiveTypes/DecompilerJarPath", options_.decompilerJarPath);
         p.setValue("ArchiveTypes/JavaBinPath", options_.javaBinPath);
         QJsonObject colors;
         for (auto it = options_.colors.constBegin(); it != options_.colors.constEnd(); ++it) {
-            colors.insert(it.key(), QJsonObject{{"text", it.value().text.name(QColor::HexArgb)},
-                                                {"background", it.value().background.name(QColor::HexArgb)},
-                                                {"info", it.value().folderInfo.name(QColor::HexArgb)}});
+            const auto field = [](const QColor& c) { return c.isValid() ? c.name(QColor::HexArgb) : QString(); };
+            colors.insert(it.key(), QJsonObject{{"text", field(it.value().text)},
+                                                {"background", field(it.value().background)},
+                                                {"info", field(it.value().folderInfo)}});
         }
         p.setValue("appearance/colors",
                    QString::fromUtf8(QJsonDocument(colors).toJson(QJsonDocument::Compact)));

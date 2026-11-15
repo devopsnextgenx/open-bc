@@ -8,6 +8,7 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include "style/theme.h"
 #include <QAbstractScrollArea>
 #include <QBrush>
 #include <QColor>
@@ -27,9 +28,9 @@ namespace openbc::app::diffgrid {
 enum RowKind { Equal = 0, Changed = 1, LeftOnly = 2, RightOnly = 3 };
 
 // Same palette as the text compare preview strip (diff_line_preview.h).
-inline QColor changedRowColor() { return QColor(0x7a, 0x2d, 0x2d, 90); }
-inline QColor changedCellColor() { return QColor(0xb0, 0x3a, 0x3a, 170); }
-inline QColor onlyRowColor() { return QColor(0x8a, 0x7a, 0x2d, 90); }
+inline QColor changedRowColor() { return ::openbc::ui::theme::get(::openbc::ui::theme::Token::changedRow); }
+inline QColor changedCellColor() { return ::openbc::ui::theme::get(::openbc::ui::theme::Token::changedCell); }
+inline QColor onlyRowColor() { return ::openbc::ui::theme::get(::openbc::ui::theme::Token::onlyRow); }
 
 // Background for a cell. `present` is false where this side has no row/value: those are
 // hatched, echoing the editors' "missing line" pattern.
@@ -156,7 +157,7 @@ protected:
             const QRect rightRect(leftRect.right() + 1, box.top(), box.width() - leftRect.width(), box.height());
             const bool current = g.group == current_;
             p.setPen(Qt::NoPen);
-            p.setBrush(current ? QColor(0x3a, 0x5a, 0x8a) : QColor(0x33, 0x33, 0x3d));
+            p.setBrush(current ? ::openbc::ui::theme::get(::openbc::ui::theme::Token::gridCellCurrent) : ::openbc::ui::theme::get(::openbc::ui::theme::Token::gridCell));
             p.drawRoundedRect(box, 3, 3);
             drawArrow(p, leftRect, /*pointsRight=*/false, toLeft_);
             drawArrow(p, rightRect, /*pointsRight=*/true, toRight_);
@@ -216,7 +217,7 @@ private:
         QPolygonF tri;
         if (pointsRight) tri << QPointF(c.x() - s, c.y() - s) << QPointF(c.x() + s, c.y()) << QPointF(c.x() - s, c.y() + s);
         else tri << QPointF(c.x() + s, c.y() - s) << QPointF(c.x() - s, c.y()) << QPointF(c.x() + s, c.y() + s);
-        p.setBrush(enabled ? QColor(0xe8, 0xea, 0xf4) : QColor(0x70, 0x70, 0x78));
+        p.setBrush(enabled ? ::openbc::ui::theme::get(::openbc::ui::theme::Token::gridArrow) : ::openbc::ui::theme::get(::openbc::ui::theme::Token::gridArrowOff));
         p.drawPolygon(tri);
     }
 

@@ -33,6 +33,7 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include "style/theme.h"
 #include <QBrush>
 #include <QByteArray>
 #include <QColor>
@@ -185,7 +186,7 @@ protected:
   void paintEvent(QPaintEvent *) override {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, false);
-    painter.fillRect(rect(), QColor("#232323"));
+    painter.fillRect(rect(), ::openbc::ui::theme::get(::openbc::ui::theme::Token::minimapBg));
     const quint64 totalRows = overviewRowCount();
     if (totalRows == 0)
       return;
@@ -213,7 +214,7 @@ protected:
       painter.fillRect(vertical_
                            ? QRectF(0, at, width(), 1)
                            : QRectF(at, 0, qMax<qreal>(1, rowSize), height()),
-                       QColor(248, 248, 242, 60));
+                       ::openbc::ui::theme::get(::openbc::ui::theme::Token::minimapView));
     }
 
     // Viewport rectangle: exact scrollbar fraction of the content region.
@@ -225,10 +226,10 @@ protected:
       const qreal start = qBound<qreal>(0.0, viewportStart_, 1.0 - span);
       const int top = qRound(start * contentExtent);
       const int h = qMax(4, qRound(span * contentExtent));
-      QPen pen(QColor(235, 235, 235));
+      QPen pen(::openbc::ui::theme::get(::openbc::ui::theme::Token::textDim));
       pen.setWidth(1);
       painter.setPen(pen);
-      painter.setBrush(QColor(255, 255, 255, 40));
+      painter.setBrush(::openbc::ui::theme::get(::openbc::ui::theme::Token::minimapView));
       painter.drawRect(QRect(0, top, width() - 1, h - 1));
     }
 
@@ -237,7 +238,7 @@ protected:
     // the empty lower part of the minimap.
     if (vertical_ && contentExtent + 0.5 < stripExtent) {
       const int y = qRound(contentExtent) - 1;
-      painter.setPen(QPen(QColor(160, 165, 180), 1));
+      painter.setPen(QPen(::openbc::ui::theme::get(::openbc::ui::theme::Token::textDim), 1));
       painter.drawLine(0, y, width() - 1, y);
     }
   }

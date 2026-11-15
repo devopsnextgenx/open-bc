@@ -398,8 +398,7 @@ private:
         toolbar_->setObjectName("textCompareToolbar");
         toolbar_->setMovable(false);
         toolbar_->setFloatable(false);
-        toolbar_->setIconSize(QSize(20, 20));
-        toolbar_->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        ::openbc::ui::toolbar::apply(toolbar_);  // look = Tools > Options > Appearance
         homeAction_ = toolbar_->addAction(icons::glyph(Glyph::Home), ::openbc::i18n::t("tab.home"));
         sessionsAction_ = toolbar_->addAction(icons::glyph(Glyph::Sessions), ::openbc::i18n::t("common.sessions"));
         toolbar_->addSeparator();
