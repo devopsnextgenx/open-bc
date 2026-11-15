@@ -88,9 +88,34 @@ FetchContent_MakeAvailable(Corrosion)
 
 option(OPENBC_BUILD_TEXT_MEMORY_TEST
        "Build the offscreen legacy large-text memory measurement tool" OFF)
+
+# Binary Compare (LIEF). lief-ffi's build helper (lief-build) only downloads prebuilt LIEF archives
+# for a fixed target list, which on Windows contains ONLY *-pc-windows-msvc. The MSYS2/UCRT64 build
+# targets x86_64-pc-windows-gnu and panics with "Target: x86_64-pc-windows-gnu is not currently
+# supported". So on MinGW the `binary` Cargo feature is switched off (Binary Compare then reports
+# that it is unavailable; every other compare view is unaffected) unless a MinGW-built LIEF is
+# supplied through the LIEF_RUST_PRECOMPILED environment variable (a directory holding
+# lib/libLIEF.a and lib/liblief-sys.a), which lief-build uses instead of downloading.
+option(OPENBC_BINARY_COMPARE "Build Binary Compare (needs LIEF)" ON)
+set(OPENBC_WITH_LIEF ${OPENBC_BINARY_COMPARE})
+if(OPENBC_WITH_LIEF AND MINGW AND "$ENV{LIEF_RUST_PRECOMPILED}" STREQUAL "")
+    message(STATUS "MinGW target: no prebuilt LIEF available, building WITHOUT Binary Compare "
+                   "(set LIEF_RUST_PRECOMPILED to a MinGW LIEF build to enable it)")
+    set(OPENBC_WITH_LIEF OFF)
+endif()
+
 set(OPENBC_RUST_FEATURE_ARGS "")
+set(OPENBC_RUST_FEATURES "")
+if(NOT OPENBC_WITH_LIEF)
+    # Cargo default features are qt + binary: keep qt, drop binary (and with it lief-ffi).
+    list(APPEND OPENBC_RUST_FEATURE_ARGS NO_DEFAULT_FEATURES)
+    list(APPEND OPENBC_RUST_FEATURES qt)
+endif()
 if(OPENBC_BUILD_TEXT_MEMORY_TEST)
-    list(APPEND OPENBC_RUST_FEATURE_ARGS FEATURES mem-stats)
+    list(APPEND OPENBC_RUST_FEATURES mem-stats)
+endif()
+if(OPENBC_RUST_FEATURES)
+    list(APPEND OPENBC_RUST_FEATURE_ARGS FEATURES ${OPENBC_RUST_FEATURES})
 endif()
 
 # Import ONLY the static library target, ignoring [[bin]] targets

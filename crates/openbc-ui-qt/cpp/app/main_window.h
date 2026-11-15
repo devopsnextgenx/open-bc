@@ -476,6 +476,9 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         session->onMediaCompare = [&](const QString& l, const QString& r) { addMediaView(l, r); };
         session->onHexCompare = [&](const QString& l, const QString& r) { addHexView(l, r); };
         session->onBinaryCompare = [&](const QString& l, const QString& r) { addBinaryView(l, r); };
+        session->onOpenOptions = [&](const QString& page) {
+            return OptionsDialog::edit(optionsStore, &window, page);
+        };
         session->onNewFolderCompare = [&](const QString& leftPath, const QString& rightPath) {
             addSession(leftPath, rightPath, true);
         };

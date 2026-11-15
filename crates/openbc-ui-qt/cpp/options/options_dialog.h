@@ -252,9 +252,21 @@ public:
     }
 
     // Opens the dialog modally; true when the user pressed OK.
-    static bool edit(OptionsStore& store, QWidget* parent) {
+    // `page` (optional) is the title of the page to open on, e.g. "Folder Compare".
+    static bool edit(OptionsStore& store, QWidget* parent, const QString& page = QString()) {
         OptionsDialog dialog(store, parent);
+        if (!page.isEmpty()) dialog.showPage(page);
         return dialog.exec() == QDialog::Accepted;
+    }
+
+    void showPage(const QString& title) {
+        for (int i = 0; i < pages_->count(); ++i) {
+            QListWidgetItem* item = pages_->item(i);
+            if (item->data(Qt::UserRole).isValid() && item->text() == title) {
+                pages_->setCurrentRow(i);
+                return;
+            }
+        }
     }
 
 private:

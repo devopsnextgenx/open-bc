@@ -38,6 +38,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QSignalBlocker>
 #include <QMessageBox>
 #include <QPair>
 #include <QShortcut>
@@ -45,6 +46,7 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QProcess>
+#include <QProxyStyle>
 #include <QPushButton>
 #include <QRunnable>
 #include <QSet>
@@ -842,6 +844,9 @@ public:
   // Compiled binaries / shared libraries (.exe .dll .so .dylib ...): Binary Compare.
   std::function<void(const QString &, const QString &)> onBinaryCompare;
   std::function<void(const QString &, const QString &)> onNewFolderCompare;
+  // Opens Tools > Options on the page with this title; returns true when OK was pressed (the
+  // file-matching rules may have changed, so the comparison is refreshed).
+  std::function<bool(const QString &)> onOpenOptions;
   std::function<void(const QString &, const QString &)> onComparisonRequested;
 
   // What a right-click landed on. Copied by value: the context menu runs a
@@ -911,8 +916,8 @@ public:
     QList<QAction *> items;
     for (auto *action : showActions_)
       items << action;
-    items << nullptr << expandAllAction_ << collapseAllAction_ << nullptr
-          << consoleAction_;
+    items << nullptr << minorAction_ << nullptr << expandAllAction_ << collapseAllAction_
+          << nullptr << consoleAction_;
     return items;
   }
   QList<QAction *> toolsMenuItems() const { return {optionsAction_}; }
@@ -985,6 +990,7 @@ public:
     for (int i = 0; i < kPairClassCount; ++i) {
       showActions_[i]->setChecked(other.showActions_[i]->isChecked());
     }
+    minorAction_->setChecked(other.minorAction_->isChecked());
   }
 
   void log(const QString &message) {
@@ -1379,6 +1385,8 @@ private:
       showActions_[i] = action;
     }
 
+    createFilterAndCopyActions();
+
     expandAllAction_ =
         new QAction(icons::glyph(Glyph::ExpandAll), ::openbc::i18n::t("folder.expand_all"), this);
     expandAllAction_->setToolTip(::openbc::i18n::t("folder.expand_all_folders"));
@@ -1418,6 +1426,304 @@ private:
     editSelectionAction_ = new QAction(::openbc::i18n::t("folder.edit_selection"), this);
     findAction_ = new QAction(::openbc::i18n::t("common.find"), this);
     optionsAction_ = new QAction(::openbc::i18n::t("folder.comparison_options"), this);
+  }
+
+  // ------------------------------------------------- All / Diffs / Same / Minor / Rules / Copy
+  // The six per-class toggles (showActions_) stay the single source of truth for what is visible
+  // (View menu, applyViewFilter). The toolbar groups them into presets the way a classic folder
+  // compare does: All, Diffs with a drop-down of variants, and Same.
+  static constexpr int bit(PairClass c) { return 1 << static_cast<int>(c); }
+  static constexpr int kAllMask = (1 << kPairClassCount) - 1;
+  static constexpr int kDiffPresetCount = 10;
+
+  void createFilterAndCopyActions() {
+    using icons::Glyph;
+    constexpr int kSame = bit(PairClass::Same);
+    constexpr int kOrphanL = bit(PairClass::OrphanLeft);
+    constexpr int kOrphanR = bit(PairClass::OrphanRight);
+    constexpr int kNewerL = bit(PairClass::LeftNewer);
+    constexpr int kNewerR = bit(PairClass::RightNewer);
+    constexpr int kOrphans = kOrphanL | kOrphanR;
+
+    allAction_ = new QAction(icons::glyph(Glyph::ShowAll), QStringLiteral("All"), this);
+    allAction_->setCheckable(true);
+    allAction_->setToolTip(QStringLiteral("Show all items (identical, different and orphans)"));
+    sameAction_ = new QAction(icons::dashIcon(color::same(), color::same()),
+                              QStringLiteral("Same"), this);
+    sameAction_->setCheckable(true);
+    sameAction_->setToolTip(QStringLiteral("Show only items that are the same on both sides"));
+    diffsAction_ = new QAction(icons::glyph(Glyph::ShowDiffs), QStringLiteral("Diffs"), this);
+    diffsAction_->setCheckable(true);
+    diffsAction_->setToolTip(QStringLiteral(
+        "Show differences only (hide identical items). Use the arrow for more variants."));
+
+    struct Preset {
+      const char *text;
+      const char *tip;
+      int mask;
+      QColor left;
+      QColor right;
+      bool useGlyph;
+    };
+    const Preset presets[kDiffPresetCount] = {
+        {"Show Differences", "Hide identical items", kAllMask & ~kSame, QColor(), QColor(), true},
+        {"Show No Orphans", "Hide items that exist on one side only", kAllMask & ~kOrphans,
+         color::newer(), color::older(), false},
+        {"Show Differences but No Orphans", "Hide identical items and orphans",
+         kAllMask & ~kSame & ~kOrphans, color::different(), color::different(), false},
+        {"Show Orphans", "Show only items that exist on one side", kOrphans, color::orphan(),
+         color::orphan(), false},
+        {"Show Left Newer", "Show only items that are newer on the left", kNewerL,
+         color::newer(), color::older(), false},
+        {"Show Right Newer", "Show only items that are newer on the right", kNewerR,
+         color::older(), color::newer(), false},
+        {"Show Left Newer and Left Orphans", "Show items newer on the left or only on the left",
+         kNewerL | kOrphanL, color::newer(), color::orphan(), false},
+        {"Show Right Newer and Right Orphans",
+         "Show items newer on the right or only on the right", kNewerR | kOrphanR,
+         color::orphan(), color::newer(), false},
+        {"Show Left Orphans", "Show only items that exist on the left", kOrphanL,
+         color::orphan(), QColor(), false},
+        {"Show Right Orphans", "Show only items that exist on the right", kOrphanR, QColor(),
+         color::orphan(), false},
+    };
+    for (int i = 0; i < kDiffPresetCount; ++i) {
+      const Preset &p = presets[i];
+      auto *action = new QAction(
+          p.useGlyph ? icons::glyph(Glyph::ShowDiffs) : icons::dashIcon(p.left, p.right),
+          QString::fromLatin1(p.text), this);
+      action->setToolTip(QString::fromLatin1(p.tip));
+      action->setCheckable(true);
+      diffPresetActions_[i] = action;
+      diffPresetMasks_[i] = p.mask;
+    }
+
+    minorAction_ = new QAction(icons::glyph(Glyph::Minor), ::openbc::i18n::t("text.minor"), this);
+    minorAction_->setCheckable(true);
+    minorAction_->setToolTip(QStringLiteral(
+        "Hide minor differences: files that differ only by modification time (same size)"));
+    rulesAction_ = new QAction(icons::glyph(Glyph::Rules), ::openbc::i18n::t("text.rules"), this);
+    rulesAction_->setToolTip(QStringLiteral(
+        "File matching rules: which file types are compared by size/timestamp and which by "
+        "content hash (Tools > Options > Folder Compare)"));
+
+    namespace mi = icons::menuicons;
+    copyAction_ = new QAction(mi::copyArrow(true), QStringLiteral("Copy"), this);
+    copyAction_->setToolTip(QStringLiteral(
+        "Copy the selected items to the other side (Ctrl+R / Ctrl+L). Use the arrow for more."));
+    copyToRightAction_ = new QAction(mi::copyArrow(true), QStringLiteral("Copy to Right..."), this);
+    copyToLeftAction_ = new QAction(mi::copyArrow(false), QStringLiteral("Copy to Left..."), this);
+    moveToRightAction_ = new QAction(mi::moveArrow(true), QStringLiteral("Move to Right..."), this);
+    moveToLeftAction_ = new QAction(mi::moveArrow(false), QStringLiteral("Move to Left..."), this);
+    copyToFolderAction_ =
+        new QAction(mi::copyToFolder(), QStringLiteral("Copy to Folder..."), this);
+    moveToFolderAction_ =
+        new QAction(mi::moveToFolder(), QStringLiteral("Move to Folder..."), this);
+  }
+
+  int viewMask() const {
+    int mask = 0;
+    for (int i = 0; i < kPairClassCount; ++i)
+      if (showActions_[i]->isChecked())
+        mask |= 1 << i;
+    return mask;
+  }
+
+  // Sets all six class toggles at once with a single filter pass.
+  void setViewMask(int mask) {
+    for (int i = 0; i < kPairClassCount; ++i) {
+      const QSignalBlocker blocker(showActions_[i]);
+      showActions_[i]->setChecked((mask >> i) & 1);
+    }
+    applyViewFilter();
+    syncFilterActions();
+  }
+
+  // Keeps the All / Diffs / Same buttons and the Diffs menu in step with the toggles.
+  void syncFilterActions() {
+    if (!allAction_)
+      return;
+    const int mask = viewMask();
+    const auto setChecked = [](QAction *action, bool on) {
+      const QSignalBlocker blocker(action);
+      action->setChecked(on);
+    };
+    setChecked(allAction_, mask == kAllMask);
+    setChecked(sameAction_, mask == bit(PairClass::Same));
+    bool anyPreset = false;
+    for (int i = 0; i < kDiffPresetCount; ++i) {
+      const bool on = mask == diffPresetMasks_[i];
+      setChecked(diffPresetActions_[i], on);
+      anyPreset = anyPreset || on;
+    }
+    setChecked(diffsAction_, anyPreset);
+  }
+
+  QToolButton *makeSplitButton(QAction *defaultAction, QMenu *menu) {
+    auto *button = new QToolButton(toolbar_);
+    button->setDefaultAction(defaultAction);
+    button->setMenu(menu);
+    button->setPopupMode(QToolButton::MenuButtonPopup);
+    button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    button->setIconSize(toolbar_->iconSize());   // 20x20, same as the other actions
+    button->setAutoRaise(true);
+
+    // Arrow strip: wider and the same height as a normal toolbar button.
+    button->setStyleSheet(QStringLiteral(
+        "QToolButton { padding-right: 18px; }"
+        "QToolButton::menu-button { width: 18px; }"));
+    button->setMinimumHeight(toolbar_->widgetForAction(compareAction_)
+                                ? toolbar_->widgetForAction(compareAction_)->sizeHint().height()
+                                : 0);
+    return button;
+  }
+
+
+  class BigMenuIconStyle : public QProxyStyle {
+    public:
+      explicit BigMenuIconStyle(const QString &baseKey, int px = 20)
+          : QProxyStyle(baseKey), px_(px) {}
+      int pixelMetric(PixelMetric metric, const QStyleOption *option,
+                      const QWidget *widget) const override {
+        if (metric == PM_SmallIconSize)
+          return px_;
+        return QProxyStyle::pixelMetric(metric, option, widget);
+      }
+    private:
+      int px_;
+  };
+
+  void addFilterAndCopyToolbarItems() {
+    toolbar_->addAction(allAction_);
+    auto *diffsMenu = new QMenu(toolbar_);
+    diffsMenu->setStyle(new BigMenuIconStyle(QApplication::style()->objectName()));
+    for (QAction *action : diffPresetActions_)
+      diffsMenu->addAction(action);
+    diffsButton_ = makeSplitButton(diffsAction_, diffsMenu);
+    toolbar_->addWidget(diffsButton_);
+    toolbar_->addAction(sameAction_);
+    toolbar_->addAction(minorAction_);
+    toolbar_->addAction(rulesAction_);
+    toolbar_->addSeparator();
+    auto *copyMenu = new QMenu(toolbar_);
+    copyMenu->setStyle(new BigMenuIconStyle(QApplication::style()->objectName()));
+    copyMenu->addAction(copyToRightAction_);
+    copyMenu->addAction(copyToLeftAction_);
+    copyMenu->addSeparator();
+    copyMenu->addAction(moveToRightAction_);
+    copyMenu->addAction(moveToLeftAction_);
+    copyMenu->addSeparator();
+    copyMenu->addAction(copyToFolderAction_);
+    copyMenu->addAction(moveToFolderAction_);
+    copyButton_ = makeSplitButton(copyAction_, copyMenu);
+    toolbar_->addWidget(copyButton_);
+  }
+
+  void connectFilterAndCopySignals() {
+    using QAct = QAction;
+    connect(allAction_, &QAct::triggered, this, [this]() { setViewMask(kAllMask); });
+    connect(sameAction_, &QAct::triggered, this,
+            [this]() { setViewMask(bit(PairClass::Same)); });
+    connect(diffsAction_, &QAct::triggered, this,
+            [this]() { setViewMask(diffPresetMasks_[0]); });
+    for (int i = 0; i < kDiffPresetCount; ++i) {
+      connect(diffPresetActions_[i], &QAct::triggered, this,
+              [this, i]() { setViewMask(diffPresetMasks_[i]); });
+    }
+    connect(minorAction_, &QAct::toggled, this, [this](bool) { applyViewFilter(); });
+    connect(rulesAction_, &QAct::triggered, this, [this]() { openFileRules(); });
+    connect(optionsAction_, &QAct::triggered, this, [this]() { openFileRules(); });
+
+    connect(copyAction_, &QAct::triggered, this, [this]() { copyDefault(); });
+    connect(copyToRightAction_, &QAct::triggered, this,
+            [this]() { transferSelected(QStringLiteral("Copy to Right..."), leftTree_); });
+    connect(copyToLeftAction_, &QAct::triggered, this,
+            [this]() { transferSelected(QStringLiteral("Copy to Left..."), rightTree_); });
+    connect(moveToRightAction_, &QAct::triggered, this,
+            [this]() { transferSelected(QStringLiteral("Move to Right..."), leftTree_); });
+    connect(moveToLeftAction_, &QAct::triggered, this,
+            [this]() { transferSelected(QStringLiteral("Move to Left..."), rightTree_); });
+    connect(copyToFolderAction_, &QAct::triggered, this,
+            [this]() { transferSelected(QStringLiteral("Copy to Folder..."), selectedTree()); });
+    connect(moveToFolderAction_, &QAct::triggered, this,
+            [this]() { transferSelected(QStringLiteral("Move to Folder..."), selectedTree()); });
+    for (CompareTree *tree : {leftTree_, rightTree_})
+      connect(tree, &QTreeWidget::itemSelectionChanged, this, [this]() { updateCopyEnabled(); });
+    updateCopyEnabled();
+    syncFilterActions();
+  }
+
+  // The tree whose selection a toolbar Copy acts on: the focused one if it has a selection,
+  // otherwise whichever side has one (nullptr when nothing is selected).
+  CompareTree *selectedTree() const {
+    CompareTree *focused = activeTree();
+    if (focused && !focused->selectedItems().isEmpty())
+      return focused;
+    if (!leftTree_->selectedItems().isEmpty())
+      return leftTree_;
+    if (!rightTree_->selectedItems().isEmpty())
+      return rightTree_;
+    return nullptr;
+  }
+
+  void updateCopyEnabled() {
+    if (!copyAction_)
+      return;
+    const bool left = !leftTree_->selectedItems().isEmpty();
+    const bool right = !rightTree_->selectedItems().isEmpty();
+    copyAction_->setEnabled(left || right);
+    copyToRightAction_->setEnabled(left);
+    moveToRightAction_->setEnabled(left);
+    copyToLeftAction_->setEnabled(right);
+    moveToLeftAction_->setEnabled(right);
+    copyToFolderAction_->setEnabled(left || right);
+    moveToFolderAction_->setEnabled(left || right);
+  }
+
+  // The same operation as the context menu / Ctrl+R / Ctrl+L, on the selection of `tree`.
+  void transferSelected(const QString &action, CompareTree *tree) {
+    if (!tree || tree->selectedItems().isEmpty())
+      return;
+    QTreeWidgetItem *item =
+        tree->currentItem() && tree->currentItem()->isSelected() ? tree->currentItem()
+                                                                  : tree->selectedItems().first();
+    const NodeContext ctx = makeContext(tree, item);
+    if (!ctx.selection.isEmpty())
+      activateNodeAction(ctx, action);
+  }
+
+  // Toolbar "Copy": from the side that has the selection to the other side.
+  void copyDefault() {
+    CompareTree *tree = selectedTree();
+    if (!tree)
+      return;
+    transferSelected(tree == leftTree_ ? QStringLiteral("Copy to Right...")
+                                       : QStringLiteral("Copy to Left..."),
+                     tree);
+  }
+
+  void openFileRules() {
+    if (!onOpenOptions) {
+      log(QStringLiteral("File matching rules are edited in Tools > Options > Folder Compare"));
+      return;
+    }
+    log(QStringLiteral("Opened file matching rules (Tools > Options > Folder Compare)"));
+    if (onOpenOptions(QStringLiteral("Folder Compare")))
+      refresh();
+  }
+
+  // "Minor" = a file pair whose only difference is the modification time (same size).
+  static bool isTimestampOnlyDifference(const QTreeWidgetItem *left, const QTreeWidgetItem *right,
+                                        int cls) {
+    if (cls != static_cast<int>(PairClass::LeftNewer) &&
+        cls != static_cast<int>(PairClass::RightNewer))
+      return false;
+    if (left->data(0, kIsDirRole).toBool() || right->data(0, kIsDirRole).toBool())
+      return false;
+    if (left->data(0, kPathRole).toString().isEmpty() ||
+        right->data(0, kPathRole).toString().isEmpty())
+      return false;
+    return left->text(3) == right->text(3);
   }
 
   // --------------------------------------------------------------------- UI
@@ -1537,8 +1843,7 @@ private:
     toolbar_->addAction(refreshAction_);
     toolbar_->addAction(swapAction_);
     toolbar_->addSeparator();
-    for (auto *action : showActions_)
-      toolbar_->addAction(action);
+    addFilterAndCopyToolbarItems();
     toolbar_->addSeparator();
     toolbar_->addAction(expandAllAction_);
     toolbar_->addAction(collapseAllAction_);
@@ -1713,7 +2018,7 @@ private:
 
     for (auto *action : showActions_) {
       connect(action, &QAct::toggled, this,
-              [this](bool) { applyViewFilter(); });
+              [this](bool) { applyViewFilter(); syncFilterActions(); });
     }
     connect(expandAllAction_, &QAct::triggered, this, [this]() {
       leftTree_->expandAll();
@@ -1732,8 +2037,7 @@ private:
     });
     connect(findAction_, &QAct::triggered, this,
             [this]() { log(::openbc::i18n::t("folder.find_requested_in_current_folder_level")); });
-    connect(optionsAction_, &QAct::triggered, this,
-            [this]() { log(::openbc::i18n::t("folder.comparison_options_opened")); });
+    connectFilterAndCopySignals();
 
     connectTreePair(leftTree_, rightTree_, "left");
     connectTreePair(rightTree_, leftTree_, "right");
@@ -3492,6 +3796,9 @@ private:
       const int cls = left->data(0, kClassRole).toInt();
       visible =
           cls < 0 || cls >= kPairClassCount || showActions_[cls]->isChecked();
+      if (visible && minorAction_ && minorAction_->isChecked() &&
+          isTimestampOnlyDifference(left, right, cls))
+        visible = false;
     }
     left->setHidden(!visible);
     right->setHidden(!visible);
@@ -3562,6 +3869,22 @@ private:
   QAction *editSelectionAction_ = nullptr;
   QAction *findAction_ = nullptr;
   QAction *optionsAction_ = nullptr;
+  QAction *allAction_ = nullptr;
+  QAction *diffsAction_ = nullptr;
+  QAction *sameAction_ = nullptr;
+  QAction *minorAction_ = nullptr;
+  QAction *rulesAction_ = nullptr;
+  QAction *copyAction_ = nullptr;
+  QAction *copyToRightAction_ = nullptr;
+  QAction *copyToLeftAction_ = nullptr;
+  QAction *moveToRightAction_ = nullptr;
+  QAction *moveToLeftAction_ = nullptr;
+  QAction *copyToFolderAction_ = nullptr;
+  QAction *moveToFolderAction_ = nullptr;
+  QAction *diffPresetActions_[kDiffPresetCount] = {};
+  int diffPresetMasks_[kDiffPresetCount] = {};
+  QToolButton *diffsButton_ = nullptr;
+  QToolButton *copyButton_ = nullptr;
 
   std::shared_ptr<ComparisonRun> run_;
   bool syncingScroll_ = false;
