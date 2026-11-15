@@ -1446,7 +1446,9 @@ protected:
     if (event->button() == Qt::LeftButton &&
         event->modifiers().testFlag(Qt::ControlModifier)) {
       if (auto *item = itemAt(event->pos())) {
-        setCurrentItem(item);
+        // NoUpdate: the default command under ExtendedSelection is ClearAndSelect, which would
+        // drop every other selected row before the toggle below.
+        setCurrentItem(item, 0, QItemSelectionModel::NoUpdate);
         item->setSelected(!item->isSelected());
         event->accept();
         return;

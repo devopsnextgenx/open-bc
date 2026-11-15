@@ -5,7 +5,13 @@
 //! work (parsing, hashing, diffing) runs on Rayon, never on a Tokio worker.
 //!
 //! * [`BinaryCommand::Reload`] re-parses both files (the UI sends it after a file changed).
-//! * [`BinaryCommand::ShowUnchanged`] only rebuilds the tree from the cached diff: no re-parse.
+//! * [`BinaryCommand::ShowUnchanged`], [`BinaryCommand::SetFilters`] and
+//!   [`BinaryCommand::SetDemangle`] only rebuild the tree from the cached diff: no re-parse. Any
+//!   of them that arrive while the files are still being parsed are applied before the first
+//!   result is published, so a tab restored with filters on never flashes the unfiltered tree.
+//! * [`BinaryCommand::Inspect`] reads the bytes of one function or section straight from disk
+//!   (offset and hash recorded by the parser) and answers with a hex diff and, for x86 / x86-64
+//!   code, a disassembly diff ([`BinaryEvent::Inspect`]).
 //!
 //! Each side is parsed independently, so an unreadable or unsupported file is reported against
 //! its own path (`errors[side]`) without hiding the other side's problem.
@@ -19,7 +25,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use openbc_core::binary_compare::{build_tree, flatten, BinaryDiff, ChangeState, DiffCounts, FlatRow};
+use openbc_core::binary_compare::{
+    build_tree_with, flatten, visible_counts, BinaryDiff, ChangeState, DiffCounts, FlatRow, InspectOutput,
+    ViewOptions, HIDE_ALL,
+};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
@@ -47,6 +56,20 @@ pub enum BinaryCommand {
     Reload,
     /// Show (`true`) or hide (`false`) unchanged leaves; re-uses the cached diff.
     ShowUnchanged(bool),
+    /// Granular change filters, a bit set of `openbc_core::binary_compare::HIDE_*`; re-uses the
+    /// cached diff.
+    SetFilters(u32),
+    /// Show C++ names demangled (`true`) or raw (`false`); re-uses the cached diff.
+    SetDemangle(bool),
+    /// Open the hex / disassembly inspector on the function (`kind` =
+    /// `NodeKind::Function.code()`) or section (`NodeKind::Section.code()`) with identity `key`.
+    /// Latest wins; a reload cancels it.
+    Inspect {
+        /// `NodeKind` code of the row.
+        kind: u8,
+        /// `FlatRow::key` of the row.
+        key: String,
+    },
 }
 
 /// Everything the UI needs to display one finished comparison.
@@ -54,8 +77,10 @@ pub enum BinaryCommand {
 pub struct BinarySummary {
     /// Pre-order tree rows (empty when a side failed).
     pub rows: Vec<FlatRow>,
-    /// Counts over every compared element.
+    /// Counts over every compared element that the active filters leave visible.
     pub totals: DiffCounts,
+    /// Changed elements hidden by the granular filters.
+    pub hidden: usize,
     /// Whole-file verdict (SHA-256 of both files).
     pub file_state: Option<ChangeState>,
     /// Per-side error text, `[left, right]`.
@@ -66,6 +91,15 @@ pub struct BinarySummary {
     pub changes_only: bool,
 }
 
+/// Answer to [`BinaryCommand::Inspect`].
+#[derive(Debug, Default)]
+pub struct InspectSummary {
+    /// Hex and disassembly rows (empty when `error` is set).
+    pub output: InspectOutput,
+    /// Why nothing could be shown (unknown element, unreadable file, built without LIEF).
+    pub error: Option<String>,
+}
+
 /// Events emitted by the actor.
 #[derive(Debug)]
 pub enum BinaryEvent {
@@ -73,6 +107,8 @@ pub enum BinaryEvent {
     Stage(&'static str),
     /// A finished comparison.
     Summary(Arc<BinarySummary>),
+    /// The inspector content for the last [`BinaryCommand::Inspect`].
+    Inspect(Arc<InspectSummary>),
     /// Fatal actor error.
     Error(String),
 }
@@ -123,10 +159,14 @@ fn parse_and_diff(paths: &[PathBuf; 2], options: &BinaryOptions) -> Parsed {
 mod backend {
     use std::path::PathBuf;
 
-    use openbc_compute::binary::{architecture_of, parse_binary, ParseOptions};
-    use openbc_core::binary_compare::{diff_binaries, BinaryDiff};
+    use openbc_compute::binary::inspect::read_region;
+    use openbc_compute::binary::{architecture_of, disasm, parse_binary, ParseOptions};
+    use openbc_core::binary_compare::inspect::{build_output, MAX_INSPECT_BYTES};
+    use openbc_core::binary_compare::{
+        diff_binaries, AsmLine, BinaryDiff, FunctionInfo, InspectOutput, NodeKind, SectionInfo,
+    };
 
-    use super::BinaryOptions;
+    use super::{BinaryOptions, InspectSummary};
 
     pub(super) fn parse_pair(paths: &[PathBuf; 2], options: &BinaryOptions) -> Result<BinaryDiff, [Option<String>; 2]> {
         let options = ParseOptions {
@@ -151,30 +191,150 @@ mod backend {
         };
         Ok(diff_binaries(&left, &right))
     }
+
+    struct Side {
+        offset: u64,
+        size: u64,
+        sha256: String,
+    }
+
+    fn failure(message: &str) -> InspectSummary {
+        InspectSummary { output: InspectOutput::default(), error: Some(message.to_owned()) }
+    }
+
+    /// Read both versions of one function or section from disk and build the hex / disassembly diff.
+    pub(super) fn inspect(paths: &[PathBuf; 2], diff: &BinaryDiff, kind: u8, key: &str) -> InspectSummary {
+        let mut wants_asm = false;
+        let sides: [Option<Side>; 2] = if kind == NodeKind::Function.code() {
+            let Some(entry) = diff.functions.iter().find(|e| e.key == key) else {
+                return failure("function not found in the comparison");
+            };
+            wants_asm = true;
+            let side = |f: &Option<FunctionInfo>| {
+                f.as_ref().and_then(|f| f.file_offset.map(|offset| Side { offset, size: f.size, sha256: f.sha256.clone() }))
+            };
+            [side(&entry.left), side(&entry.right)]
+        } else if kind == NodeKind::Section.code() {
+            let Some(entry) = diff.sections.iter().find(|e| e.key == key) else {
+                return failure("section not found in the comparison");
+            };
+            let info = entry.right.as_ref().or(entry.left.as_ref());
+            wants_asm = info.is_some_and(|s| {
+                let name = s.name.to_ascii_lowercase();
+                s.flags.contains("EXEC") || name.contains("text") || name.contains("code")
+            });
+            let side = |s: &Option<SectionInfo>| {
+                s.as_ref().and_then(|s| s.file_offset.map(|offset| Side { offset, size: s.size, sha256: s.sha256.clone() }))
+            };
+            [side(&entry.left), side(&entry.right)]
+        } else {
+            return failure("only functions and sections can be inspected");
+        };
+
+        let mut notes = Vec::new();
+        let mut data: [Option<Vec<u8>>; 2] = [None, None];
+        for (i, label) in ["Version 1", "Version 2"].iter().enumerate() {
+            match &sides[i] {
+                None => notes.push(format!("{label}: not present, or its file location is unknown")),
+                Some(side) => match read_region(&paths[i], side.offset, side.size, &side.sha256, MAX_INSPECT_BYTES) {
+                    Ok(region) => {
+                        if region.truncated {
+                            notes.push(format!("{label}: showing the first {} of {} bytes", region.bytes.len(), side.size));
+                        } else if !region.verified {
+                            notes.push(format!(
+                                "{label}: the bytes on disk do not match the analysed hash (the file changed after it was \
+                                 loaded, or it is a slice of a universal binary); this view may be wrong"
+                            ));
+                        }
+                        data[i] = Some(region.bytes);
+                    }
+                    Err(error) => notes.push(error),
+                },
+            }
+        }
+
+        let mut asm: [Option<Vec<AsmLine>>; 2] = [None, None];
+        if wants_asm {
+            match diff.meta_value("architecture").and_then(disasm::bitness_for) {
+                Some(bitness) => {
+                    for i in 0..2 {
+                        asm[i] = data[i].as_deref().map(|bytes| disasm::disassemble(bitness, bytes));
+                    }
+                }
+                None => notes.push("Disassembly is available for x86 / x86-64 only; showing the hex view.".to_owned()),
+            }
+        }
+        let output = build_output(key, data[0].as_deref(), data[1].as_deref(), asm[0].as_deref(), asm[1].as_deref(), notes);
+        InspectSummary { output, error: None }
+    }
 }
 
 #[cfg(not(feature = "binary"))]
 mod backend {
     use std::path::PathBuf;
 
-    use openbc_core::binary_compare::BinaryDiff;
+    use openbc_core::binary_compare::{BinaryDiff, InspectOutput};
 
-    use super::BinaryOptions;
+    use super::{BinaryOptions, InspectSummary};
 
     pub(super) fn parse_pair(_: &[PathBuf; 2], _: &BinaryOptions) -> Result<BinaryDiff, [Option<String>; 2]> {
         let msg = "this build of OpenBC has no binary compare support (compiled without the `binary` feature / LIEF)";
         Err([Some(msg.to_owned()), Some(msg.to_owned())])
     }
+
+    pub(super) fn inspect(_: &[PathBuf; 2], _: &BinaryDiff, _: u8, _: &str) -> InspectSummary {
+        InspectSummary {
+            output: InspectOutput::default(),
+            error: Some("this build of OpenBC has no binary compare support".to_owned()),
+        }
+    }
 }
 
-fn summarize(diff: &BinaryDiff, show_unchanged: bool) -> BinarySummary {
+fn summarize(diff: &BinaryDiff, view: &ViewOptions) -> BinarySummary {
+    let totals = visible_counts(diff, view);
     BinarySummary {
-        rows: flatten(&build_tree(diff, show_unchanged)),
-        totals: diff.totals(),
+        rows: flatten(&build_tree_with(diff, view)),
+        hidden: diff.totals().changed().saturating_sub(totals.changed()),
+        totals,
         file_state: Some(diff.file_state),
         errors: [None, None],
         labels: [diff.left_label.clone(), diff.right_label.clone()],
-        changes_only: !show_unchanged,
+        changes_only: !view.show_unchanged,
+    }
+}
+
+/// Applies one command to the actor state. Returns `true` when the tree must be rebuilt.
+fn apply_command(
+    command: BinaryCommand,
+    view: &mut ViewOptions,
+    reload: &mut bool,
+    inspect: &mut Option<(u8, String)>,
+) -> bool {
+    match command {
+        BinaryCommand::Reload => {
+            *reload = true;
+            false
+        }
+        BinaryCommand::ShowUnchanged(show) => {
+            let changed = view.show_unchanged != show;
+            view.show_unchanged = show;
+            changed
+        }
+        BinaryCommand::SetFilters(bits) => {
+            let bits = bits & HIDE_ALL;
+            let changed = view.hide != bits;
+            view.hide = bits;
+            changed
+        }
+        BinaryCommand::SetDemangle(on) => {
+            let changed = view.demangle != on;
+            view.demangle = on;
+            changed
+        }
+        BinaryCommand::Inspect { kind, key } => {
+            *inspect = Some((kind, key));
+            false
+        }
     }
 }
 
@@ -184,13 +344,15 @@ async fn run(
     mut commands: mpsc::Receiver<BinaryCommand>,
     events: mpsc::Sender<BinaryEvent>,
 ) {
-    let mut show_unchanged = true;
+    let mut view = ViewOptions::default();
     let mut cached: Option<Arc<BinaryDiff>> = None;
     let mut reload = true;
+    let mut pending_inspect: Option<(u8, String)> = None;
 
     loop {
         if reload {
             reload = false;
+            pending_inspect = None; // its row may not exist any more
             if !send_event(&events, BinaryEvent::Stage("parsing")).await {
                 return;
             }
@@ -204,9 +366,13 @@ async fn run(
                     Parsed::Failed([None, None], [String::new(), String::new()])
                 }
             };
+            // View settings sent while parsing are honoured by the very first result.
+            while let Ok(command) = commands.try_recv() {
+                apply_command(command, &mut view, &mut reload, &mut pending_inspect);
+            }
             let summary = match parsed {
                 Parsed::Ok(diff) => {
-                    let s = summarize(&diff, show_unchanged);
+                    let s = summarize(&diff, &view);
                     cached = Some(diff);
                     s
                 }
@@ -218,6 +384,10 @@ async fn run(
             if !send_event(&events, BinaryEvent::Summary(Arc::new(summary))).await {
                 return;
             }
+            if reload {
+                continue; // a Reload arrived while parsing
+            }
+            pending_inspect = None;
         }
 
         // Drain at least one command, then everything queued, so a burst costs one rebuild.
@@ -228,23 +398,38 @@ async fn run(
         }
         let mut rebuild = false;
         for command in batch {
-            match command {
-                BinaryCommand::Reload => reload = true,
-                BinaryCommand::ShowUnchanged(v) => {
-                    rebuild |= v != show_unchanged;
-                    show_unchanged = v;
-                }
-            }
+            rebuild |= apply_command(command, &mut view, &mut reload, &mut pending_inspect);
         }
-        if rebuild && !reload {
+        if reload {
+            continue;
+        }
+        if rebuild {
             if let Some(diff) = cached.clone() {
-                let flags = show_unchanged;
-                let built = rayon_run(move || summarize(&diff, flags)).await;
+                let flags = view;
+                let built = rayon_run(move || summarize(&diff, &flags)).await;
                 if let Ok(summary) = built {
                     if !send_event(&events, BinaryEvent::Summary(Arc::new(summary))).await {
                         return;
                     }
                 }
+            }
+        }
+        if let Some((kind, key)) = pending_inspect.take() {
+            let answer = match cached.clone() {
+                Some(diff) => {
+                    let p = paths.clone();
+                    rayon_run(move || backend::inspect(&p, &diff, kind, &key)).await.unwrap_or_else(|_| InspectSummary {
+                        output: InspectOutput::default(),
+                        error: Some("inspector worker stopped unexpectedly".to_owned()),
+                    })
+                }
+                None => InspectSummary {
+                    output: InspectOutput::default(),
+                    error: Some("nothing to inspect: the comparison failed".to_owned()),
+                },
+            };
+            if !send_event(&events, BinaryEvent::Inspect(Arc::new(answer))).await {
+                return;
             }
         }
     }
@@ -282,6 +467,50 @@ mod tests {
         };
         assert!(lean.changes_only);
         assert!(lean.rows.len() < full.rows.len());
+    }
+
+    #[cfg(feature = "binary")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inspector_reads_identical_bytes_for_a_self_compare() {
+        let exe = std::env::current_exe().unwrap();
+        let (handle, mut rx) =
+            spawn_binary_compare(&Handle::current(), exe.clone(), exe, BinaryOptions::default());
+        let summary = loop {
+            if let Some(BinaryEvent::Summary(s)) = rx.recv().await {
+                break s;
+            }
+        };
+        // Stripped test binaries have no inspectable rows; nothing to assert then.
+        let Some(row) = summary.rows.iter().find(|r| r.inspect && r.kind == openbc_core::binary_compare::NodeKind::Function.code()) else {
+            return;
+        };
+        assert!(handle.send(BinaryCommand::Inspect { kind: row.kind, key: row.key.clone() }));
+        let answer = loop {
+            if let Some(BinaryEvent::Inspect(a)) = rx.recv().await {
+                break a;
+            }
+        };
+        assert!(answer.error.is_none(), "{:?}", answer.error);
+        assert!(!answer.output.hex.is_empty());
+        assert_eq!(answer.output.differing_bytes, 0);
+        assert_eq!(answer.output.left_len, answer.output.right_len);
+    }
+
+    #[cfg(feature = "binary")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn filters_and_demangle_sent_while_parsing_shape_the_first_result() {
+        let exe = std::env::current_exe().unwrap();
+        let (handle, mut rx) =
+            spawn_binary_compare(&Handle::current(), exe.clone(), exe, BinaryOptions::default());
+        assert!(handle.send(BinaryCommand::ShowUnchanged(false)));
+        assert!(handle.send(BinaryCommand::SetFilters(openbc_core::binary_compare::HIDE_ALL)));
+        let first = loop {
+            if let Some(BinaryEvent::Summary(s)) = rx.recv().await {
+                break s;
+            }
+        };
+        assert!(first.changes_only, "the first result already honours the early commands");
+        assert_eq!(first.hidden, 0, "a self-compare has nothing to hide");
     }
 
     #[cfg(feature = "binary")]

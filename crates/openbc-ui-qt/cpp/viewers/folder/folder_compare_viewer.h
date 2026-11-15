@@ -39,6 +39,8 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPair>
+#include <QShortcut>
 #include <QMimeData>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -855,6 +857,19 @@ public:
     QString parentPath;      // folder in which create actions add entries
     QString leftParentPath;
     QString rightParentPath;
+
+    // One selected row of the clicked side's tree. Everything a batch action needs is copied
+    // here (paths only, no item pointers) for the same reason as NodeContext itself.
+    struct SelectedNode {
+      QString path;       // row on the clicked side (empty on a placeholder row)
+      QString otherPath;  // its counterpart on the other side (may be empty)
+      QString leftParentPath;
+      QString rightParentPath;
+      bool isDir = false;
+    };
+    // Every selected row of the clicked side (Ctrl / Shift selection). Always holds at least the
+    // clicked row when there is one; empty only for a click on empty space.
+    QList<SelectedNode> selection;
 
     QString displayPath() const { return existsHere ? path : otherPath; }
   };
@@ -1724,6 +1739,26 @@ private:
     connectTreePair(rightTree_, leftTree_, "right");
     connectScrollSync();
 
+    // Keyboard equivalents of the context menu; like it they act on the whole selection.
+    struct KeyAction {
+      CompareTree *tree;
+      QKeySequence keys;
+      const char *action;
+    };
+    for (const KeyAction &entry :
+         {KeyAction{leftTree_, QKeySequence(QKeySequence::Delete), "Delete..."},
+          KeyAction{rightTree_, QKeySequence(QKeySequence::Delete), "Delete..."},
+          KeyAction{leftTree_, QKeySequence(QStringLiteral("Ctrl+R")), "Copy to Right..."},
+          KeyAction{rightTree_, QKeySequence(QStringLiteral("Ctrl+L")), "Copy to Left..."}}) {
+      auto *shortcut = new QShortcut(entry.keys, entry.tree);
+      shortcut->setContext(Qt::WidgetShortcut);
+      connect(shortcut, &QShortcut::activated, this,
+              [this, tree = entry.tree, action = QString::fromLatin1(entry.action)]() {
+                const NodeContext ctx = makeContext(tree, tree->currentItem());
+                if (!ctx.selection.isEmpty() && ctx.existsHere)
+                  activateNodeAction(ctx, action);
+              });
+    }
     for (CompareTree *tree : {leftTree_, rightTree_}) {
       tree->setContextMenuPolicy(Qt::CustomContextMenu);
       connect(tree, &QWidget::customContextMenuRequested, this,
@@ -2065,7 +2100,10 @@ private:
             [other](QTreeWidgetItem *current, QTreeWidgetItem *) {
               if (auto *counterpart = pairedItem(current, other)) {
                 const QSignalBlocker blocker(other);
-                other->setCurrentItem(counterpart);
+                // NoUpdate keeps the other tree's (mirrored) multi-selection intact; the
+                // default ClearAndSelect would collapse it to this single row.
+                other->setCurrentItem(counterpart, 0,
+                                      QItemSelectionModel::NoUpdate);
               }
             });
   }
@@ -2131,6 +2169,51 @@ private:
   // "File Compare Report...").
   void showNodeMenu(CompareTree *tree, const QPoint &pos) {
     QTreeWidgetItem *item = tree->itemAt(pos);
+    if (item && !item->isSelected()) {
+      // Right-click on an unselected row selects just that row; on a selected row the whole
+      // selection is kept so the menu acts on all of it.
+      tree->clearSelection();
+      item->setSelected(true);
+    }
+    if (item)
+      tree->setCurrentItem(item, 0, QItemSelectionModel::NoUpdate);
+    NodeContext ctx = makeContext(tree, item);
+
+    QMenu menu(tree);
+    if (ctx.selection.size() > 1) {
+      QAction *header = menu.addAction(
+          ::openbc::i18n::t("folder.n_items_selected", ctx.selection.size()));
+      header->setEnabled(false);
+      menu.addSeparator();
+    }
+    buildNodeMenu(menu, ctx);
+    menu.exec(tree->viewport()->mapToGlobal(pos));
+  }
+
+  // Describes one row (and its counterpart) as plain strings.
+  NodeContext::SelectedNode describeRow(CompareTree *tree,
+                                        QTreeWidgetItem *row) const {
+    const bool isLeft = tree == leftTree_;
+    QTreeWidgetItem *peer = pairedItem(row, isLeft ? rightTree_ : leftTree_);
+    NodeContext::SelectedNode node;
+    node.path = row->data(0, kPathRole).toString();
+    node.otherPath = peer ? peer->data(0, kPathRole).toString() : QString();
+    node.isDir = row->data(0, kIsDirRole).toBool() ||
+                 (peer && peer->data(0, kIsDirRole).toBool());
+    const QString ownParent =
+        row->parent() ? row->parent()->data(0, kPathRole).toString()
+                      : pathText(isLeft ? leftPath_ : rightPath_);
+    const QString peerParent =
+        peer && peer->parent()
+            ? peer->parent()->data(0, kPathRole).toString()
+            : pathText(isLeft ? rightPath_ : leftPath_);
+    node.leftParentPath = isLeft ? ownParent : peerParent;
+    node.rightParentPath = isLeft ? peerParent : ownParent;
+    return node;
+  }
+
+  // The context for `item` of `tree` (null = empty space), including every selected row.
+  NodeContext makeContext(CompareTree *tree, QTreeWidgetItem *item) const {
     const bool isLeft = tree == leftTree_;
     QTreeWidgetItem *counterpart =
         item ? pairedItem(item, isLeft ? rightTree_ : leftTree_) : nullptr;
@@ -2138,6 +2221,11 @@ private:
     NodeContext ctx;
     ctx.side = isLeft ? Side::Left : Side::Right;
     if (item) {
+      for (QTreeWidgetItem *row : tree->selectedItems()) {
+        const auto node = describeRow(tree, row);
+        if (!node.path.isEmpty() || !node.otherPath.isEmpty())
+          ctx.selection.append(node);
+      }
       ctx.path = item->data(0, kPathRole).toString();
       ctx.existsHere = !ctx.path.isEmpty();
       ctx.otherPath =
@@ -2159,21 +2247,53 @@ private:
                        ? counterpart->parent()->data(0, kPathRole).toString()
                        : pathText(rightPath_)
                  : ctx.parentPath;
-      if (!item->isSelected()) {
-        tree->clearSelection();
-        item->setSelected(true);
-      }
-      tree->setCurrentItem(item);
+      if (ctx.selection.isEmpty())
+        ctx.selection.append(describeRow(tree, item));
     } else {
       ctx.isDir = true;
       ctx.parentPath = pathText(isLeft ? leftPath_ : rightPath_);
       ctx.leftParentPath = pathText(leftPath_);
       ctx.rightParentPath = pathText(rightPath_);
     }
+    return ctx;
+  }
 
-    QMenu menu(tree);
-    buildNodeMenu(menu, ctx);
-    menu.exec(tree->viewport()->mapToGlobal(pos));
+  // Selected rows an action should act on: the whole selection, without rows nested inside
+  // another selected folder (copying / deleting both would do the work twice). `pathOf` picks
+  // the path that decides nesting, normally the side the action reads from.
+  template <typename PathOf>
+  static QList<NodeContext::SelectedNode>
+  withoutNested(const QList<NodeContext::SelectedNode> &nodes, PathOf pathOf) {
+    QStringList roots;
+    for (const auto &node : nodes) {
+      const QString path = QDir::fromNativeSeparators(pathOf(node));
+      if (!path.isEmpty() && node.isDir)
+        roots << path;
+    }
+    QList<NodeContext::SelectedNode> out;
+    for (const auto &node : nodes) {
+      const QString path = QDir::fromNativeSeparators(pathOf(node));
+      bool nested = false;
+      for (const QString &root : roots) {
+        if (path.size() > root.size() && path.startsWith(root) &&
+            path.at(root.size()) == QLatin1Char('/')) {
+          nested = true;
+          break;
+        }
+      }
+      if (!nested)
+        out.append(node);
+    }
+    return out;
+  }
+
+  // Up to `limit` entries, one per line, then "... and N more".
+  static QString listPreview(const QStringList &paths, int limit = 10) {
+    QString text = paths.mid(0, limit).join(QLatin1Char('\n'));
+    if (paths.size() > limit)
+      text += QLatin1Char('\n') +
+              ::openbc::i18n::t("folder.and_n_more", paths.size() - limit);
+    return text;
   }
 
   CompareTree *treeFor(Side side) const {
@@ -2537,95 +2657,262 @@ private:
         }));
   }
 
+  using TransferJob = QPair<QString, QString>; // source path, destination path
+
   void transferFile(const QString &sourcePath, const QString &destinationPath,
                     bool move, bool mirror = false) {
-    if (sourcePath.isEmpty() || destinationPath.isEmpty())
-      return;
-    if (sourcePath == destinationPath) {
-      QMessageBox::information(this, ::openbc::i18n::t("folder.transfer"),
-                               ::openbc::i18n::t("folder.source_and_destination_are_the_same"));
-      return;
-    }
-    RemoteProfile sourceProfile, destinationProfile;
-    const bool sourceRemote =
-        RemoteProfileStore::findProfileForPath(sourcePath, &sourceProfile);
-    const bool destinationRemote = RemoteProfileStore::findProfileForPath(
-        destinationPath, &destinationProfile);
-    if (!destinationRemote && QFileInfo::exists(destinationPath) &&
-        QMessageBox::question(this, ::openbc::i18n::t("folder.replace_file"),
-                              ::openbc::i18n::t("folder.replace_the_existing_destination_file")) !=
-            QMessageBox::Yes) {
-      return;
-    }
-    if (sourceRemote && destinationRemote &&
-        sourceProfile.name == destinationProfile.name &&
-        destinationPath.startsWith(sourcePath + "/")) {
-      QMessageBox::warning(this, ::openbc::i18n::t("folder.transfer"),
-                           ::openbc::i18n::t("folder.a_folder_cannot_be_moved_inside"));
-      return;
-    }
-    if (!sourceRemote && !destinationRemote && QFileInfo(sourcePath).isDir()) {
-      const QString sourceAbsolute =
-          QDir::cleanPath(QFileInfo(sourcePath).absoluteFilePath());
-      const QString destinationAbsolute =
-          QDir::cleanPath(QFileInfo(destinationPath).absoluteFilePath());
-      if (destinationAbsolute.startsWith(sourceAbsolute + QDir::separator())) {
-        QMessageBox::warning(this, ::openbc::i18n::t("folder.transfer"),
-                             ::openbc::i18n::t("folder.a_folder_cannot_be_copied_inside"));
-        return;
+    transferFiles({TransferJob(sourcePath, destinationPath)}, move, mirror);
+  }
+
+  // Copies / moves every job in ONE background task and refreshes once at the end. Checks and
+  // prompts are made once for the whole batch; a failing job does not stop the others.
+  void transferFiles(const QList<TransferJob> &requested, bool move,
+                     bool mirror = false) {
+    struct Job {
+      QString source, destination;
+      RemoteProfile sourceProfile, destinationProfile;
+      bool sourceRemote = false, destinationRemote = false;
+    };
+    QList<Job> jobs;
+    QStringList skipped;
+    for (const TransferJob &request : requested) {
+      if (request.first.isEmpty() || request.second.isEmpty())
+        continue;
+      Job job;
+      job.source = request.first;
+      job.destination = request.second;
+      if (job.source == job.destination) {
+        skipped << ::openbc::i18n::t("folder.source_and_destination_are_the_same") +
+                       QStringLiteral(": ") + job.source;
+        continue;
       }
+      job.sourceRemote = RemoteProfileStore::findProfileForPath(
+          job.source, &job.sourceProfile);
+      job.destinationRemote = RemoteProfileStore::findProfileForPath(
+          job.destination, &job.destinationProfile);
+      if (job.sourceRemote && job.destinationRemote &&
+          job.sourceProfile.name == job.destinationProfile.name &&
+          job.destination.startsWith(job.source + "/")) {
+        skipped << ::openbc::i18n::t("folder.a_folder_cannot_be_moved_inside") +
+                       QStringLiteral(": ") + job.source;
+        continue;
+      }
+      if (!job.sourceRemote && !job.destinationRemote &&
+          QFileInfo(job.source).isDir()) {
+        const QString sourceAbsolute =
+            QDir::cleanPath(QFileInfo(job.source).absoluteFilePath());
+        const QString destinationAbsolute =
+            QDir::cleanPath(QFileInfo(job.destination).absoluteFilePath());
+        if (destinationAbsolute.startsWith(sourceAbsolute + QDir::separator())) {
+          skipped << ::openbc::i18n::t("folder.a_folder_cannot_be_copied_inside") +
+                         QStringLiteral(": ") + job.source;
+          continue;
+        }
+      }
+      jobs.append(job);
+    }
+    if (jobs.isEmpty()) {
+      if (!skipped.isEmpty())
+        QMessageBox::information(this, ::openbc::i18n::t("folder.transfer"),
+                                 listPreview(skipped));
+      return;
+    }
+    int existing = 0;
+    for (const Job &job : jobs) {
+      if (!job.destinationRemote && QFileInfo::exists(job.destination))
+        ++existing;
+    }
+    if (existing > 0) {
+      const QString question =
+          jobs.size() == 1
+              ? ::openbc::i18n::t("folder.replace_the_existing_destination_file")
+              : ::openbc::i18n::t("folder.replace_n_existing", existing);
+      if (QMessageBox::question(this, ::openbc::i18n::t("folder.replace_file"),
+                                question) != QMessageBox::Yes)
+        return;
+    }
+    if (!skipped.isEmpty()) {
+      QMessageBox::information(this, ::openbc::i18n::t("folder.transfer"),
+                               listPreview(skipped));
     }
     auto comparisonRun = run_;
     if (!comparisonRun)
       return;
     const QPointer<FolderCompareViewer> self(this);
-    comparisonRun->pool.start(QRunnable::create(
-        [self, sourcePath, destinationPath, sourceProfile, destinationProfile,
-         sourceRemote, destinationRemote, move, mirror]() {
-          QString error;
-          bool ok = sharedVfsBridge().copyEntry(
-              sourcePath, sourceProfile, sourceRemote, destinationPath,
-              destinationProfile, destinationRemote, &error, mirror);
-          if (ok && move)
-            ok = sharedVfsBridge().deleteEntry(sourcePath, sourceProfile,
-                                               sourceRemote, &error);
-          QMetaObject::invokeMethod(
-              qApp,
-              [self, sourcePath, destinationPath, ok, error]() {
-                if (!self)
-                  return;
-                if (!ok) {
-                  QMessageBox::warning(
-                      self, ::openbc::i18n::t("folder.transfer_failed"),
-                      error.isEmpty()
-                          ? ::openbc::i18n::t("folder.could_not_transfer_the_file")
-                          : error);
-                  return;
-                }
-                self->log(::openbc::i18n::t("folder.transferred_to", sourcePath, destinationPath));
-                self->refresh();
-              },
-              Qt::QueuedConnection);
-        }));
+    comparisonRun->pool.start(QRunnable::create([self, jobs, move, mirror]() {
+      QStringList failures;
+      QStringList done;
+      for (const Job &job : jobs) {
+        QString error;
+        bool ok = sharedVfsBridge().copyEntry(
+            job.source, job.sourceProfile, job.sourceRemote, job.destination,
+            job.destinationProfile, job.destinationRemote, &error, mirror);
+        if (ok && move)
+          ok = sharedVfsBridge().deleteEntry(job.source, job.sourceProfile,
+                                             job.sourceRemote, &error);
+        if (ok)
+          done << job.source + QStringLiteral(" -> ") + job.destination;
+        else
+          failures << job.source + QStringLiteral(": ") +
+                          (error.isEmpty() ? QStringLiteral("?") : error);
+      }
+      QMetaObject::invokeMethod(
+          qApp,
+          [self, done, failures]() {
+            if (!self)
+              return;
+            for (const QString &line : done)
+              self->log(::openbc::i18n::t("folder.transferred_to", line.section(QStringLiteral(" -> "), 0, 0),
+                                          line.section(QStringLiteral(" -> "), 1)));
+            if (!failures.isEmpty()) {
+              QMessageBox::warning(self, ::openbc::i18n::t("folder.transfer_failed"),
+                                   listPreview(failures));
+            }
+            if (!done.isEmpty())
+              self->refresh();
+          },
+          Qt::QueuedConnection);
+    }));
   }
 
+  // Copy / move / update / mirror of EVERY selected row from `sourceSide` to the other side.
   void transferNode(const NodeContext &ctx, Side sourceSide, bool move,
                     bool mirror) {
-    const QString sourcePath =
-        sourceSide == ctx.side ? ctx.path : ctx.otherPath;
-    if (sourcePath.isEmpty()) {
+    const Side destinationSide =
+        sourceSide == Side::Left ? Side::Right : Side::Left;
+    QList<TransferJob> jobs;
+    const auto sourceOf = [&](const NodeContext::SelectedNode &node) {
+      return sourceSide == ctx.side ? node.path : node.otherPath;
+    };
+    for (const auto &node : withoutNested(ctx.selection, sourceOf)) {
+      const QString sourcePath = sourceOf(node);
+      if (sourcePath.isEmpty())
+        continue; // nothing on the source side for this row
+      const QString destinationParent = destinationSide == Side::Left
+                                            ? node.leftParentPath
+                                            : node.rightParentPath;
+      jobs.append(TransferJob(
+          sourcePath, ComparisonRun::childPath(
+                          destinationParent, QFileInfo(sourcePath).fileName())));
+    }
+    if (jobs.isEmpty()) {
       QMessageBox::information(this, ::openbc::i18n::t("folder.synchronize"),
                                ::openbc::i18n::t("folder.the_selected_source_side_is_missing"));
       return;
     }
-    const Side destinationSide =
-        sourceSide == Side::Left ? Side::Right : Side::Left;
-    const QString destinationParent = destinationSide == Side::Left
-                                          ? ctx.leftParentPath
-                                          : ctx.rightParentPath;
-    const QString destinationPath = ComparisonRun::childPath(
-        destinationParent, QFileInfo(sourcePath).fileName());
-    transferFile(sourcePath, destinationPath, move, mirror);
+    transferFiles(jobs, move, mirror);
+  }
+
+  // Copy / move the selection into one chosen folder.
+  void transferToFolder(const NodeContext &ctx, const QString &folder,
+                        bool move) {
+    QList<TransferJob> jobs;
+    for (const auto &node :
+         withoutNested(ctx.selection,
+                       [](const NodeContext::SelectedNode &n) { return n.path; })) {
+      if (!node.path.isEmpty())
+        jobs.append(TransferJob(
+            node.path, QDir(folder).filePath(QFileInfo(node.path).fileName())));
+    }
+    transferFiles(jobs, move);
+  }
+
+  // Deletes every selected row on the clicked side after ONE confirmation that names them all.
+  void deleteNodes(const NodeContext &ctx) {
+    QStringList paths;
+    for (const auto &node :
+         withoutNested(ctx.selection,
+                       [](const NodeContext::SelectedNode &n) { return n.path; })) {
+      if (!node.path.isEmpty())
+        paths << node.path;
+    }
+    if (paths.isEmpty())
+      return;
+    QMessageBox box(
+        QMessageBox::Question, ::openbc::i18n::t("common.delete"),
+        paths.size() == 1
+            ? ::openbc::i18n::t("folder.delete_this_entry_permanently")
+            : ::openbc::i18n::t("folder.delete_n_entries_permanently", paths.size()),
+        QMessageBox::Yes | QMessageBox::No, this);
+    box.setInformativeText(listPreview(paths));
+    box.setDefaultButton(QMessageBox::No);
+    if (box.exec() != QMessageBox::Yes)
+      return;
+    const QPointer<FolderCompareViewer> self(this);
+    QThreadPool::globalInstance()->start([self, paths]() {
+      QStringList failures;
+      for (const QString &path : paths) {
+        RemoteProfile profile;
+        const bool remote =
+            RemoteProfileStore::findProfileForPath(path, &profile);
+        QString error;
+        if (!sharedVfsBridge().deleteEntry(path, profile, remote, &error))
+          failures << path + QStringLiteral(": ") + error;
+      }
+      QMetaObject::invokeMethod(
+          qApp,
+          [self, failures]() {
+            if (!self)
+              return;
+            if (!failures.isEmpty())
+              QMessageBox::warning(self, ::openbc::i18n::t("folder.delete_failed"),
+                                   listPreview(failures));
+            self->refresh();
+          },
+          Qt::QueuedConnection);
+    });
+  }
+
+  // Updates the modification time of every selected row on the clicked side.
+  void touchNodes(const NodeContext &ctx) {
+    QStringList paths;
+    for (const auto &node : ctx.selection) {
+      if (!node.path.isEmpty())
+        paths << node.path;
+    }
+    if (paths.isEmpty())
+      return;
+    const QPointer<FolderCompareViewer> self(this);
+    QThreadPool::globalInstance()->start([self, paths]() {
+      QStringList failures;
+      for (const QString &path : paths) {
+        RemoteProfile profile;
+        if (RemoteProfileStore::findProfileForPath(path, &profile)) {
+          if (QFileInfo(path).isDir()) { // directory timestamps are not supported remotely
+            failures << path + QStringLiteral(": ") +
+                            ::openbc::i18n::t("folder.directory_timestamps_are_not_supported_by");
+            continue;
+          }
+          QByteArray bytes;
+          QString error;
+          bool touched = sharedVfsBridge().remoteReadFile(
+              profile, remoteRelativePath(path, profile), &bytes, &error);
+          if (touched)
+            touched = sharedVfsBridge().remoteWriteFile(
+                profile, remoteRelativePath(path, profile), bytes, &error);
+          if (!touched)
+            failures << path + QStringLiteral(": ") + error;
+        } else {
+          QFile file(path);
+          if (!(file.open(QIODevice::ReadWrite) &&
+                file.setFileTime(QDateTime::currentDateTime(),
+                                 QFileDevice::FileModificationTime)))
+            failures << path + QStringLiteral(": ") +
+                            ::openbc::i18n::t("folder.could_not_update_the_modification_time");
+        }
+      }
+      QMetaObject::invokeMethod(
+          qApp,
+          [self, failures]() {
+            if (!self)
+              return;
+            if (!failures.isEmpty())
+              QMessageBox::warning(self, ::openbc::i18n::t("folder.touch_failed"),
+                                   listPreview(failures));
+            self->refresh();
+          },
+          Qt::QueuedConnection);
+    });
   }
 
   void activateNodeAction(const NodeContext &ctx, const QString &action) {
@@ -2693,16 +2980,27 @@ private:
     } else if (action == "File Compare Report...") {
       compareNodeFiles(ctx, true);
     } else if (action == "Copy Filename") {
-      QApplication::clipboard()->setText(
-          QFileInfo(ctx.displayPath()).fileName());
+      QStringList names;
+      for (const auto &node : ctx.selection) {
+        const QString path = node.path.isEmpty() ? node.otherPath : node.path;
+        if (!path.isEmpty())
+          names << QFileInfo(path).fileName();
+      }
+      if (names.isEmpty())
+        names << QFileInfo(ctx.displayPath()).fileName();
+      QApplication::clipboard()->setText(names.join(QLatin1Char('\n')));
     } else if (action == "Refresh Selection") {
       refresh();
     } else if (action == "Ignored" || action == "Exclude" ||
                action == "Exclude...") {
-      if (ignoredPaths_.contains(ctx.path))
-        ignoredPaths_.remove(ctx.path);
-      else
-        ignoredPaths_.insert(ctx.path);
+      for (const auto &node : ctx.selection) {
+        if (node.path.isEmpty())
+          continue;
+        if (ignoredPaths_.contains(node.path))
+          ignoredPaths_.remove(node.path);
+        else
+          ignoredPaths_.insert(node.path);
+      }
       refresh();
     } else if (action == "Rename") {
       renameSelected(treeFor(ctx.side));
@@ -2715,53 +3013,38 @@ private:
     } else if (action == "Copy to Folder..." || action == "Move to Folder...") {
       const QString folder =
           QFileDialog::getExistingDirectory(this, ::openbc::i18n::t("folder.choose_destination_folder"));
-      if (!folder.isEmpty()) {
-        transferFile(ctx.path,
-                     QDir(folder).filePath(QFileInfo(ctx.path).fileName()),
-                     action.startsWith("Move"));
-      }
+      if (!folder.isEmpty())
+        transferToFolder(ctx, folder, action.startsWith("Move"));
     } else if (action == "Delete...") {
-      if (QMessageBox::question(this, ::openbc::i18n::t("common.delete"),
-                                ::openbc::i18n::t("folder.delete_this_entry_permanently")) !=
-          QMessageBox::Yes)
-        return;
-      RemoteProfile profile;
-      const bool remote =
-          RemoteProfileStore::findProfileForPath(ctx.path, &profile);
-      const QString path = ctx.path;
-      const QPointer<FolderCompareViewer> self(this);
-      QThreadPool::globalInstance()->start([self, path, profile, remote]() {
-        QString error;
-        const bool removed =
-            sharedVfsBridge().deleteEntry(path, profile, remote, &error);
-        QMetaObject::invokeMethod(
-            qApp,
-            [self, path, removed, error]() {
-              if (!self)
-                return;
-              if (!removed)
-                QMessageBox::warning(self, ::openbc::i18n::t("folder.delete_failed"), error);
-              else
-                self->refresh();
-            },
-            Qt::QueuedConnection);
-      });
+      deleteNodes(ctx);
     } else if (action == "Attributes...") {
-      RemoteProfile profile;
-      if (RemoteProfileStore::findProfileForPath(ctx.path, &profile)) {
+      QStringList paths;
+      for (const auto &node : ctx.selection) {
+        if (!node.path.isEmpty())
+          paths << node.path;
+      }
+      if (paths.isEmpty())
+        return;
+      if (RemoteProfileStore::findProfileForPath(paths.first(), nullptr)) {
         QMessageBox::information(
             this, ::openbc::i18n::t("common.attributes"),
             ::openbc::i18n::t("folder.attributes_are_unavailable_for_this_provider"));
       } else {
-        const QString path = ctx.path;
         const QPointer<FolderCompareViewer> self(this);
-        QThreadPool::globalInstance()->start([self, path]() {
-          const QFileInfo info(path);
-          const QString details =
-              QString("Size: %1 bytes\nModified: %2\nPermissions: %3")
-                  .arg(info.size())
-                  .arg(info.lastModified().toString())
-                  .arg(static_cast<int>(info.permissions()), 0, 16);
+        QThreadPool::globalInstance()->start([self, paths]() {
+          QStringList blocks;
+          for (const QString &path : paths.mid(0, 10)) {
+            const QFileInfo info(path);
+            const QString block =
+                QString("Size: %1 bytes\nModified: %2\nPermissions: %3")
+                    .arg(info.size())
+                    .arg(info.lastModified().toString())
+                    .arg(static_cast<int>(info.permissions()), 0, 16);
+            blocks << (paths.size() > 1 ? info.fileName() + QStringLiteral("\n") + block : block);
+          }
+          if (paths.size() > 10)
+            blocks << ::openbc::i18n::t("folder.and_n_more", paths.size() - 10);
+          const QString details = blocks.join(QStringLiteral("\n\n"));
           QMetaObject::invokeMethod(
               qApp,
               [self, details]() {
@@ -2772,61 +3055,7 @@ private:
         });
       }
     } else if (action == "Touch...") {
-      RemoteProfile profile;
-      if (RemoteProfileStore::findProfileForPath(ctx.path, &profile)) {
-        if (ctx.isDir) {
-          QMessageBox::warning(
-              this, ::openbc::i18n::t("folder.touch"),
-              ::openbc::i18n::t("folder.directory_timestamps_are_not_supported_by"));
-          return;
-        }
-        const QString path = ctx.path;
-        const QPointer<FolderCompareViewer> self(this);
-        QThreadPool::globalInstance()->start([self, path, profile]() {
-          QByteArray bytes;
-          QString error;
-          bool touched = sharedVfsBridge().remoteReadFile(
-              profile, remoteRelativePath(path, profile), &bytes, &error);
-          if (touched) {
-            touched = sharedVfsBridge().remoteWriteFile(
-                profile, remoteRelativePath(path, profile), bytes, &error);
-          }
-          QMetaObject::invokeMethod(
-              qApp,
-              [self, touched, error]() {
-                if (!self)
-                  return;
-                if (!touched)
-                  QMessageBox::warning(self, ::openbc::i18n::t("folder.touch_failed"), error);
-                else
-                  self->refresh();
-              },
-              Qt::QueuedConnection);
-        });
-      } else {
-        const QString path = ctx.path;
-        const QPointer<FolderCompareViewer> self(this);
-        QThreadPool::globalInstance()->start([self, path]() {
-          QFile file(path);
-          const bool touched =
-              file.open(QIODevice::ReadWrite) &&
-              file.setFileTime(QDateTime::currentDateTime(),
-                               QFileDevice::FileModificationTime);
-          QMetaObject::invokeMethod(
-              qApp,
-              [self, touched]() {
-                if (!self)
-                  return;
-                if (!touched)
-                  QMessageBox::warning(
-                      self, ::openbc::i18n::t("folder.touch_failed"),
-                      ::openbc::i18n::t("folder.could_not_update_the_modification_time"));
-                else
-                  self->refresh();
-              },
-              Qt::QueuedConnection);
-        });
-      }
+      touchNodes(ctx);
     } else if (action == "Update Right..." || action == "Update Left...") {
       const Side destination =
           action == "Update Right..." ? Side::Right : Side::Left;
@@ -3080,7 +3309,35 @@ private:
     int horizontal = 0;
     QString leftCurrent;  // current row of each tree
     QString rightCurrent;
+    QStringList leftSelected;  // every selected row of each tree (multi-selection survives a refresh)
+    QStringList rightSelected;
   };
+
+  static QStringList selectedPaths(const QTreeWidget *tree) {
+    QStringList paths;
+    for (QTreeWidgetItem *item : tree->selectedItems()) {
+      const QString path = item->data(0, kPathRole).toString();
+      if (!path.isEmpty())
+        paths << path;
+    }
+    return paths;
+  }
+
+  // Re-selects `paths` in one pass over the tree. Rows that no longer exist (moved, deleted) are
+  // simply not selected; the other side's counterparts follow through the selection mirroring.
+  static void selectPaths(QTreeWidget *tree, const QStringList &paths) {
+    if (paths.isEmpty())
+      return;
+    const QSet<QString> wanted(paths.cbegin(), paths.cend());
+    std::function<void(QTreeWidgetItem *)> visit = [&](QTreeWidgetItem *item) {
+      if (wanted.contains(item->data(0, kPathRole).toString()))
+        item->setSelected(true);
+      for (int i = 0; i < item->childCount(); ++i)
+        visit(item->child(i));
+    };
+    for (int i = 0; i < tree->topLevelItemCount(); ++i)
+      visit(tree->topLevelItem(i));
+  }
 
   void captureViewStateForRefresh() {
     const QString left = leftText();
@@ -3108,6 +3365,8 @@ private:
       state.leftCurrent = item->data(0, kPathRole).toString();
     if (auto *item = rightTree_->currentItem())
       state.rightCurrent = item->data(0, kPathRole).toString();
+    state.leftSelected = selectedPaths(leftTree_);
+    state.rightSelected = selectedPaths(rightTree_);
     pendingView_ = std::move(state);
   }
 
@@ -3124,9 +3383,13 @@ private:
                                 std::pair<QTreeWidget *, QString>{rightTree_, pendingView_.rightCurrent}}) {
         if (auto *item = findPath(tree, path)) {
           const QSignalBlocker blocker(tree);  // no selection-sync side effects while restoring
-          tree->setCurrentItem(item);
+          tree->setCurrentItem(item, 0, QItemSelectionModel::NoUpdate);
         }
       }
+      // Put the multi-selection back: a copy / move / delete / refresh must not reduce it to
+      // one row (or none). Only rows that still exist are selected.
+      selectPaths(leftTree_, pendingView_.leftSelected);
+      selectPaths(rightTree_, pendingView_.rightSelected);
     }
     if (anchor) {
       leftTree_->scrollToItem(anchor, QAbstractItemView::PositionAtTop);

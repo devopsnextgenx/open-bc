@@ -64,6 +64,7 @@ pub(super) fn extract(
             sec.size(),
             String::new(),
             sec.content(),
+            Some(sec.offset()),
         ));
     }
     let blobs: Vec<Blob<'_>> = sections
@@ -73,6 +74,7 @@ pub(super) fn extract(
             address: sec.virtual_address(),
             executable: is_code_section(&sec.name()),
             data: sec.content(),
+            file_offset: sec.offset(),
         })
         .collect();
 
@@ -84,6 +86,7 @@ pub(super) fn extract(
             seg.file_size(),
             String::new(),
             seg.content(),
+            None,
         ));
     }
 

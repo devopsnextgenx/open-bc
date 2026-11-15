@@ -202,6 +202,7 @@ public:
             {"Archive Types", buildArchiveTypes()},
             {"Folder Compare", buildFolderCompare()},
             {"Folder Filters", buildFolderFilters()},
+            {"Binary Compare", buildBinaryCompare()},
             {"Commands", buildCommands()},
             {"Open With", buildPlaceholder("Open With")},
             {"Tweaks", buildTweaks()},
@@ -763,6 +764,49 @@ private:
     // Which editor implementation NEW text comparisons use (see text_editor_selection.h):
     //   Existing = QPlainTextEdit, Virtual = VirtualTextEditor, Hybrid = chosen per comparison from
     //   the file sizes. Only draft_.textEditor is edited; OK/Apply persists it (preferences.ini).
+    // ---- Binary Compare: default view mode, demangling and change filters ----------
+    QWidget* buildBinaryCompare() {
+        namespace bo = openbc::app::binaryopts;
+        QVBoxLayout* v;
+        auto* page = pageShell(&v);
+        v->addWidget(heading(::openbc::i18n::t("binary.view_mode")));
+        v->addWidget(new QLabel(::openbc::i18n::t("options.binary_view_mode_intro")));
+        auto* mode = new QComboBox;
+        mode->addItem(::openbc::i18n::t("binary.view_summary"));
+        mode->addItem(::openbc::i18n::t("binary.view_split"));
+        mode->setCurrentIndex(static_cast<int>(draft_.binaryViewMode));
+        connect(mode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int i) {
+            draft_.binaryViewMode = i == 1 ? bo::ViewMode::Split : bo::ViewMode::Summary;
+        });
+        v->addWidget(mode, 0, Qt::AlignLeft);
+        v->addSpacing(8);
+
+        auto* demangle = new QCheckBox(::openbc::i18n::t("binary.demangle"));
+        demangle->setChecked(draft_.binaryDemangle);
+        connect(demangle, &QCheckBox::toggled, this, [this](bool on) { draft_.binaryDemangle = on; });
+        v->addWidget(demangle);
+        v->addSpacing(8);
+
+        v->addWidget(heading(::openbc::i18n::t("binary.filters")));
+        const std::pair<unsigned, const char*> filters[] = {
+            {bo::kHideSymtabStrtab, "binary.filter_symtab"},
+            {bo::kHideDebugNotes, "binary.filter_debug"},
+            {bo::kHidePadding, "binary.filter_padding"},
+            {bo::kHideLocalSymbols, "binary.filter_local"},
+        };
+        for (const auto& [bit, key] : filters) {
+            auto* box = new QCheckBox(::openbc::i18n::t(key));
+            box->setChecked((draft_.binaryHideMask & bit) != 0);
+            connect(box, &QCheckBox::toggled, this, [this, bit = bit](bool on) {
+                draft_.binaryHideMask = on ? (draft_.binaryHideMask | bit) : (draft_.binaryHideMask & ~bit);
+            });
+            v->addWidget(box);
+        }
+        v->addWidget(note(::openbc::i18n::t("options.binary_filters_note")));
+        v->addStretch(1);
+        return page;
+    }
+
     QWidget* buildTextCompare() {
         namespace te = openbc::app::text_editor;
         QVBoxLayout* v;

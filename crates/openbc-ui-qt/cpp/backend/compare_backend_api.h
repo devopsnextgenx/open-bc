@@ -142,6 +142,34 @@ uint8_t openbc_binary_summary_file_state(const OpenBcBinarySummary*);  // 0 same
 uint8_t openbc_binary_summary_changes_only(const OpenBcBinarySummary*);
 const uint8_t* openbc_binary_summary_error(const OpenBcBinarySummary*, uint8_t side, size_t* len);
 const uint8_t* openbc_binary_summary_label(const OpenBcBinarySummary*, uint8_t side, size_t* len);
+// View settings (answered with a new OPENBC_EV_RESULT, no re-parse). Filter bits:
+// 1 symtab/strtab, 2 debug + notes + build identity, 4 padding shifts, 8 local symbols.
+uint8_t openbc_binary_set_filters(const OpenBcBinarySession*, uint32_t mask);
+uint8_t openbc_binary_set_demangle(const OpenBcBinarySession*, uint8_t on);
+// Per-row data for the split viewer and the inspector.
+uint8_t openbc_binary_summary_row_inspectable(const OpenBcBinarySummary*, size_t i);
+const uint8_t* openbc_binary_summary_row_key(const OpenBcBinarySummary*, size_t i, size_t* len);
+const uint8_t* openbc_binary_summary_row_left(const OpenBcBinarySummary*, size_t i, size_t* len);
+const uint8_t* openbc_binary_summary_row_right(const OpenBcBinarySummary*, size_t i, size_t* len);
+size_t openbc_binary_summary_hidden(const OpenBcBinarySummary*);
+// Hex / disassembly inspector: request, then receive OPENBC_EV_WINDOW (handle = OpenBcBinaryInspect).
+struct OpenBcBinaryInspect;
+uint8_t openbc_binary_inspect(const OpenBcBinarySession*, const OpenBcBinarySummary*, size_t row);
+void openbc_binary_inspect_destroy(OpenBcBinaryInspect*);
+const uint8_t* openbc_binary_inspect_error(const OpenBcBinaryInspect*, size_t* len);
+const uint8_t* openbc_binary_inspect_title(const OpenBcBinaryInspect*, size_t* len);
+size_t openbc_binary_inspect_note_count(const OpenBcBinaryInspect*);
+const uint8_t* openbc_binary_inspect_note(const OpenBcBinaryInspect*, size_t i, size_t* len);
+size_t openbc_binary_inspect_differing_bytes(const OpenBcBinaryInspect*);
+size_t openbc_binary_inspect_length(const OpenBcBinaryInspect*, uint8_t side);
+size_t openbc_binary_inspect_hex_count(const OpenBcBinaryInspect*);
+uint8_t openbc_binary_inspect_hex_state(const OpenBcBinaryInspect*, size_t i);  // 0 same 1 mod 2 left 3 right
+uint32_t openbc_binary_inspect_hex_mask(const OpenBcBinaryInspect*, size_t i);
+const uint8_t* openbc_binary_inspect_hex_text(const OpenBcBinaryInspect*, size_t i, uint8_t side, size_t* len);
+uint8_t openbc_binary_inspect_asm_available(const OpenBcBinaryInspect*);
+size_t openbc_binary_inspect_asm_count(const OpenBcBinaryInspect*);
+uint8_t openbc_binary_inspect_asm_state(const OpenBcBinaryInspect*, size_t i);
+const uint8_t* openbc_binary_inspect_asm_text(const OpenBcBinaryInspect*, size_t i, uint8_t side, size_t* len);
 
 // ------------------------------------------------------- folder match policy
 // Per-file-type matching for Folder Compare (size/timestamp vs. hash algorithm). One text line,

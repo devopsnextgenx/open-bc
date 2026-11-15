@@ -72,6 +72,7 @@ pub(super) fn extract(bin: &elf::Binary, options: &ParseOptions, model: &mut Bin
             sec.size(),
             section_flags(flags),
             sec.content(),
+            Some(sec.offset()),
         ));
         match sec.name().as_str() {
             ".comment" => {
@@ -101,6 +102,7 @@ pub(super) fn extract(bin: &elf::Binary, options: &ParseOptions, model: &mut Bin
             address: sec.virtual_address(),
             executable: sec.flags().bits() & SHF_EXECINSTR != 0,
             data: sec.content(),
+            file_offset: sec.offset(),
         })
         .collect();
 
@@ -112,6 +114,7 @@ pub(super) fn extract(bin: &elf::Binary, options: &ParseOptions, model: &mut Bin
             seg.physical_size(),
             segment_flags(seg.flags()),
             seg.content(),
+            None,
         ));
     }
 

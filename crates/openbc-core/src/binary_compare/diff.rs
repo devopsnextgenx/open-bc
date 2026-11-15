@@ -62,6 +62,21 @@ impl DiffCounts {
         c
     }
 
+    /// Count the states of a filtered view of entries.
+    #[must_use]
+    pub fn of_refs<T>(entries: &[&Entry<T>]) -> Self {
+        let mut c = Self::default();
+        for e in entries {
+            match e.state {
+                ChangeState::Unchanged => c.unchanged += 1,
+                ChangeState::Modified => c.modified += 1,
+                ChangeState::Removed => c.removed += 1,
+                ChangeState::Added => c.added += 1,
+            }
+        }
+        c
+    }
+
     /// Sum of all four.
     #[must_use]
     pub const fn total(&self) -> usize {
@@ -115,6 +130,16 @@ pub struct BinaryDiff {
 }
 
 impl BinaryDiff {
+    /// Value of a metadata property, preferring version 2 (e.g. `architecture`).
+    #[must_use]
+    pub fn meta_value(&self, key: &str) -> Option<&str> {
+        self.metadata
+            .iter()
+            .find(|e| e.key == key)
+            .and_then(|e| e.right.as_ref().or(e.left.as_ref()))
+            .map(|m| m.value.as_str())
+    }
+
     /// Totals over every list.
     #[must_use]
     pub fn totals(&self) -> DiffCounts {
@@ -209,9 +234,14 @@ fn diff_sections(left: &[SectionInfo], right: &[SectionInfo]) -> Vec<Entry<Secti
             } else {
                 format!("{} \u{2192} {} bytes", a.size, b.size)
             };
+            let padding = if !a.sha256_unpadded.is_empty() && a.sha256_unpadded == b.sha256_unpadded {
+                "trailing padding only; "
+            } else {
+                ""
+            };
             (
                 ChangeState::Modified,
-                format!("{size}; sha256 {} \u{2192} {}", short(&a.sha256), short(&b.sha256)),
+                format!("{padding}{size}; sha256 {} \u{2192} {}", short(&a.sha256), short(&b.sha256)),
             )
         },
     )
@@ -249,6 +279,12 @@ fn diff_functions(left: &[FunctionInfo], right: &[FunctionInfo]) -> Vec<Entry<Fu
         |a, b| {
             if a.sha256 == b.sha256 {
                 return (ChangeState::Unchanged, String::new());
+            }
+            if !a.sha256_unpadded.is_empty() && a.sha256_unpadded == b.sha256_unpadded {
+                return (
+                    ChangeState::Modified,
+                    format!("trailing padding only; {} \u{2192} {} bytes", a.size, b.size),
+                );
             }
             let sim = fuzzy::similarity(a.simhash, b.simhash) * 100.0;
             (
@@ -408,6 +444,8 @@ mod tests {
             size: 16,
             flags: "R-X".into(),
             sha256: hash.into(),
+            sha256_unpadded: hash.into(),
+            file_offset: None,
         }
     }
     fn func(name: &str, hash: &str, addr: u64) -> FunctionInfo {
@@ -418,6 +456,8 @@ mod tests {
             size_estimated: false,
             sha256: hash.into(),
             simhash: fuzzy::simhash(hash.as_bytes()),
+            sha256_unpadded: hash.into(),
+            file_offset: None,
         }
     }
     fn sym(name: &str, kind: SymbolKind, lib: Option<&str>) -> SymbolInfo {

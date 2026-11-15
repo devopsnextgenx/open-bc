@@ -44,6 +44,7 @@ To implement a page: (1) load/persist its fields in `OptionsStore`, (2) add a li
 | Archive Types | `javaDecompilerEnabled`, `decompilerJarPath`, `javaBinPath` (`ArchiveTypes/*` in preferences.ini); Java class decompilation reads the current values for each operation |
 | Folder Filters | Named include/exclude file and folder masks plus the default preset for new folder comparisons (`folderFilters/*` in preferences.ini) |
 | Folder Compare | Per-file-type matching: size/timestamp or a hash algorithm (MD5 default, SHA-1, SHA-256, SHA-512) per extension group, a fallback for unlisted types, and an on/off switch (`matchByFileType`, `matchPolicyConfig`; `folderCompare/*` in preferences.ini). Edited in `options_dialog.h` (`buildFolderCompare`), serialized by `match_policy.h`, evaluated by `openbc-core::hash_policy`, installed in the backend by `OptionsStore::load()/commit()` via `openbc_match_policy_set`. Empty `matchPolicyConfig` = built-in defaults. Toolbar "Compare contents" / "Ignore timestamps" still override it |
+| Binary Compare | Default view (Summary / Split), C++ demangling and the granular change filters (symtab/strtab, debug+notes, padding, local symbols): `binaryViewMode`, `binaryDemangle`, `binaryHideMask`; keys `binaryCompare/*` in preferences.ini, defined once in `binary_compare_options.h`. The Binary Compare toolbar writes the same keys when toggled, so the last choice is the next tab's default. Applies to tabs opened afterwards |
 
 ## In progress (UI only)
 | Page | Fields (AppOptions) | Where it should take effect |

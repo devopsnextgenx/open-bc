@@ -46,6 +46,15 @@ pub struct SectionInfo {
     pub flags: String,
     /// Lower-case hex SHA-256 of the raw content.
     pub sha256: String,
+    /// SHA-256 of the content with trailing zero padding removed. Equals `sha256` when the
+    /// content has no trailing padding. Two versions whose `sha256` differs but whose
+    /// `sha256_unpadded` matches only moved or re-aligned the section (a *padding shift*).
+    #[serde(default)]
+    pub sha256_unpadded: String,
+    /// Offset of the content in the file on disk, when known. Lets the inspector re-read the
+    /// bytes for a hex / disassembly view without parsing the binary again.
+    #[serde(default)]
+    pub file_offset: Option<u64>,
 }
 
 /// How a symbol relates to the binary.
@@ -88,6 +97,13 @@ pub struct FunctionInfo {
     pub sha256: String,
     /// 64-bit SimHash of the bytes, for similarity between *modified* versions.
     pub simhash: u64,
+    /// SHA-256 over the bytes with trailing alignment padding (`0x00`, `0x90`, `0xCC`) removed.
+    /// Equals `sha256` when there is none.
+    #[serde(default)]
+    pub sha256_unpadded: String,
+    /// Offset of the first byte in the file on disk, when known (hex / disassembly inspector).
+    #[serde(default)]
+    pub file_offset: Option<u64>,
 }
 
 /// Everything the viewer needs to know about one binary.
@@ -113,6 +129,12 @@ pub struct BinaryModel {
     pub strings: Vec<String>,
     /// Non-fatal problems found while parsing (missing debug info, truncated section, ...).
     pub notes: Vec<String>,
+}
+
+/// Length of `bytes` without trailing bytes that are in `padding`.
+#[must_use]
+pub fn unpadded_len(bytes: &[u8], padding: &[u8]) -> usize {
+    bytes.iter().rposition(|b| !padding.contains(b)).map_or(0, |i| i + 1)
 }
 
 impl BinaryModel {

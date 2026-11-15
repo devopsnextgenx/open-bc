@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use openbc_core::binary_compare::fuzzy::simhash;
 use openbc_core::binary_compare::strings::{extract_strings, MAX_STRINGS};
 use openbc_core::binary_compare::{
-    BinaryModel, FunctionInfo, MetaEntry, SectionInfo, SectionKind,
+    unpadded_len, BinaryModel, FunctionInfo, MetaEntry, SectionInfo, SectionKind,
 };
 
 use super::{ParseOptions, CONTENT_HASH};
@@ -17,6 +17,8 @@ pub(super) struct Blob<'a> {
     pub address: u64,
     pub executable: bool,
     pub data: &'a [u8],
+    /// Offset of `data` in the file on disk; `0` when unknown.
+    pub file_offset: u64,
 }
 
 /// A function the format told us about.
@@ -35,14 +37,22 @@ pub(super) fn section_info(
     declared_size: u64,
     flags: String,
     content: &[u8],
+    file_offset: Option<u64>,
 ) -> SectionInfo {
+    let sha256 = hex_digest(CONTENT_HASH, content);
+    // Trailing zero padding is the usual reason a section "changes" when nothing else did.
+    let trimmed = unpadded_len(content, &[0x00]);
+    let sha256_unpadded =
+        if trimmed == content.len() { sha256.clone() } else { hex_digest(CONTENT_HASH, &content[..trimmed]) };
     SectionInfo {
         name,
         kind,
         address,
         size: if content.is_empty() { declared_size } else { content.len() as u64 },
         flags,
-        sha256: hex_digest(CONTENT_HASH, content),
+        sha256,
+        sha256_unpadded,
+        file_offset: file_offset.filter(|_| !content.is_empty()),
     }
 }
 
@@ -139,13 +149,20 @@ pub(super) fn build_functions(
             continue;
         }
         let bytes = &blob.data[offset..offset + size];
+        let sha256 = hex_digest(CONTENT_HASH, bytes);
+        // Alignment padding after a function (`int3`, `nop`, zeros) is not part of its code.
+        let trimmed = unpadded_len(bytes, &[0x00, 0x90, 0xCC]);
+        let sha256_unpadded =
+            if trimmed == bytes.len() { sha256.clone() } else { hex_digest(CONTENT_HASH, &bytes[..trimmed]) };
         out.push(FunctionInfo {
             name: c.name.clone(),
             address: c.address,
             size: size as u64,
             size_estimated: estimated,
-            sha256: hex_digest(CONTENT_HASH, bytes),
+            sha256,
             simhash: simhash(bytes),
+            sha256_unpadded,
+            file_offset: (blob.file_offset != 0).then(|| blob.file_offset + offset as u64),
         });
     }
     if skipped_big > 0 {
@@ -195,7 +212,7 @@ mod tests {
     #[test]
     fn sizes_are_estimated_and_clamped() {
         let data = (0u8..64).collect::<Vec<_>>();
-        let blobs = [Blob { name: ".text".into(), address: 0x1000, executable: true, data: &data }];
+        let blobs = [Blob { name: ".text".into(), address: 0x1000, executable: true, data: &data, file_offset: 0x400 }];
         let cands = vec![
             Candidate { name: "a".into(), address: 0x1000, size: 0 },
             Candidate { name: "b".into(), address: 0x1010, size: 0 },
@@ -206,6 +223,8 @@ mod tests {
         let mut model = BinaryModel::default();
         build_functions(cands, &blobs, 0, &ParseOptions::default(), &mut model);
         let by = |n: &str| model.functions.iter().find(|f| f.name == n).unwrap();
+        assert_eq!(by("a").file_offset, Some(0x400));
+        assert_eq!(by("b").file_offset, Some(0x410));
         assert_eq!(by("a").size, 0x10);
         assert!(by("a").size_estimated);
         assert_eq!(by("b").size, 0x10, "ends at the next function start, even a duplicate name");

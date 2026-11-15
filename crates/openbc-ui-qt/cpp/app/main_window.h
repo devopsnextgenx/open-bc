@@ -594,7 +594,7 @@ extern "C" int openbc_run_gui(int argc, char** argv) {
         addViewerTab(new HexCompareViewer(left, right), "hex-compare");
     };
     addBinaryView = [&](const QString& left, const QString& right) {
-        addViewerTab(new BinaryCompareViewer(left, right), "version-compare");
+        addViewerTab(new BinaryCompareViewer(left, right, &preferences), "version-compare");
     };
     addMediaView = [&](const QString& left, const QString& right) {
         addViewerTab(new MediaCompareViewer(left, right), "media-compare");

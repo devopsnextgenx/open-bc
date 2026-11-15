@@ -6,9 +6,11 @@ edition.workspace = true
 [features]
 # STEP (truck) is on by default so 3D compare can open .step/.stp out of the box.
 # Build with `default-features = false` to drop the truck dependency tree.
-default = ["fmt-step", "binary"]
+default = ["fmt-step", "binary", "disasm"]
 # LIEF-based PE/ELF/Mach-O parsing for binary compare (downloads the LIEF SDK at build time).
 binary = ["dep:lief"]
+# x86 / x86-64 disassembly for the Binary Compare hex / disassembly inspector (pure Rust).
+disasm = ["dep:iced-x86"]
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 fmt-step = ["dep:truck-stepio", "dep:truck-meshalgo"]
 fmt-gltf = ["dep:gltf"]
@@ -36,3 +38,4 @@ roxmltree = { version = "0.20", optional = true }
 calamine = { version = "0.26", features = ["dates"] }
 lofty = "0.22"
 lief = { version = "1", optional = true }
+iced-x86 = { version = "1.21", optional = true, default-features = false, features = ["std", "decoder", "intel"] }

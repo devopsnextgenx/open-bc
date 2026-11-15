@@ -16,7 +16,9 @@
 //! function extends to the next function start (`size_estimated`).
 
 mod common;
+pub mod disasm;
 mod elf;
+pub mod inspect;
 mod macho;
 mod pe;
 

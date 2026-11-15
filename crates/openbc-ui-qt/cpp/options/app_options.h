@@ -6,7 +6,7 @@
 //
 // OptionsStore: the single owner of the *committed* options.
 //
-// PERSISTENCE: Appearance, syntaxMappings, Archive Types, Folder Filters and Folder Compare (file matching) are saved/loaded (preferences.ini);
+// PERSISTENCE: Appearance, syntaxMappings, Archive Types, Folder Filters, Folder Compare (file matching) and Binary Compare are saved/loaded (preferences.ini);
 // other pages are still in-memory. The dialog edits a copy of AppOptions; OK/Apply hands it to
 // OptionsStore::commit(), which persists implemented fields and notifies listeners.
 // The persisted profile includes `syntaxMappings`: OptionsStore hands it to
@@ -25,6 +25,7 @@
 #include <QJsonObject>
 #include <QSettings>
 
+#include "options/binary_compare_options.h"
 #include "options/match_policy.h"
 #include "options/text_editor_selection.h"
 #include <QList>
@@ -200,6 +201,11 @@ struct AppOptions {
     // archives and unknown types; size/timestamp for text and source code).
     QString matchPolicyConfig;
 
+    // ---- Binary Compare (binary_compare_options.h) -----------------------------
+    binaryopts::ViewMode binaryViewMode = binaryopts::ViewMode::Summary;
+    bool binaryDemangle = true;
+    unsigned binaryHideMask = 0;  // binaryopts::kHide* bits; 0 = show every change
+
     // ---- Commands ---------------------------------------------------------
     bool largeToolbarButtonsWithText = true;
     // Key: view name ("Home", "Folder Compare", ...).
@@ -364,6 +370,9 @@ public:
         options_.matchByFileType = p.value("folderCompare/matchByFileType", options_.matchByFileType).toBool();
         options_.matchPolicyConfig = p.value("folderCompare/matchPolicy").toString();
         matchpolicy::apply(options_.matchByFileType, options_.matchPolicyConfig);
+        options_.binaryViewMode = binaryopts::viewMode(&p);
+        options_.binaryDemangle = binaryopts::demangle(&p);
+        options_.binaryHideMask = binaryopts::filters(&p);
     }
 
     // Writes the saved profile to preferences.ini.
@@ -409,6 +418,9 @@ public:
         p.setValue("folderFilters/defaultPreset", options_.defaultFolderFilterPreset);
         p.setValue("folderCompare/matchByFileType", options_.matchByFileType);
         p.setValue("folderCompare/matchPolicy", options_.matchPolicyConfig);
+        binaryopts::setViewMode(&p, options_.binaryViewMode);
+        binaryopts::setDemangle(&p, options_.binaryDemangle);
+        binaryopts::setFilters(&p, options_.binaryHideMask);
         p.remove("theme/dark");   // superseded by appearance/theme
         p.sync();
     }

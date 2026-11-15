@@ -73,6 +73,7 @@ pub(super) fn extract(bin: &pe::Binary, options: &ParseOptions, model: &mut Bina
             sec.size(),
             section_flags(raw),
             sec.content(),
+            Some(sec.offset()),
         ));
     }
     let blobs: Vec<Blob<'_>> = sections
@@ -84,6 +85,7 @@ pub(super) fn extract(bin: &pe::Binary, options: &ParseOptions, model: &mut Bina
                 address: sec.virtual_address(),
                 executable: raw & (IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_CNT_CODE) != 0,
                 data: sec.content(),
+                file_offset: sec.offset(),
             }
         })
         .collect();

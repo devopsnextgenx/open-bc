@@ -11,20 +11,32 @@
 //!   [`flatten`] linearizes it for the C ABI.
 //! * [`fuzzy`]  - the 64-bit SimHash used to report *how much* a function changed.
 //! * [`strings`] - format-independent ASCII / UTF-16LE string extraction.
+//! * [`demangle`] - display-only C++ (Itanium / MSVC) demangling; identity stays the raw name.
+//! * [`filter`]  - [`ViewOptions`]: unchanged visibility, demangling and the granular change
+//!   filters (symtab / strtab, debug and notes, padding shifts, local symbols).
+//! * [`inspect`] - hex and disassembly diffs of one modified function or section.
 //!
 //! Everything is pure and read-only: nothing here writes or patches a binary.
 
+pub mod demangle;
 pub mod diff;
+pub mod filter;
 pub mod fuzzy;
+pub mod inspect;
 pub mod model;
 pub mod strings;
 pub mod tree;
 
 pub use diff::{diff_binaries, BinaryDiff, DiffCounts, Entry};
-pub use model::{
-    BinaryModel, FunctionInfo, MetaEntry, SectionInfo, SectionKind, SymbolInfo, SymbolKind,
+pub use filter::{
+    ViewOptions, HIDE_ALL, HIDE_DEBUG_NOTES, HIDE_LOCAL_SYMBOLS, HIDE_PADDING, HIDE_SYMTAB_STRTAB,
 };
-pub use tree::{build_tree, flatten, FlatRow, NodeKind, TreeNode};
+pub use inspect::{AsmLine, AsmRow, HexRow, InspectOutput};
+pub use model::{
+    unpadded_len, BinaryModel, FunctionInfo, MetaEntry, SectionInfo, SectionKind, SymbolInfo,
+    SymbolKind,
+};
+pub use tree::{build_tree, build_tree_with, flatten, visible_counts, FlatRow, NodeKind, TreeNode};
 
 /// Classification of one element between version 1 (baseline) and version 2 (target).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]

@@ -41,6 +41,7 @@ inline constexpr PageStatus kPages[] = {
     {"Archive Types", Status::Implemented, "Saved to preferences.ini and applied to Java decompilation."},
     {"Folder Compare", Status::Implemented, "Per-file-type matching (size/timestamp or hash algorithm) is saved to preferences.ini and applied to folder comparisons."},
     {"Folder Filters", Status::Implemented, "Name-filter presets and the default folder preset are saved to preferences.ini and applied to folder comparisons."},
+    {"Binary Compare", Status::Implemented, "Default view mode, demangling and change filters are saved to preferences.ini; they apply to Binary Compare tabs opened afterwards."},
     {"Open With", Status::Pending, "Pending: not designed yet."},
 };
 
