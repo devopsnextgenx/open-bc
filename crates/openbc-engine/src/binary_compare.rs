@@ -10,7 +10,7 @@
 //!   of them that arrive while the files are still being parsed are applied before the first
 //!   result is published, so a tab restored with filters on never flashes the unfiltered tree.
 //! * [`BinaryCommand::Inspect`] reads the bytes of one function or section straight from disk
-//!   (offset and hash recorded by the parser) and answers with a hex diff and, for x86 / x86-64
+//!   (offset and hash recorded by the parser) and answers with a hex diff and, for x86-64
 //!   code, a disassembly diff ([`BinaryEvent::Inspect`]).
 //!
 //! Each side is parsed independently, so an unreadable or unsupported file is reported against
@@ -69,6 +69,9 @@ pub enum BinaryCommand {
         kind: u8,
         /// `FlatRow::key` of the row.
         key: String,
+        /// Caller-chosen request number, echoed in [`InspectSummary::seq`] so the UI can tell
+        /// a stale answer from the current one.
+        seq: u64,
     },
 }
 
@@ -94,6 +97,8 @@ pub struct BinarySummary {
 /// Answer to [`BinaryCommand::Inspect`].
 #[derive(Debug, Default)]
 pub struct InspectSummary {
+    /// The `seq` of the request this answers.
+    pub seq: u64,
     /// Hex and disassembly rows (empty when `error` is set).
     pub output: InspectOutput,
     /// Why nothing could be shown (unknown element, unreadable file, built without LIEF).
@@ -199,7 +204,7 @@ mod backend {
     }
 
     fn failure(message: &str) -> InspectSummary {
-        InspectSummary { output: InspectOutput::default(), error: Some(message.to_owned()) }
+        InspectSummary { seq: 0, output: InspectOutput::default(), error: Some(message.to_owned()) }
     }
 
     /// Read both versions of one function or section from disk and build the hex / disassembly diff.
@@ -261,11 +266,11 @@ mod backend {
                         asm[i] = data[i].as_deref().map(|bytes| disasm::disassemble(bitness, bytes));
                     }
                 }
-                None => notes.push("Disassembly is available for x86 / x86-64 only; showing the hex view.".to_owned()),
+                None => notes.push("Disassembly is available for x86-64 only; showing the hex view.".to_owned()),
             }
         }
         let output = build_output(key, data[0].as_deref(), data[1].as_deref(), asm[0].as_deref(), asm[1].as_deref(), notes);
-        InspectSummary { output, error: None }
+        InspectSummary { seq: 0, output, error: None }
     }
 }
 
@@ -284,6 +289,7 @@ mod backend {
 
     pub(super) fn inspect(_: &[PathBuf; 2], _: &BinaryDiff, _: u8, _: &str) -> InspectSummary {
         InspectSummary {
+            seq: 0,
             output: InspectOutput::default(),
             error: Some("this build of OpenBC has no binary compare support".to_owned()),
         }
@@ -308,7 +314,7 @@ fn apply_command(
     command: BinaryCommand,
     view: &mut ViewOptions,
     reload: &mut bool,
-    inspect: &mut Option<(u8, String)>,
+    inspect: &mut Option<(u8, String, u64)>,
 ) -> bool {
     match command {
         BinaryCommand::Reload => {
@@ -331,8 +337,8 @@ fn apply_command(
             view.demangle = on;
             changed
         }
-        BinaryCommand::Inspect { kind, key } => {
-            *inspect = Some((kind, key));
+        BinaryCommand::Inspect { kind, key, seq } => {
+            *inspect = Some((kind, key, seq));
             false
         }
     }
@@ -347,7 +353,7 @@ async fn run(
     let mut view = ViewOptions::default();
     let mut cached: Option<Arc<BinaryDiff>> = None;
     let mut reload = true;
-    let mut pending_inspect: Option<(u8, String)> = None;
+    let mut pending_inspect: Option<(u8, String, u64)> = None;
 
     loop {
         if reload {
@@ -414,20 +420,23 @@ async fn run(
                 }
             }
         }
-        if let Some((kind, key)) = pending_inspect.take() {
-            let answer = match cached.clone() {
+        if let Some((kind, key, seq)) = pending_inspect.take() {
+            let mut answer = match cached.clone() {
                 Some(diff) => {
                     let p = paths.clone();
                     rayon_run(move || backend::inspect(&p, &diff, kind, &key)).await.unwrap_or_else(|_| InspectSummary {
+                        seq: 0,
                         output: InspectOutput::default(),
                         error: Some("inspector worker stopped unexpectedly".to_owned()),
                     })
                 }
                 None => InspectSummary {
+                    seq: 0,
                     output: InspectOutput::default(),
                     error: Some("nothing to inspect: the comparison failed".to_owned()),
                 },
             };
+            answer.seq = seq;
             if !send_event(&events, BinaryEvent::Inspect(Arc::new(answer))).await {
                 return;
             }
@@ -484,12 +493,13 @@ mod tests {
         let Some(row) = summary.rows.iter().find(|r| r.inspect && r.kind == openbc_core::binary_compare::NodeKind::Function.code()) else {
             return;
         };
-        assert!(handle.send(BinaryCommand::Inspect { kind: row.kind, key: row.key.clone() }));
+        assert!(handle.send(BinaryCommand::Inspect { kind: row.kind, key: row.key.clone(), seq: 7 }));
         let answer = loop {
             if let Some(BinaryEvent::Inspect(a)) = rx.recv().await {
                 break a;
             }
         };
+        assert_eq!(answer.seq, 7);
         assert!(answer.error.is_none(), "{:?}", answer.error);
         assert!(!answer.output.hex.is_empty());
         assert_eq!(answer.output.differing_bytes, 0);

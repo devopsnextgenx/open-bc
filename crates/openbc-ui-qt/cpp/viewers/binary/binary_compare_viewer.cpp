@@ -219,6 +219,19 @@ bool BinaryTreeModel::isInspectable(const QModelIndex& index) const {
            openbc_binary_summary_row_inspectable(summary_.get(), static_cast<std::size_t>(row)) != 0;
 }
 
+bool BinaryTreeModel::presentOn(const QModelIndex& index, int side) const {
+    const int row = backendRow(index);
+    if (row < 0 || !summary_) return true;
+    return openbc_binary_summary_row_present(summary_.get(), static_cast<std::size_t>(row),
+                                             static_cast<std::uint8_t>(side)) != 0;
+}
+
+QString BinaryTreeModel::sideLabel(int side) const {
+    if (!summary_) return {};
+    std::size_t length = 0;
+    return backendString(openbc_binary_summary_label(summary_.get(), static_cast<std::uint8_t>(side), &length), length);
+}
+
 QVariant BinaryTreeModel::headerData(int section, Qt::Orientation orientation, int role) const {
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) return {};
     switch (section) {
@@ -240,7 +253,16 @@ QVariant BinarySideModel::data(const QModelIndex& index, int role) const {
     if (!index.isValid()) return {};
     const QModelIndex src = mapToSource(index);
     const BinaryState state = tree_->stateOf(src);
-    // A leaf that exists on one side only leaves the other side's cell blank.
+    // An element that exists only in the other version is a placeholder here (like the empty
+    // row the folder view shows for a file that is missing on one side): no text, hatched.
+    if (!tree_->presentOn(src, side_)) {
+        if (role == Qt::BackgroundRole)
+            return QBrush(tintFor(static_cast<std::uint8_t>(side_ == 0 ? 3 : 2), 90), Qt::BDiagPattern);
+        if (role == Qt::ToolTipRole)
+            return tree_->keyOf(src) + QLatin1Char('\n') +
+                   (side_ == 0 ? ::openbc::i18n::t("binary.only_in_version2") : ::openbc::i18n::t("binary.only_in_version1"));
+        return {};
+    }
     switch (role) {
     case Qt::DisplayRole:
         if (index.column() == 0) return tree_->elementText(src);
@@ -255,6 +277,8 @@ QVariant BinarySideModel::data(const QModelIndex& index, int role) const {
         return QBrush(index.column() == 1 ? openbc::ui::color::folderInfo() : colorFor(state));
     case Qt::BackgroundRole:
         // Tint the half that holds the change: removed on Version 1, added on Version 2.
+        if (index.column() == 1 && state == BinaryState::Modified)
+            return QBrush(tintFor(1, 40));
         if (index.column() == 1 && ((side_ == 0 && state == BinaryState::Removed) ||
                                     (side_ == 1 && state == BinaryState::Added)))
             return QBrush(tintFor(static_cast<std::uint8_t>(state), 40));
@@ -267,7 +291,9 @@ QVariant BinarySideModel::data(const QModelIndex& index, int role) const {
 QVariant BinarySideModel::headerData(int section, Qt::Orientation orientation, int role) const {
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) return {};
     if (section == 0) return ::openbc::i18n::t("binary.col_element");
-    return side_ == 0 ? ::openbc::i18n::t("binary.version1") : ::openbc::i18n::t("binary.version2");
+    const QString name = side_ == 0 ? ::openbc::i18n::t("binary.version1") : ::openbc::i18n::t("binary.version2");
+    const QString file = tree_->sideLabel(side_);
+    return file.isEmpty() ? name : name + QStringLiteral(": ") + file;
 }
 
 // --------------------------------------------------------------------------- viewer
@@ -750,7 +776,7 @@ void BinaryCompareViewer::buildInspector() {
 
 void BinaryCompareViewer::clearInspector(const QString& message) {
     if (!inspector_) return;
-    inspectKey_.clear();
+    ++inspectSeq_;  // anything still in flight is now stale
     inspectInfo_->setText(message);
     inspectNotes_->hide();
     for (QPlainTextEdit* edit : {hexEdits_[0], hexEdits_[1], asmEdits_[0], asmEdits_[1]}) {
@@ -762,15 +788,17 @@ void BinaryCompareViewer::clearInspector(const QString& message) {
 
 void BinaryCompareViewer::requestInspect(int row) {
     if (!session_ || !summary_ || row < 0) return;
-    const QModelIndex index = model_->indexForBackendRow(row);
-    inspectKey_ = model_->keyOf(index);
-    inspectInfo_->setText(::openbc::i18n::t("binary.parsing"));
-    openbc_binary_inspect(session_, summary_.get(), static_cast<std::size_t>(row));
+    const std::uint64_t seq = ++inspectSeq_;
+    inspectInfo_->setText(::openbc::i18n::t("binary.inspect_reading"));
+    inspectNotes_->hide();
+    if (!openbc_binary_inspect(session_, summary_.get(), static_cast<std::size_t>(row), seq))
+        clearInspector(::openbc::i18n::t("binary.inspect_unavailable"));
 }
 
 void BinaryCompareViewer::applyInspect(const BinaryInspectPtr& inspect) {
     const OpenBcBinaryInspect* s = inspect.get();
     if (!s || !inspector_) return;
+    if (openbc_binary_inspect_seq(s) != inspectSeq_) return;  // answer to a row that is no longer selected
     std::size_t length = 0;
     const QString error = textOf(openbc_binary_inspect_error(s, &length), length);
     if (!error.isEmpty()) {
@@ -778,7 +806,6 @@ void BinaryCompareViewer::applyInspect(const BinaryInspectPtr& inspect) {
         return;
     }
     const QString title = textOf(openbc_binary_inspect_title(s, &length), length);
-    if (title != inspectKey_) return;  // answer for a row that is no longer selected
 
     // Notes (truncation, missing side, hash mismatch, no disassembler).
     QStringList notes;

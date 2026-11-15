@@ -711,15 +711,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
-name = "cpp_demangle"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2bb79cb74d735044c972aae58ed0aaa9a837e85b01106a54c39e42e97f62253"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1663,15 +1654,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iced-x86"
-version = "1.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c23ad4d19dca41180e835ef6fbd2c1ee655777eca086ad80dd517e0513322879"
-dependencies = [
- "lazy_static",
-]
-
-[[package]]
 name = "icu_collections"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2550,15 +2532,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "msvc-demangler"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4c25a3bb7d880e8eceab4822f3141ad0700d20f025991c1f03bd3d00219a5fc"
-dependencies = [
- "bitflags 2.13.2",
-]
-
-[[package]]
 name = "multiversion_no_op"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2860,7 +2833,6 @@ dependencies = [
  "bytemuck",
  "calamine",
  "gltf",
- "iced-x86",
  "image",
  "lief",
  "lofty",
@@ -2885,10 +2857,8 @@ dependencies = [
 name = "openbc-core"
 version = "0.1.0"
 dependencies = [
- "cpp_demangle",
  "memchr 2.8.3",
  "memmap2",
- "msvc-demangler",
  "openbc-observability",
  "regex",
  "serde",

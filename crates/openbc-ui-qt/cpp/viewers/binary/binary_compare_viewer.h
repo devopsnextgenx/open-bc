@@ -15,7 +15,7 @@
 //   * Split view   : Version 1 and Version 2 trees side by side (BinarySideModel), rows aligned,
 //                    expansion, selection and scrolling kept in step.
 // Selecting a function or section opens the inspector under the views: a byte-level hex diff and,
-// for x86 / x86-64 code, a disassembly diff, both read straight from the files by the backend.
+// for x86-64 code, a disassembly diff, both read straight from the files by the backend.
 // C++ names can be shown demangled and routine changes (symtab / strtab, debug info, padding
 // shifts, local symbols) can be filtered out; both are handled by the backend without a re-parse.
 //
@@ -38,6 +38,7 @@
 #include <QString>
 #include <QTabWidget>
 #include <QToolBar>
+#include <cstdint>
 #include <QTreeView>
 #include <QVector>
 #include <QWidget>
@@ -84,6 +85,10 @@ public:
     QString elementText(const QModelIndex& index) const;
     // True when the hex / disassembly inspector can open the row.
     bool isInspectable(const QModelIndex& index) const;
+    // False when the element does not exist in that version (the split view draws a placeholder).
+    bool presentOn(const QModelIndex& index, int side) const;
+    // File name of version `side` as reported by the backend.
+    QString sideLabel(int side) const;
 
     QModelIndex index(int row, int column, const QModelIndex& parent = {}) const override;
     QModelIndex parent(const QModelIndex& child) const override;
@@ -203,7 +208,7 @@ private:
     QTabWidget* inspectTabs_ = nullptr;
     QPlainTextEdit* hexEdits_[2] = {nullptr, nullptr};
     QPlainTextEdit* asmEdits_[2] = {nullptr, nullptr};
-    QString inspectKey_;                   // identity of the row whose answer is awaited / shown
+    std::uint64_t inspectSeq_ = 0;         // number of the newest inspector request; older answers are ignored
     PathSelector* selectors_[2] = {nullptr, nullptr};
     QTreeView* tree_ = nullptr;
     BinaryTreeModel* model_ = nullptr;

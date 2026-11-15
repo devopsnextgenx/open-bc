@@ -102,6 +102,9 @@ pub struct TreeNode {
     pub right: String,
     /// `true` when the hex / disassembly inspector can open this node.
     pub inspect: bool,
+    /// Whether the element exists in version 1 / version 2 (groups exist in both). The split
+    /// viewer draws a placeholder on the side where a leaf is missing.
+    pub present: [bool; 2],
 }
 
 impl TreeNode {
@@ -116,13 +119,15 @@ impl TreeNode {
             left: String::new(),
             right: String::new(),
             inspect: false,
+            present: [true, true],
         }
     }
 
-    fn sided(mut self, key: String, left: String, right: String, inspect: bool) -> Self {
+    fn sided(mut self, key: String, left: String, right: String, present: [bool; 2], inspect: bool) -> Self {
         self.key = key;
         self.left = left;
         self.right = right;
+        self.present = present;
         self.inspect = inspect;
         self
     }
@@ -152,6 +157,7 @@ impl TreeNode {
             left: String::new(),
             right: String::new(),
             inspect: false,
+            present: [true, true],
         }
     }
 
@@ -184,6 +190,10 @@ fn describe_symbol(s: &SymbolInfo) -> String {
 
 fn describe_function(f: &FunctionInfo) -> String {
     format!("0x{:x}  {} bytes{}", f.address, f.size, if f.size_estimated { " (est.)" } else { "" })
+}
+
+fn presence<T>(e: &Entry<T>) -> [bool; 2] {
+    [e.left.is_some(), e.right.is_some()]
 }
 
 fn sides<T>(e: &Entry<T>, describe: impl Fn(&T) -> String) -> (String, String) {
@@ -261,7 +271,7 @@ fn meta_leaves(v: &Visible<'_>, show_unchanged: bool) -> Vec<TreeNode> {
                 e.detail.clone()
             };
             let (l, r) = sides(e, |m| m.value.clone());
-            TreeNode::leaf(e.key.clone(), NodeKind::Metadata, e.state, detail).sided(e.key.clone(), l, r, false)
+            TreeNode::leaf(e.key.clone(), NodeKind::Metadata, e.state, detail).sided(e.key.clone(), l, r, presence(e), false)
         })
         .collect()
 }
@@ -281,7 +291,7 @@ fn section_leaves(
             let inspect = kind == NodeKind::Section
                 && (e.left.as_ref().is_some_and(|s| s.file_offset.is_some())
                     || e.right.as_ref().is_some_and(|s| s.file_offset.is_some()));
-            TreeNode::leaf(label(e), kind, e.state, e.detail.clone()).sided(e.key.clone(), l, r, inspect)
+            TreeNode::leaf(label(e), kind, e.state, e.detail.clone()).sided(e.key.clone(), l, r, presence(e), inspect)
         })
         .collect()
 }
@@ -295,7 +305,7 @@ fn symbol_leaves(entries: &[&Entry<SymbolInfo>], show_unchanged: bool, demangle:
             let raw = e.right.as_ref().or(e.left.as_ref()).map_or(e.key.as_str(), |s| s.name.as_str());
             let (l, r) = sides(e, describe_symbol);
             TreeNode::leaf(display_name(&e.key, raw, demangle), NodeKind::Symbol, e.state, e.detail.clone())
-                .sided(e.key.clone(), l, r, false)
+                .sided(e.key.clone(), l, r, presence(e), false)
         })
         .collect()
 }
@@ -309,7 +319,7 @@ fn symbols_with_state(v: &Visible<'_>, want: ChangeState, demangle: bool) -> Vec
             let (l, r) = sides(e, describe_symbol);
             out.push(
                 TreeNode::leaf(display_name(&e.key, raw, demangle), NodeKind::Symbol, want, tag.to_owned())
-                    .sided(e.key.clone(), l, r, false),
+                    .sided(e.key.clone(), l, r, presence(e), false),
             );
         }
     }
@@ -327,7 +337,7 @@ fn function_leaves(entries: &[&Entry<FunctionInfo>], show_unchanged: bool, deman
             let inspect = e.left.as_ref().is_some_and(|f| f.file_offset.is_some())
                 || e.right.as_ref().is_some_and(|f| f.file_offset.is_some());
             TreeNode::leaf(display_name(&e.key, raw, demangle), NodeKind::Function, e.state, e.detail.clone())
-                .sided(e.key.clone(), l, r, inspect)
+                .sided(e.key.clone(), l, r, presence(e), inspect)
         })
         .collect()
 }
@@ -339,7 +349,7 @@ fn string_leaves(entries: &[&Entry<String>], show_unchanged: bool) -> Vec<TreeNo
         .filter(|e| show_unchanged || e.state.is_change())
         .map(|e| {
             let (l, r) = sides(e, |s: &String| s.clone());
-            TreeNode::leaf(e.key.clone(), NodeKind::Text, e.state, e.detail.clone()).sided(e.key.clone(), l, r, false)
+            TreeNode::leaf(e.key.clone(), NodeKind::Text, e.state, e.detail.clone()).sided(e.key.clone(), l, r, presence(e), false)
         })
         .collect()
 }
@@ -429,6 +439,7 @@ pub fn build_tree_with(d: &BinaryDiff, o: &ViewOptions) -> TreeNode {
     }
 
     let mut root = TreeNode::group(&format!("{} vs {}", d.left_label, d.right_label), NodeKind::Root, children, v.counts());
+    tally(&mut root);
     // The file hash decides the root even if every parsed element matched (e.g. overlay bytes).
     if d.file_state == ChangeState::Modified {
         root.state = Some(ChangeState::Modified);
@@ -440,6 +451,38 @@ pub fn build_tree_with(d: &BinaryDiff, o: &ViewOptions) -> TreeNode {
         );
     }
     root
+}
+
+fn is_element(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Metadata | NodeKind::Section | NodeKind::Segment | NodeKind::Symbol | NodeKind::Function | NodeKind::Text
+    )
+}
+
+/// Fills every group's per-side value with the number of elements that exist in that version, and
+/// returns the `(left, right)` element counts. "Removed Symbols" / "Added Symbols" list elements
+/// that are also in the Exported / Imported / Local groups, so they are not counted twice upward.
+fn tally(node: &mut TreeNode) -> (usize, usize) {
+    if is_element(node.kind) {
+        return (usize::from(node.present[0]), usize::from(node.present[1]));
+    }
+    if node.kind == NodeKind::Note {
+        return (0, 0);
+    }
+    let (mut left, mut right) = (0, 0);
+    for child in &mut node.children {
+        let (l, r) = tally(child);
+        left += l;
+        right += r;
+    }
+    node.left = format!("{left} items");
+    node.right = format!("{right} items");
+    if node.label == "Removed Symbols" || node.label == "Added Symbols" {
+        (0, 0)
+    } else {
+        (left, right)
+    }
 }
 
 /// One row of the pre-order linearization.
@@ -465,6 +508,10 @@ pub struct FlatRow {
     pub right: String,
     /// `true` when the hex / disassembly inspector can open the row.
     pub inspect: bool,
+    /// The element exists in version 1.
+    pub in_left: bool,
+    /// The element exists in version 2.
+    pub in_right: bool,
 }
 
 /// Linearize the tree depth-first.
@@ -482,6 +529,8 @@ pub fn flatten(root: &TreeNode) -> Vec<FlatRow> {
             left: n.left.clone(),
             right: n.right.clone(),
             inspect: n.inspect,
+            in_left: n.present[0],
+            in_right: n.present[1],
         });
         for c in &n.children {
             walk(c, depth + 1, out);
@@ -637,6 +686,26 @@ mod tests {
         assert_eq!(row_on.label, "add(int, int)");
         assert_eq!(row_off.label, "_Z3addii");
         assert_eq!(on.len(), off.len(), "demangling never changes which rows exist");
+    }
+
+    #[test]
+    fn rows_know_which_version_they_exist_in() {
+        let a = BinaryModel {
+            sections: vec![section(".only_old", SectionKind::Section, "x", None)],
+            ..BinaryModel::default()
+        };
+        let b = BinaryModel {
+            sections: vec![section(".only_new", SectionKind::Section, "y", None)],
+            ..BinaryModel::default()
+        };
+        let rows = flatten(&build_tree_with(&diff_binaries(&a, &b), &ViewOptions::default()));
+        let old = rows.iter().find(|r| r.label == ".only_old").unwrap();
+        let new = rows.iter().find(|r| r.label == ".only_new").unwrap();
+        assert_eq!((old.in_left, old.in_right), (true, false));
+        assert_eq!((new.in_left, new.in_right), (false, true));
+        let group = rows.iter().find(|r| r.label == "Sections & Segments").unwrap();
+        assert_eq!((group.left.as_str(), group.right.as_str()), ("1 items", "1 items"));
+        assert!(group.in_left && group.in_right);
     }
 
     #[test]

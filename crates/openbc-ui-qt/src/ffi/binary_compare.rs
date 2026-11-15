@@ -211,20 +211,21 @@ pub unsafe extern "C" fn openbc_binary_set_demangle(s: *const BinarySession, on:
     u8::from(handle_ref!(s, 0).handle.send(BinaryCommand::SetDemangle(on != 0)))
 }
 
-/// Open the hex / disassembly inspector for row `i` of `v` (a function or section row that
+/// Open the hex / disassembly inspector for row `i` of `v`; `seq` is echoed in the answer
+/// (`openbc_binary_inspect_seq`) so stale answers can be ignored (a function or section row that
 /// reports `openbc_binary_summary_row_inspectable`). Answered with an `EV_WINDOW` event.
 ///
 /// # Safety
 /// `s` and `v` valid.
 #[no_mangle]
-pub unsafe extern "C" fn openbc_binary_inspect(s: *const BinarySession, v: *const SummaryHandle, i: usize) -> u8 {
+pub unsafe extern "C" fn openbc_binary_inspect(s: *const BinarySession, v: *const SummaryHandle, i: usize, seq: u64) -> u8 {
     let session = handle_ref!(s, 0);
     let summary = handle_ref!(v, 0);
     let Some(row) = summary.rows.get(i) else { return 0 };
     if !row.inspect || (row.kind != NodeKind::Function.code() && row.kind != NodeKind::Section.code()) {
         return 0;
     }
-    u8::from(session.handle.send(BinaryCommand::Inspect { kind: row.kind, key: row.key.clone() }))
+    u8::from(session.handle.send(BinaryCommand::Inspect { kind: row.kind, key: row.key.clone(), seq }))
 }
 
 /// `1` when the hex / disassembly inspector can open row `i`.
@@ -266,6 +267,15 @@ pub unsafe extern "C" fn openbc_binary_summary_row_right(v: *const SummaryHandle
     out_opt_str(s.rows.get(i).map(|r| r.right.as_str()), len)
 }
 
+/// `1` when row `i` exists in version `side` (0 left, 1 right); groups exist on both.
+///
+/// # Safety
+/// `v` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_binary_summary_row_present(v: *const SummaryHandle, i: usize, side: u8) -> u8 {
+    u8::from(handle_ref!(v, 1).rows.get(i).is_some_and(|r| if side == 0 { r.in_left } else { r.in_right }))
+}
+
 /// Changed elements hidden by the granular filters.
 ///
 /// # Safety
@@ -284,6 +294,15 @@ pub unsafe extern "C" fn openbc_binary_inspect_destroy(v: *mut InspectHandle) {
     if !v.is_null() {
         drop(Box::from_raw(v));
     }
+}
+
+/// The `seq` passed to `openbc_binary_inspect` for the request this answers.
+///
+/// # Safety
+/// `v` valid.
+#[no_mangle]
+pub unsafe extern "C" fn openbc_binary_inspect_seq(v: *const InspectHandle) -> u64 {
+    handle_ref!(v, 0).seq
 }
 
 /// Why nothing can be shown (unknown element, unreadable file, ...), or null.
@@ -379,7 +398,7 @@ pub unsafe extern "C" fn openbc_binary_inspect_hex_text(v: *const InspectHandle,
     out_opt_str(s.output.hex.get(i).map(|r| if side == 0 { r.left.as_str() } else { r.right.as_str() }), len)
 }
 
-/// `1` when a disassembly diff is available (x86 / x86-64 code).
+/// `1` when a disassembly diff is available (x86-64 code).
 ///
 /// # Safety
 /// `v` valid.

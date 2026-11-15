@@ -152,9 +152,11 @@ const uint8_t* openbc_binary_summary_row_key(const OpenBcBinarySummary*, size_t 
 const uint8_t* openbc_binary_summary_row_left(const OpenBcBinarySummary*, size_t i, size_t* len);
 const uint8_t* openbc_binary_summary_row_right(const OpenBcBinarySummary*, size_t i, size_t* len);
 size_t openbc_binary_summary_hidden(const OpenBcBinarySummary*);
+uint8_t openbc_binary_summary_row_present(const OpenBcBinarySummary*, size_t i, uint8_t side);  // 1 = exists in that version
 // Hex / disassembly inspector: request, then receive OPENBC_EV_WINDOW (handle = OpenBcBinaryInspect).
 struct OpenBcBinaryInspect;
-uint8_t openbc_binary_inspect(const OpenBcBinarySession*, const OpenBcBinarySummary*, size_t row);
+uint8_t openbc_binary_inspect(const OpenBcBinarySession*, const OpenBcBinarySummary*, size_t row, uint64_t seq);
+uint64_t openbc_binary_inspect_seq(const OpenBcBinaryInspect*);
 void openbc_binary_inspect_destroy(OpenBcBinaryInspect*);
 const uint8_t* openbc_binary_inspect_error(const OpenBcBinaryInspect*, size_t* len);
 const uint8_t* openbc_binary_inspect_title(const OpenBcBinaryInspect*, size_t* len);

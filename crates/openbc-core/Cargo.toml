@@ -5,10 +5,8 @@ edition.workspace = true
 
 [dependencies]
 openbc-observability = { path = "../openbc-observability" }
-cpp_demangle = "0.4"
 memchr = "2"
 memmap2 = "0.9"
-msvc-demangler = "0.10"
 regex = "1.10"
 serde.workspace = true
 serde_bytes = "0.11"
