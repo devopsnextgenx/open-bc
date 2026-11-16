@@ -7,8 +7,13 @@ edition.workspace = true
 # STEP (truck) is on by default so 3D compare can open .step/.stp out of the box.
 # Build with `default-features = false` to drop the truck dependency tree.
 default = ["fmt-step", "binary"]
-# LIEF-based PE/ELF/Mach-O parsing for binary compare (downloads the LIEF SDK at build time).
-binary = ["dep:lief"]
+# PE/ELF/Mach-O parsing for binary compare. Where LIEF ships a prebuilt SDK it is used (it
+# downloads the SDK at build time); on x86_64-pc-windows-gnu (MSYS2/UCRT64) `lief` is not even a
+# dependency (see the target table below) and the pure-Rust `object` backend (src/binary/native.rs)
+# takes over automatically.
+binary = ["dep:lief", "dep:object"]
+# Force the pure-Rust backend on any target (used to test it on Linux/macOS).
+binary-native = ["dep:object"]
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 fmt-step = ["dep:truck-stepio", "dep:truck-meshalgo"]
 fmt-gltf = ["dep:gltf"]
@@ -35,4 +40,10 @@ zip = { version = "2", default-features = false, features = ["deflate"], optiona
 roxmltree = { version = "0.20", optional = true }
 calamine = { version = "0.26", features = ["dates"] }
 lofty = "0.22"
+object = { version = "0.36", optional = true, default-features = false, features = ["read"] }
+
+# LIEF publishes prebuilt SDKs only for MSVC / Linux / macOS / Android targets. The MinGW (gnu)
+# Windows toolchain has none, and lief-build panics there ("Target: ... is not currently
+# supported"), so the dependency is not present on that target at all.
+[target.'cfg(not(all(windows, target_env = "gnu")))'.dependencies]
 lief = { version = "1", optional = true }

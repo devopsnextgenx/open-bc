@@ -4,10 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
-# default-features = false: openbc-compute defaults to ["fmt-step", "binary"] and `binary` pulls in
-# LIEF, which has no x86_64-pc-windows-gnu build. `binary` is forwarded by THIS crate's own
-# `binary` feature below; fmt-step (STEP support in 3D compare) is re-enabled explicitly.
-openbc-compute = { path = "../openbc-compute", default-features = false, features = ["fmt-step"] }
+openbc-compute = { path = "../openbc-compute" }
 openbc-core = { path = "../openbc-core" }
 openbc-observability = { path = "../openbc-observability" }
 openbc-vfs = { path = "../openbc-vfs" }
@@ -23,7 +20,8 @@ image = "0.25"
 
 [features]
 default = ["binary"]
-# Binary (PE/ELF/Mach-O) compare actor; needs openbc-compute's LIEF-backed `binary` feature.
+# Binary (PE/ELF/Mach-O) compare actor; openbc-compute's `binary` feature picks LIEF or, on
+# x86_64-pc-windows-gnu, its pure-Rust `object` backend.
 binary = ["openbc-compute/binary"]
 gpu = ["openbc-compute/gpu"]
 mem-stats = ["openbc-core/mem-stats"]

@@ -17,9 +17,19 @@
 
 mod common;
 pub mod disasm;
-mod elf;
 pub mod inspect;
+
+// Two interchangeable extractors fill the same `BinaryModel`:
+//  * LIEF (`elf.rs` / `pe.rs` / `macho.rs`): the default where LIEF ships a prebuilt SDK;
+//  * `object` (`native.rs`): pure Rust, used on x86_64-pc-windows-gnu (no LIEF SDK exists for the
+//    MSYS2/UCRT64 toolchain) and whenever the `binary-native` feature is enabled.
+#[cfg(not(any(feature = "binary-native", all(windows, target_env = "gnu"))))]
+mod elf;
+#[cfg(not(any(feature = "binary-native", all(windows, target_env = "gnu"))))]
 mod macho;
+#[cfg(any(feature = "binary-native", all(windows, target_env = "gnu")))]
+mod native;
+#[cfg(not(any(feature = "binary-native", all(windows, target_env = "gnu"))))]
 mod pe;
 
 use std::fs::File;
@@ -117,24 +127,49 @@ pub fn parse_binary(path: &Path, options: &ParseOptions) -> Result<BinaryModel, 
     }
     let (file_sha256, file_size) = file_sha256(path)?;
 
-    let parsed = lief::Binary::parse(path).ok_or_else(|| BinaryError::Unsupported(display.clone()))?;
     let mut model = BinaryModel {
         label: path.file_name().map_or_else(|| display.clone(), |n| n.to_string_lossy().into_owned()),
         file_size,
         file_sha256,
         ..BinaryModel::default()
     };
+    parse_into(path, &display, options, &mut model)?;
+    Ok(model)
+}
+
+/// Native backend: read the file and let `object` parse it.
+#[cfg(any(feature = "binary-native", all(windows, target_env = "gnu")))]
+fn parse_into(
+    path: &Path,
+    display: &str,
+    options: &ParseOptions,
+    model: &mut BinaryModel,
+) -> Result<(), BinaryError> {
+    let data = std::fs::read(path)
+        .map_err(|source| BinaryError::Io { path: display.to_owned(), source })?;
+    native::extract(&data, display, options, model)
+}
+
+/// LIEF backend.
+#[cfg(not(any(feature = "binary-native", all(windows, target_env = "gnu"))))]
+fn parse_into(
+    path: &Path,
+    display: &str,
+    options: &ParseOptions,
+    model: &mut BinaryModel,
+) -> Result<(), BinaryError> {
+    let parsed = lief::Binary::parse(path).ok_or_else(|| BinaryError::Unsupported(display.to_owned()))?;
     match parsed {
-        lief::Binary::ELF(bin) => elf::extract(&bin, options, &mut model),
-        lief::Binary::PE(bin) => pe::extract(&bin, options, &mut model),
-        lief::Binary::MachO(fat) => macho::extract(&fat, options, &mut model)?,
+        lief::Binary::ELF(bin) => elf::extract(&bin, options, model),
+        lief::Binary::PE(bin) => pe::extract(&bin, options, model),
+        lief::Binary::MachO(fat) => macho::extract(&fat, options, model)?,
         lief::Binary::COFF(_) => {
             return Err(BinaryError::Other(format!(
                 "{display}: COFF object files are recognised but not compared in detail"
             )))
         }
     }
-    Ok(model)
+    Ok(())
 }
 
 /// Architecture text of a model (metadata key `architecture`), used to pick matching Mach-O slices.

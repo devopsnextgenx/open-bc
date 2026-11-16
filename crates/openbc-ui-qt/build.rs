@@ -5,7 +5,11 @@
 /// `libopenbc_ui_qt.a`. The names still appear in `native-static-libs`, so the top-level
 /// CMakeLists.txt removes them from the imported target's link interface.
 fn link_lief() {
-    if std::env::var_os("CARGO_FEATURE_BINARY").is_some() {
+    // LIEF is not part of the build on x86_64-pc-windows-gnu (openbc-compute uses its pure-Rust
+    // `object` backend there), so there is nothing to link. Cargo sets these for the TARGET.
+    let windows_gnu = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu");
+    if std::env::var_os("CARGO_FEATURE_BINARY").is_some() && !windows_gnu {
         println!("cargo:rustc-link-lib=static:+bundle=lief-sys");
         println!("cargo:rustc-link-lib=static:+bundle=LIEF");
     }
