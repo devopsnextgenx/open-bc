@@ -232,6 +232,23 @@ fn pe_extract<'d, Pe: ImageNtHeaders>(
         }
     }
 
+    // Release builds ship without COFF symbols (the names live in a separate PDB), so a stripped
+    // .exe/.dll would otherwise list only its exports. On x64 the exception directory (.pdata)
+    // records the exact [begin, end) of every non-leaf function: use it for sizes and to find the
+    // unnamed ones (`sub_<rva>`), exactly what a disassembler does without symbols.
+    if format!("{:?}", file.architecture()).contains("X86_64") {
+        if let Some(dir) = file.data_directories().get(object::pe::IMAGE_DIRECTORY_ENTRY_EXCEPTION) {
+            let rva_dir = u64::from(dir.virtual_address.get(LE));
+            let len = u64::from(dir.size.get(LE));
+            let added = add_pdata_functions(&blobs, rva_dir, len, &mut candidates);
+            if added > 0 {
+                model.notes.push(format!(
+                    "{added} unnamed function(s) found via the exception table (.pdata); named sub_<rva> (no symbols available)"
+                ));
+            }
+        }
+    }
+
     for sym in file.symbols() {
         if let Ok(name) = sym.name() {
             if !name.is_empty() {
@@ -250,6 +267,53 @@ fn pe_extract<'d, Pe: ImageNtHeaders>(
 
     build_functions(candidates, &blobs, image_base, options, model);
     build_strings(&blobs, options, model);
+}
+
+/// Size of one x64 `RUNTIME_FUNCTION` record (`BeginAddress`, `EndAddress`, `UnwindData`).
+const RUNTIME_FUNCTION_SIZE: usize = 12;
+/// Upper bound on records read from `.pdata`, so a corrupt directory cannot allocate without limit.
+const MAX_PDATA_FUNCTIONS: usize = 2_000_000;
+
+/// Read the x64 exception table at `dir_rva` (`dir_len` bytes). Exports at the same address get
+/// their exact size; every other range becomes an unnamed `sub_<rva>` candidate. Returns how many
+/// new candidates were added. Pure read: malformed data just yields fewer entries.
+fn add_pdata_functions(
+    blobs: &[Blob<'_>],
+    dir_rva: u64,
+    dir_len: u64,
+    candidates: &mut Vec<Candidate>,
+) -> usize {
+    let Some(blob) = blobs
+        .iter()
+        .find(|b| !b.data.is_empty() && dir_rva >= b.address && dir_rva - b.address < b.data.len() as u64)
+    else {
+        return 0;
+    };
+    let start = (dir_rva - blob.address) as usize;
+    let end = start.saturating_add(dir_len as usize).min(blob.data.len());
+    let table = &blob.data[start..end];
+
+    let mut by_address: std::collections::HashMap<u64, usize> =
+        candidates.iter().enumerate().map(|(i, c)| (c.address, i)).collect();
+    let rd = |b: &[u8]| u64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let mut added = 0usize;
+    for rec in table.chunks_exact(RUNTIME_FUNCTION_SIZE).take(MAX_PDATA_FUNCTIONS) {
+        let (begin, finish) = (rd(&rec[0..4]), rd(&rec[4..8]));
+        if begin == 0 || finish <= begin {
+            continue; // padding / terminator
+        }
+        let size = finish - begin;
+        if let Some(&i) = by_address.get(&begin) {
+            if candidates[i].size == 0 {
+                candidates[i].size = size;
+            }
+        } else {
+            by_address.insert(begin, candidates.len());
+            candidates.push(Candidate { name: format!("sub_{begin:x}"), address: begin, size });
+            added += 1;
+        }
+    }
+    added
 }
 
 // ------------------------------------------------------------------------------------- ELF

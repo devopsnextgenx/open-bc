@@ -89,20 +89,16 @@ FetchContent_MakeAvailable(Corrosion)
 option(OPENBC_BUILD_TEXT_MEMORY_TEST
        "Build the offscreen legacy large-text memory measurement tool" OFF)
 
-# Binary Compare (LIEF). lief-ffi's build helper (lief-build) only downloads prebuilt LIEF archives
-# for a fixed target list, which on Windows contains ONLY *-pc-windows-msvc. The MSYS2/UCRT64 build
-# targets x86_64-pc-windows-gnu and panics with "Target: x86_64-pc-windows-gnu is not currently
-# supported". So on MinGW the `binary` Cargo feature is switched off (Binary Compare then reports
-# that it is unavailable; every other compare view is unaffected) unless a MinGW-built LIEF is
-# supplied through the LIEF_RUST_PRECOMPILED environment variable (a directory holding
-# lib/libLIEF.a and lib/liblief-sys.a), which lief-build uses instead of downloading.
-option(OPENBC_BINARY_COMPARE "Build Binary Compare (needs LIEF)" ON)
+# Binary Compare (PE / ELF / Mach-O). Two interchangeable parsers fill the same model, chosen by
+# openbc-compute at compile time (Cargo target cfg, nothing to configure here):
+#   * LIEF (prebuilt SDK, downloaded by lief-build)  - Linux, macOS, Windows-MSVC;
+#   * pure-Rust `object` crate (src/binary/native.rs) - x86_64-pc-windows-gnu (MSYS2/UCRT64), where
+#     LIEF publishes no SDK and lief-build would panic.
+# Both are linked statically into openbc.exe, so Binary Compare needs NO extra DLL at run time and
+# the `binary` Cargo feature must stay ON for MinGW too. (It used to be switched off here, which
+# left the Windows build with an empty "built without binary compare support" tab.)
+option(OPENBC_BINARY_COMPARE "Build Binary Compare" ON)
 set(OPENBC_WITH_LIEF ${OPENBC_BINARY_COMPARE})
-if(OPENBC_WITH_LIEF AND MINGW AND "$ENV{LIEF_RUST_PRECOMPILED}" STREQUAL "")
-    message(STATUS "MinGW target: no prebuilt LIEF available, building WITHOUT Binary Compare "
-                   "(set LIEF_RUST_PRECOMPILED to a MinGW LIEF build to enable it)")
-    set(OPENBC_WITH_LIEF OFF)
-endif()
 
 set(OPENBC_RUST_FEATURE_ARGS "")
 set(OPENBC_RUST_FEATURES "")
