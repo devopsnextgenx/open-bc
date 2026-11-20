@@ -1,0 +1,6 @@
+# Installer Quick Links (v1.1.9)
+- [Windows Installer](https://github.com/devopsnextgenx/open-bc/releases/download/v1.1.9/openbc-1.1.9-windows-x64.msi)
+- [Debian/Ubuntu deb](https://github.com/devopsnextgenx/open-bc/releases/download/v1.1.9/openbc_1.1.9_amd64.deb)
+- [Fedora/Redhat rpm](https://github.com/devopsnextgenx/open-bc/releases/download/v1.1.9/openbc-1.1.9-1.x86_64.rpm)
+- [Flatpak](https://github.com/devopsnextgenx/open-bc/releases/download/v1.1.9/openbc-1.1.9.flatpak)
+- [AppImage](https://github.com/devopsnextgenx/open-bc/releases/download/v1.1.9/openbc-1.1.9-x86_64.AppImage)
